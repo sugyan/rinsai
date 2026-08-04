@@ -1,0 +1,22 @@
+/target
+
+# Python (train/)
+__pycache__/
+.venv/
+*.egg-info/
+
+# Evaluation networks are distributed as GitHub Release assets, never committed:
+# a halfkp_256x2-32-32 net is ~64 MB. NETS.md is the registry that IS committed.
+/nets/
+
+# Self-play data runs to tens of GB per generation and lives in object storage.
+# The shard manifests are committed; the shards are not.
+/data/
+
+# Paths to GPL sparring binaries in the local-only ../benchmarks repository.
+# tools/opponents.toml.example is committed; the real one is local.
+/tools/opponents.toml
+
+# Match, SPRT and floodgate output
+/games/
+/logs/
