@@ -145,13 +145,22 @@ impl Game {
     /// Parses a USI `position` argument — everything after the command word:
     /// `startpos [moves …]` or `sfen <board> <stm> <hands> [<ply>] [moves …]`.
     ///
-    /// Every move is parsed *and checked for legality* before it is played. The
-    /// obvious alternative, `shogi_core::Position::from_usi`, does the whole
-    /// thing in one call — but its source says *"Even if the read move does not
-    /// make sense, the parser will not emit an error"*: it skips the move and
-    /// returns `Ok` with a truncated position. An engine that accepted that
-    /// would analyse a board the GUI does not believe in, which is the worst
-    /// failure available to us. So we replay the moves ourselves.
+    /// Every move is parsed *and checked for legality* before it is played.
+    ///
+    /// The obvious alternative, `shogi_core::Position::from_usi`, does the whole
+    /// thing in one call. It is not used, for two reasons — narrower than "it
+    /// does not report errors", since a *malformed* token does produce one.
+    /// A move that is well-formed but cannot be made (nothing on the from
+    /// square, wrong side to move) is **silently dropped** and success is
+    /// reported, so the engine's board and the GUI's move list part company;
+    /// and a move that is structurally fine but illegal — 二歩, moving into
+    /// check — is **applied**, because `make_move` documents that it never
+    /// checks legality. Either way the search would run on a position nobody
+    /// described. `tests/shogi_core_from_usi.rs` pins both down, so the day
+    /// `shogi_core` changes, that test fails and this decision is revisited.
+    ///
+    /// What *is* used is its SFEN half: the prefix goes to
+    /// `PartialPosition::from_usi`, which reports errors properly.
     pub fn from_usi_position(args: &str) -> Result<Self, PositionError> {
         let tokens: Vec<&str> = args.split_whitespace().collect();
         let (root_src, rest) = split_root(&tokens)?;

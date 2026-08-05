@@ -140,9 +140,16 @@ test, and step 1 confirmed it.
 - **USI drop notation carries no colour.** `shogi_usi_parser`'s `Move::from_usi`
   hard-codes every drop to Black (`mv.rs:5-7`); the colour is rewritten from the
   side to move in `Game::push_usi_move`.
-- **`shogi_core::Position::from_usi` must not be used.** It parses
-  `startpos moves …` in one call and *silently swallows* moves it cannot make
-  (`position.rs:67-72`), returning `Ok` with a truncated position.
+- **`shogi_core::Position::from_usi` must not be used for the `moves` list** —
+  but the reason is narrower than "it never errors", which is false: a
+  *malformed* token does produce `Err`. What it does instead is (a) **silently
+  drop** a well-formed move that cannot be made — nothing on the from square,
+  wrong side to move — and report success, and (b) **apply** a move that is
+  structurally fine but illegal, 二歩 and moving into check included, because
+  `make_move` documents that it never checks legality. Measured, not read:
+  `crates/rinsai-search/tests/shogi_core_from_usi.rs`, which fails if
+  `shogi_core` ever changes so the decision gets revisited. Its **SFEN prefix**
+  half (`PartialPosition::from_usi`) is sound and *is* used.
 - **Never enable a shunsai feature.** `slider-naive` wins its backend priority
   order and is 5–8× slower; `bench-internals` is documented "never enable as a
   dependency". CI greps every manifest for `"shunsai/…"`, which is also what
