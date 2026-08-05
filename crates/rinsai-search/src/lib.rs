@@ -20,8 +20,14 @@ pub use shunsai;
 
 mod game;
 mod moves;
+mod placeholder;
 mod score;
+mod search;
 
 pub use game::{Game, HistoryEntry, IllegalMove, PositionError};
 pub use moves::{MAX_LEGAL_MOVES, is_legal};
+pub use placeholder::PlaceholderSearcher;
 pub use score::{Depth, MAX_PLY, Score};
+pub use search::{
+    BestMove, InfoSink, Limits, SearchDriver, SearchJob, SearchSignals, Searcher, SilentSink,
+};
