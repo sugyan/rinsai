@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # Caches ~/.cargo/registry, ~/.cargo/git and target/, so the rev-pinned
+      # shunsai clone is cached like any registry crate. The key derives from
+      # Cargo.lock — one more reason the lock is committed.
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all --check
+
+      # `--locked` makes a stale Cargo.lock a failure rather than a silent
+      # re-resolve; pinning shunsai by commit is pointless without it.
+      #
+      # `--all-features` is safe only because no rinsai crate declares a feature
+      # that forwards into shunsai: the flag activates features of the *selected
+      # workspace packages*, never of a git or registry dependency, so it cannot
+      # reach `slider-naive` or `bench-internals`. The next step is what keeps
+      # that premise true.
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+
+      - name: No feature passthrough into shunsai
+        run: |
+          if grep -rnE '"shunsai/[a-z0-9-]+"' --include=Cargo.toml .; then
+            echo "::error::A manifest forwards a feature into shunsai. slider-naive wins shunsai's backend priority order and silently selects a 5-8x slower slider path; bench-internals is explicitly not public API. Never enable either from here."
+            exit 1
+          fi
+
+      - name: Exactly one shogi_core in the graph
+        run: |
+          n=$(grep -c '^name = "shogi_core"$' Cargo.lock)
+          test "$n" -eq 1 || {
+            echo "::error::shogi_core appears $n times in Cargo.lock. rinsai's requirement must stay compatible with shunsai's, or the shogi_core types stop unifying and Move/Square silently become two different types."
+            exit 1
+          }
+
+  # `rust-version = "1.88"` is only true if something checks it. This job is
+  # also the only check anywhere on shunsai's *undeclared* MSRV: a let-chain in
+  # its movegen needs >= 1.88 and its manifest does not say so.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --locked
+
+  # CLAUDE.md's top rule (stay permissive, no GPL reuse), mechanized as far as a
+  # dependency-graph check can take it. See deny.toml.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans sources

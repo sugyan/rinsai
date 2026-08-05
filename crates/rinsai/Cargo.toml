@@ -1,0 +1,21 @@
+[package]
+name = "rinsai"
+description = "rinsai — a shogi engine. USI on stdio."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# The bin target is implicit from src/main.rs and MUST stay named `rinsai`: GUIs
+# and the match harness launch the executable by path and speak USI to it. The
+# lib target exists so the conformance tests can drive the protocol loop over
+# in-memory pipes instead of spawning a process per case.
+[dependencies]
+rinsai-search.workspace = true
+shogi_core.workspace = true
