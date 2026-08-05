@@ -9,6 +9,7 @@ This file defines project rules that every implementation session (Claude Code) 
 - **Route**: **NNUE + αβ first**; DL/MCTS is a conditional later option, not a rejected one. The conditions are written down in DESIGN.md E6 — do not start DL work without checking them.
 - **Scope**: search, evaluation, NNUE inference and training, USI/CSA, time management, repetition (千日手), declaration (入玉宣言), self-play, the match harness. **Move generation is not in scope** — it belongs to shunsai. Neither is SFEN parsing (`shogi_usi_parser`) or mate solving (`tsumeshogi-solver`).
 - **Phases**: staged **E0–E6** (numbered so as not to collide with shunsai's M0–M7). See DESIGN.md §5. Know which phase a piece of work belongs to before starting it.
+- **Read [PROGRESS.md](./PROGRESS.md) first.** It is the ledger: which sub-step is next, the conventions already frozen, the surveyed shunsai API and its traps, and the decisions that were deliberately *recorded rather than built*. Update it at the end of every step — DESIGN.md is the plan, CLAUDE.md is the rules, PROGRESS.md is the state.
 
 ## ⚠️ Top rule: licensing (stay permissive, no GPL reuse)
 
