@@ -30,7 +30,11 @@ repository = "https://github.com/sugyan/rinsai"
 #   line with `shunsai = "0.1"`, drop the allow-git entry in deny.toml, remove
 #   the deviation footnote in DESIGN.md §2, and append the switch to §9. It is
 #   an E0 exit criterion in PROGRESS.md. `git grep 'TODO(shunsai-0.1-release)'`.
-shunsai = { git = "https://github.com/sugyan/shunsai", rev = "e58c16fc073f07ae79f6a94b3bcd69f7e7937bb2" }
+#
+# `version` alongside `git` is not redundant: it states the semver expectation
+# the rev is standing in for, it makes `cargo deny`'s wildcard ban meaningful
+# here, and it turns the eventual switch into deleting two fields.
+shunsai = { git = "https://github.com/sugyan/shunsai", rev = "e58c16fc073f07ae79f6a94b3bcd69f7e7937bb2", version = "0.1" }
 
 # Must stay compatible with shunsai's own requirement so the types unify into a
 # single copy — otherwise `Move` and `Square` silently become two types. CI
