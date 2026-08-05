@@ -444,10 +444,13 @@ mod tests {
         );
     }
 
-    /// Sabotage: an implementation that applied moves one at a time to the live
-    /// game would leave the board after `7g7f 3c3d` here. Building into a
-    /// scratch `Game` and only then assigning is what keeps a rejected command
-    /// from leaving the engine on a board neither side believes in.
+    /// Note this asserts the *error*, not the surviving board — it cannot do
+    /// otherwise: `from_usi_position` is a constructor, so on the error path no
+    /// `Game` escapes at all. The property that a rejected command leaves the
+    /// engine's own board untouched lives one layer up, in `usi::set_position`,
+    /// and is covered by `usi_conformance::an_illegal_move_rejects_the_whole_position_command`,
+    /// which re-checks the surviving board. Do not attach a "build into a
+    /// scratch game" sabotage note here: there is no live game here to damage.
     #[test]
     fn an_illegal_move_fails_the_whole_command() {
         // 5e is empty in every position reachable from startpos in two moves.

@@ -18,10 +18,10 @@ impl Searcher for PlaceholderSearcher {
     fn search(&mut self, job: &SearchJob, out: &dyn InfoSink) -> BestMove {
         let position = job.game.position();
 
-        // The first move the generator offers. Note that shunsai's DESIGN.md:64
-        // explicitly refuses to guarantee generation order, so *which* move this
-        // is may change with any shunsai revision — nothing may depend on it,
-        // and no test may name it.
+        // The first move the generator offers. shunsai's public documentation
+        // says nothing about the order moves are generated in, so *which* move
+        // this is is an unspecified implementation detail that may change with
+        // any revision — nothing may depend on it, and no test may name it.
         let mut first = None;
         let _ = position.generate_moves(|set| {
             first = set.into_iter().next();
@@ -95,43 +95,71 @@ mod tests {
         );
     }
 
-    /// Sabotage: drop the wait loop and this returns at once, which is exactly
-    /// the bug an analysis GUI sees as a broken engine.
-    #[test]
-    fn go_infinite_waits_for_stop() {
-        let job = Arc::new(job(
-            Game::from_startpos(),
-            Limits {
-                infinite: true,
-                ..Limits::default()
-            },
-        ));
-        let signals = Arc::clone(&job.signals);
+    /// Waiting for `stop` is the one behaviour this stand-in exists to get
+    /// right, so it needs a test that can actually fail.
+    ///
+    /// The obvious shape — spawn, `stop()`, join, assert a move came back —
+    /// **cannot**: a searcher that ignores `infinite` entirely returns the same
+    /// move just as happily, so the assertion holds either way. The property is
+    /// "it has *not* answered yet", which is a negative and cannot be proved by
+    /// a test. What can be done is to give the wrong behaviour a generous
+    /// window to show itself in: a searcher that answers without being told
+    /// does so in microseconds, so nothing arriving in 200 ms is decisive in
+    /// practice. Sabotage: delete the wait loop and `recv_timeout` below
+    /// succeeds where it must time out.
+    fn waits_until_signalled(limits: Limits, release: impl FnOnce(&SearchSignals)) {
+        use std::sync::mpsc;
+        use std::time::Duration;
 
-        let searching = std::thread::spawn(move || PlaceholderSearcher.search(&job, &SilentSink));
-        // The searcher cannot have returned yet; `stop` is what lets it.
-        signals.stop();
+        let job = Arc::new(job(Game::from_startpos(), limits));
+        let signals = Arc::clone(&job.signals);
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(PlaceholderSearcher.search(&job, &SilentSink));
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the search answered without being told to"
+        );
+        release(&signals);
         assert!(matches!(
-            searching.join().expect("the search thread finished"),
+            rx.recv_timeout(Duration::from_secs(10))
+                .expect("the search answers once released"),
             BestMove::Play { .. }
         ));
     }
 
     #[test]
+    fn go_infinite_waits_for_stop() {
+        waits_until_signalled(
+            Limits {
+                infinite: true,
+                ..Limits::default()
+            },
+            SearchSignals::stop,
+        );
+    }
+
+    #[test]
     fn go_ponder_waits_for_ponderhit() {
-        let job = Arc::new(job(
-            Game::from_startpos(),
+        waits_until_signalled(
             Limits {
                 ponder: true,
                 ..Limits::default()
             },
-        ));
-        let signals = Arc::clone(&job.signals);
+            SearchSignals::ponderhit,
+        );
+    }
 
-        let searching = std::thread::spawn(move || PlaceholderSearcher.search(&job, &SilentSink));
-        signals.ponderhit();
+    /// The converse, and the one that keeps the pair honest: an ordinary `go`
+    /// must **not** wait. Without this, "wait for everything" would pass the
+    /// two tests above and hang every real game.
+    #[test]
+    fn an_ordinary_go_answers_immediately() {
+        let job = job(Game::from_startpos(), Limits::default());
         assert!(matches!(
-            searching.join().expect("the search thread finished"),
+            PlaceholderSearcher.search(&job, &SilentSink),
             BestMove::Play { .. }
         ));
     }

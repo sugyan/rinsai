@@ -26,8 +26,10 @@ fn main() -> ExitCode {
     }
 
     // E0 step 1 has no search. `PlaceholderSearcher` answers with a legal move
-    // and is deleted at step 2, when the real one arrives; nothing else in this
-    // crate changes then, which is the test of whether this layering was right.
+    // and is deleted at step 2. The layering test is that the only lines in this
+    // crate that need to change then are the ones *naming* the searcher — this
+    // one, and `dialogue` in tests/usi_conformance.rs. Anything else changing
+    // means step 1 got the seam wrong, and that is worth recording.
     // `stdout()` rather than `stdout().lock()`: the lock guard is not `Send`,
     // and the handle has to reach the search thread. `Output` serialises writes
     // itself, so the extra internal lock costs nothing at USI's line volume.

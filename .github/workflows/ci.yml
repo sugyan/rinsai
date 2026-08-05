@@ -34,10 +34,18 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
 
-      - name: No feature passthrough into shunsai
+      # Checked on the *resolved graph*, not by grepping manifests. A grep for
+      # `"shunsai/…"` only catches the `[features]`-table forwarding syntax and
+      # misses the ordinary route — `features = ["slider-naive"]` on the
+      # dependency line itself — which enables the backend just as effectively.
+      # This is also what makes `--all-features` above safe to run.
+      - name: No shunsai feature is enabled
         run: |
-          if grep -rnE '"shunsai/[a-z0-9-]+"' --include=Cargo.toml .; then
-            echo "::error::A manifest forwards a feature into shunsai. slider-naive wins shunsai's backend priority order and silently selects a 5-8x slower slider path; bench-internals is explicitly not public API. Never enable either from here."
+          enabled=$(cargo tree --locked -e features -i shunsai \
+                    | grep -oE 'shunsai feature "[^"]+"' | sort -u | grep -v '"default"' || true)
+          if [ -n "$enabled" ]; then
+            echo "$enabled"
+            echo "::error::A shunsai feature is enabled. slider-naive wins shunsai's backend priority order and silently selects a 5-8x slower generator, which would make every SPRT number afterwards noise; bench-internals is explicitly not public API. Never enable either from here."
             exit 1
           fi
 

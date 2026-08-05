@@ -52,16 +52,22 @@ rinsai/
 ├── README.md              # what it is, and the name
 ├── NETS.md                # evaluation-file registry (added at E3)
 ├── Cargo.toml             # [workspace]                      (added at E0)
+├── PROGRESS.md            # the step ledger: state, conventions, next actions  (added at E0)
 ├── crates/
 │   ├── rinsai-search/     # lib: αβ + TT + qsearch + time management + repetition + eval
 │   │                      #      the only crate that depends on shunsai
 │   ├── rinsai/            # bin: the engine. USI on stdio by default, --csa for floodgate
-│   └── xtask/             # bin: fetch-net / gen-openings / sprt / release
+│   └── xtask/             # bin: gen-openings / sprt / fetch-net / release  (added at E0 step 6)
 ├── train/                 # PyTorch: dataset, model, quantize, export   (added at E3)
-├── positions/             # openings-v1.sfen (frozen), test and bench positions
-├── tools/                 # match harness config, ladder definitions
-└── .github/workflows/     # fmt / clippy -D warnings / test / bench --no-run
+├── positions/             # openings-v1.sfen (frozen), test and bench positions  (added at E0 step 6)
+├── tools/                 # match harness config, ladder definitions  (added at E0 step 7)
+└── .github/workflows/     # fmt / clippy -D warnings / test / MSRV / cargo-deny  (added at E0)
 ```
+
+Entries carry the phase that creates them; anything unmarked exists today. (The
+`bench --no-run` step this list originally named is not there and will not be:
+rinsai's `bench` is a **binary subcommand**, the Stockfish convention, not a
+criterion target — see E0 step 3.)
 
 **The training pipeline lives in this repository, not its own.** The network architecture, the quantization scheme and the data format are each defined twice — once in Rust for inference, once in Python for training — and any drift between the two is a silent strength bug that SPRT reads as "that patch was bad". Being able to change both in one commit is what prevents it. A secondary benefit: the WCSC appeal document's claim of own-data-and-own-trainer is demonstrable from one repository's history.
 

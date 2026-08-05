@@ -44,10 +44,12 @@ pub struct Limits {
 
 /// The flags that stop a search from outside it.
 ///
-/// Atomics rather than a channel: a search polls `stopped()` every ~1024 nodes,
-/// where a relaxed load of a rarely-written bool beats `try_recv` outright, and
-/// at E2 one `Arc` broadcasts to every Lazy SMP thread where a channel would
-/// need one per thread.
+/// Atomics rather than a channel. The load-bearing reason is E2: one `Arc`
+/// broadcasts to every Lazy SMP thread, where a channel would need one per
+/// thread. A relaxed load of a rarely-written bool should also be cheaper than
+/// `try_recv` on the polling path — **unmeasured, and there is no polling path
+/// yet**; the interval (1024 nodes is the usual starting point) is step 2's to
+/// choose and step 5's to measure against the time-management SPRT.
 ///
 /// A **fresh set is created per `go`**, so a `stop` that arrives late cannot
 /// abort the *next* search — the classic bug in globally-flagged engines.

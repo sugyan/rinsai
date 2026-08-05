@@ -6,9 +6,12 @@
 //! produces one.** It holds structurally rather than by discipline: a `go`
 //! allocates exactly one job, the worker's loop body emits on every path
 //! because [`Searcher::search`] *returns* an answer instead of printing one,
-//! and [`Output::bestmove`] is called from exactly one closure, constructed
-//! here. `grep -rn 'bestmove' crates/` should find it in `output.rs` and
-//! nowhere else.
+//! and [`Output::bestmove`] is called from exactly one closure, constructed in
+//! [`run`] below. To audit it, grep `crates/*/src` for the **string literal** —
+//! the word with its opening double-quote — and it should occur in `output.rs`
+//! and nowhere else. Grepping for the bare word instead matches this sentence,
+//! the call site and the tests, so it proves nothing; and a grep pattern that
+//! quotes the literal has to stay out of the comments, or it matches itself.
 //!
 //! # Error policy, stated once
 //!

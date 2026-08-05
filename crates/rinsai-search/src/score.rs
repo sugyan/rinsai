@@ -11,8 +11,10 @@ use core::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 
 /// The deepest ply the search will ever reach, counting quiescence.
 ///
-/// It sizes three things together — the search stack, the mate band below, and
-/// (from E0 step 2) the move buffer — so they cannot drift apart.
+/// It is meant to size three things together so they cannot drift apart — the
+/// mate band below, the search stack (from E0 step 2) and the move buffer (also
+/// step 2) — but today only the mate band exists, because there is no search.
+/// 128 is the conventional value; nothing here has yet forced it.
 pub const MAX_PLY: usize = 128;
 
 /// A search depth, in **whole plies**, signed.

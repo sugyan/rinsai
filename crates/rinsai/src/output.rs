@@ -40,8 +40,9 @@ impl<W: Write + Send> Output<W> {
     }
 
     /// The **only** place a `bestmove` is written. Keeping it here, called from
-    /// exactly one closure in `main`, is what makes "one `bestmove` per `go`"
-    /// checkable by `grep` rather than by review.
+    /// exactly one closure — built in `usi::run` — is what makes "one
+    /// `bestmove` per `go`" checkable by grepping for the string literal rather
+    /// than by review. See the module docs of `usi` for the audit.
     pub fn bestmove(&self, best: BestMove) {
         self.line(&match best {
             BestMove::Resign => "bestmove resign".to_owned(),

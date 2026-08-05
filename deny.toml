@@ -30,7 +30,9 @@ unknown-registry = "deny"
 unknown-git = "deny"
 
 # TODO(shunsai-0.1-release): delete this entry when shunsai is on crates.io.
-# Removing it is *part of* the switch, and `cargo deny check sources` fails
-# until the manifest stops using the git source — so the switch cannot be
-# half-done silently.
+# Note which half this protects: deleting the entry while the manifest still
+# points at git is a hard `sources FAILED`, but leaving the entry behind after
+# switching to the registry only produces an `unmatched-source` *warning* and CI
+# stays green. So it catches the wrong-order switch, not the forgotten cleanup —
+# the TODO markers and the PROGRESS.md exit criterion cover that direction.
 allow-git = ["https://github.com/sugyan/shunsai"]

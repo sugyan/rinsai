@@ -8,6 +8,21 @@
 
 use std::fmt;
 
+/// Where a declared option's value is stored.
+///
+/// This exists so that [`Options::set`] can dispatch on **which option** rather
+/// than on what kind of control it is. Dispatching on the kind works only while
+/// there is at most one option of each kind: the moment `Threads` joins
+/// `USI_Hash` as a second spin, `setoption name Threads value 4` starts writing
+/// into the hash size — silently, which is exactly the class of lie this module
+/// opens by warning against. Adding an option now means adding a variant here,
+/// which makes the `match` below non-exhaustive and fails to compile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Slot {
+    HashMb,
+    Ponder,
+}
+
 /// What kind of control a GUI should show, and its default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OptionKind {
@@ -19,6 +34,7 @@ pub(crate) enum OptionKind {
 pub(crate) struct OptionSpec {
     pub(crate) name: &'static str,
     pub(crate) kind: OptionKind,
+    pub(crate) slot: Slot,
     /// `None` once the engine acts on the option. Until then it names the step
     /// that will, and that text is reported to the operator at `isready`.
     pub(crate) planned: Option<&'static str>,
@@ -32,6 +48,13 @@ pub(crate) struct OptionSpec {
 /// `Threads` arrives at E2 with Lazy SMP, `EvalFile` at E3 with the network,
 /// `BookFile` at E4. An option we do not declare but that someone sends is
 /// still accepted silently, so nothing breaks in the meantime.
+///
+/// The spin bounds are **conventional, not measured**. 256 MB is a size a
+/// floodgate VM can spare; `min 1` exists so a smoke test can run a tiny table;
+/// `max 65536` is larger than any machine this is planned to run on. Step 3
+/// builds the transposition table and has to honour whatever is advertised
+/// here, so `min 1` in particular is a commitment that the table works at 1 MB —
+/// revisit these there rather than treating them as decided.
 pub(crate) const OPTIONS: &[OptionSpec] = &[
     OptionSpec {
         name: "USI_Hash",
@@ -40,11 +63,13 @@ pub(crate) const OPTIONS: &[OptionSpec] = &[
             min: 1,
             max: 65_536,
         },
+        slot: Slot::HashMb,
         planned: Some("E0 step 3, with the transposition table"),
     },
     OptionSpec {
         name: "USI_Ponder",
         kind: OptionKind::Check { default: false },
+        slot: Slot::Ponder,
         planned: Some("E2, with ponder"),
     },
 ];
@@ -111,26 +136,10 @@ impl Options {
             .ok_or_else(|| OptionError::Unknown(name.to_owned()))?;
         let value = value.ok_or(OptionError::MissingValue(spec.name))?;
 
-        match spec.kind {
-            OptionKind::Check { .. } => {
-                self.ponder = value.parse().map_err(|_| OptionError::BadValue {
-                    name: spec.name,
-                    value: value.to_owned(),
-                })?;
-            }
-            OptionKind::Spin { min, max, .. } => {
-                let parsed: i64 = value.parse().map_err(|_| OptionError::BadValue {
-                    name: spec.name,
-                    value: value.to_owned(),
-                })?;
-                if parsed < min || parsed > max {
-                    return Err(OptionError::OutOfRange {
-                        name: spec.name,
-                        value: parsed,
-                    });
-                }
-                self.hash_mb = parsed;
-            }
+        // Dispatch on the slot, never on the kind — see `Slot`.
+        match spec.slot {
+            Slot::HashMb => self.hash_mb = spin(spec, value)?,
+            Slot::Ponder => self.ponder = check(spec, value)?,
         }
         Ok(())
     }
@@ -149,11 +158,41 @@ impl Options {
     }
 
     fn differs_from_default(&self, spec: &OptionSpec) -> bool {
-        match spec.kind {
-            OptionKind::Check { default } => self.ponder != default,
-            OptionKind::Spin { default, .. } => self.hash_mb != default,
+        match (spec.slot, spec.kind) {
+            (Slot::HashMb, OptionKind::Spin { default, .. }) => self.hash_mb != default,
+            (Slot::Ponder, OptionKind::Check { default }) => self.ponder != default,
+            // A slot declared with a control it cannot hold is a table error,
+            // not operator input; treat it as unchanged rather than guessing.
+            _ => false,
         }
     }
+}
+
+fn spin(spec: &OptionSpec, value: &str) -> Result<i64, OptionError> {
+    let OptionKind::Spin { min, max, .. } = spec.kind else {
+        return Err(OptionError::BadValue {
+            name: spec.name,
+            value: value.to_owned(),
+        });
+    };
+    let parsed: i64 = value.parse().map_err(|_| OptionError::BadValue {
+        name: spec.name,
+        value: value.to_owned(),
+    })?;
+    if parsed < min || parsed > max {
+        return Err(OptionError::OutOfRange {
+            name: spec.name,
+            value: parsed,
+        });
+    }
+    Ok(parsed)
+}
+
+fn check(spec: &OptionSpec, value: &str) -> Result<bool, OptionError> {
+    value.parse().map_err(|_| OptionError::BadValue {
+        name: spec.name,
+        value: value.to_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -179,6 +218,36 @@ mod tests {
         assert_eq!(options.hash_mb, 512);
         assert_eq!(options.set("USI_Ponder", Some("true")), Ok(()));
         assert!(options.ponder);
+    }
+
+    /// Setting one option must leave every other alone.
+    ///
+    /// This is the test for the `Slot` indirection. Sabotage: dispatch on
+    /// `spec.kind` instead of `spec.slot` and add a second spin option (which is
+    /// what `Threads` will be at E2) — `setoption name Threads value 4` then
+    /// writes into `hash_mb` and this goes red. Written as a loop over `OPTIONS`
+    /// so it covers whatever the table holds later, not just today's two.
+    #[test]
+    fn setting_one_option_does_not_disturb_the_others() {
+        for spec in OPTIONS {
+            let mut options = Options::default();
+            let value = match spec.kind {
+                OptionKind::Spin { default, max, .. } => (default + 1).min(max).to_string(),
+                OptionKind::Check { default } => (!default).to_string(),
+            };
+            options
+                .set(spec.name, Some(&value))
+                .unwrap_or_else(|e| panic!("{}: {e}", spec.name));
+
+            for other in OPTIONS.iter().filter(|o| o.slot != spec.slot) {
+                assert!(
+                    !options.differs_from_default(other),
+                    "setting {} changed {}",
+                    spec.name,
+                    other.name
+                );
+            }
+        }
     }
 
     #[test]

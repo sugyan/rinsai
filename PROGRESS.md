@@ -39,7 +39,7 @@ diagnostics. It is extremely weak on purpose — there is no search.
 - `crates/rinsai` — the USI protocol loop, its state machine, the option table
   and the single output sink.
 - CI: fmt, clippy `-D warnings`, tests, an MSRV job on 1.88, `cargo deny`, and
-  two guards described below.
+  two CI guards, both described under Traps below.
 
 **Deliberately not built**, so step 2 does not inherit guesses: no evaluation,
 no search, no move buffer, no transposition table, no repetition *queries* (the
@@ -56,9 +56,12 @@ history is recorded, nothing reads it), no time management, no `bench`.
    `ArrayVec` without re-reading it.
 3. **Iterative-deepening negamax** implementing `Searcher`, replacing
    `PlaceholderSearcher` (delete `placeholder.rs`). Fill `SearchInfo`-style
-   `info` lines through the existing `InfoSink`. **Nothing in `crates/rinsai`
-   should need to change** — if it does, step 1's layering was wrong, and that
-   is worth recording.
+   `info` lines through the existing `InfoSink`. **The only lines in
+   `crates/rinsai` that should need to change are the two that name the
+   searcher** — `main.rs` and `dialogue` in `tests/usi_conformance.rs`. Anything
+   else changing means step 1 got the seam wrong, and that is worth recording.
+   (An earlier draft said "nothing in `crates/rinsai`", which cannot be true:
+   deleting `placeholder.rs` necessarily touches both of those call sites.)
 
 Then: `cargo run --release -- bench` is step 3, and the node counts it freezes
 depend on the convention below.
@@ -91,9 +94,12 @@ them.
   the whole committed set. shunsai's own HEAD commit is *"Measure the leaf
   convention the cross-engine table had been mixing"* — the precedent is one
   repository over.
-- **No test may name a move the engine chose.** shunsai's DESIGN.md:64 refuses
-  to guarantee generation order. Assert "this is legal here" by replaying the
-  move into a position the test builds itself.
+- **No test may name a move the engine chose.** shunsai's public documentation
+  says nothing about generation order either way, so it is an unspecified
+  implementation detail. Assert "this is legal here" by replaying the move into
+  a position the test builds itself. (An earlier draft of this file cited
+  "shunsai DESIGN.md:64" for an explicit non-guarantee; **no such statement
+  exists** — the citation was carried over from a survey and never checked.)
 
 ## The shunsai constraint sheet
 
@@ -152,8 +158,15 @@ test, and step 1 confirmed it.
   half (`PartialPosition::from_usi`) is sound and *is* used.
 - **Never enable a shunsai feature.** `slider-naive` wins its backend priority
   order and is 5–8× slower; `bench-internals` is documented "never enable as a
-  dependency". CI greps every manifest for `"shunsai/…"`, which is also what
-  makes `--all-features` safe to run.
+  dependency". CI checks the **resolved graph**
+  (`cargo tree --locked -e features -i shunsai`, fail on anything but
+  `default`), which is also what makes `--all-features` safe to run. It does
+  *not* grep manifests: that catches only a `[features]` forward and misses
+  `features = ["slider-naive"]` on the dependency line, which is the likelier
+  mistake and enables the backend just as effectively.
+- **`shogi_core` must appear exactly once in `Cargo.lock`**, or `Move` and
+  `Square` silently become two incompatible types. rinsai's requirement has to
+  stay compatible with shunsai's; CI asserts the count.
 - **Effective MSRV is 1.88** (a let-chain at `movegen.rs:589`) and shunsai does
   not declare it. rinsai's `msrv` CI job is the only check on it anywhere.
 - Max legal moves in any shogi position is **593**.

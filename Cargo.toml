@@ -31,9 +31,11 @@ repository = "https://github.com/sugyan/rinsai"
 #   the deviation footnote in DESIGN.md §2, and append the switch to §9. It is
 #   an E0 exit criterion in PROGRESS.md. `git grep 'TODO(shunsai-0.1-release)'`.
 #
-# `version` alongside `git` is not redundant: it states the semver expectation
-# the rev is standing in for, it makes `cargo deny`'s wildcard ban meaningful
-# here, and it turns the eventual switch into deleting two fields.
+# `version` alongside `git` states the semver expectation the rev is standing in
+# for, and turns the eventual switch into deleting two fields. It does *not*
+# affect `cargo deny`: measured, the wildcard ban reports `bans ok` with or
+# without it, because cargo-deny does not treat a version-less git dependency as
+# a wildcard. An earlier version of this comment claimed otherwise.
 shunsai = { git = "https://github.com/sugyan/shunsai", rev = "e58c16fc073f07ae79f6a94b3bcd69f7e7937bb2", version = "0.1" }
 
 # Must stay compatible with shunsai's own requirement so the types unify into a
@@ -44,11 +46,14 @@ shogi_usi_parser = "0.1"
 
 rinsai-search = { path = "crates/rinsai-search" }
 
-# NOTE: no rinsai crate may ever declare a feature forwarding into shunsai.
+# NOTE: no shunsai feature may ever be enabled from here — not by a `[features]`
+# forward, and not by a `features = [...]` list on the dependency above.
 # `slider-naive` wins shunsai's backend priority order and would silently select
-# a 5-8x slower generator — every SPRT run afterwards would be noise — and
-# `bench-internals` is documented "never enable as a dependency". CI greps for
-# `"shunsai/…"` in every manifest, which is also what keeps `--all-features` safe.
+# a 5-8x slower generator, which would make every SPRT number afterwards noise;
+# `bench-internals` is documented "never enable as a dependency". CI checks the
+# *resolved graph* (`cargo tree -e features -i shunsai`) rather than manifest
+# text, because a grep catches only the first of those two forms. That check is
+# also what keeps `--all-features` safe to run.
 
 [workspace.lints.rust]
 # `deny`, not `forbid`: E2's shared transposition table and E3's SIMD inference
@@ -83,8 +88,12 @@ inherits = "release"
 debug = true
 strip = "none"
 
-# A fully unoptimised search is unusable in tests, and shunsai's movegen is the
-# hot loop even in debug runs. debug_assertions stay on.
+# Measured on the step-1 tree: the rinsai-search suite runs in ~0.01 s here
+# against ~0.08 s at opt-level 0, and the whole `cargo test` differs by ~70 ms —
+# so this is not yet load-bearing. Kept because step 3's `bench` and the
+# fixed-depth node counts will make it so, and because shunsai's movegen is the
+# hot loop in a debug run too. Re-state the number once a search exists.
+# debug_assertions stay on.
 [profile.dev]
 opt-level = 1
 

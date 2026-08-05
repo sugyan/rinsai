@@ -8,13 +8,17 @@
 //!    `quit` (or end of input) and the whole transcript is then asserted on.
 //! 2. The [`Searcher`] seam lets a test inject [`CapturingSearcher`], which
 //!    records the jobs it was handed and can be told to block until signalled.
-//!    "Did `go infinite` reach the search?" and "did `stop` arrive?" become
-//!    value assertions rather than timing assertions.
+//!    "Did `go infinite` reach the search as `infinite`?" becomes a value
+//!    assertion rather than a timing one. Note what these do *not* cover: that
+//!    the searcher **honours** `infinite` — `CapturingSearcher` blocks on its
+//!    own flag and never reads `limits` — which is tested where it lives, in
+//!    `rinsai-search`'s `placeholder` tests.
 //!
-//! Note what is *never* asserted: which move the engine chose. shunsai's
-//! DESIGN.md:64 explicitly refuses to guarantee generation order, so naming a
-//! move here would be a false regression waiting for the next shunsai bump.
-//! [`assert_legal_after`] asserts the property that actually matters.
+//! Note what is *never* asserted: which move the engine chose. shunsai's public
+//! documentation says nothing about generation order, so it is an unspecified
+//! implementation detail and naming a move here would be a false regression
+//! waiting for the next shunsai bump. [`assert_legal_after`] asserts the
+//! property that actually matters.
 
 use std::io::{Cursor, Write};
 use std::sync::{Arc, Mutex};

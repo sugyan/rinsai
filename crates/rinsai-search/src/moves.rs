@@ -68,8 +68,9 @@ pub fn is_legal(position: &Position, mv: Move) -> bool {
             }
             // Continue rather than reporting failure, so the walk stays correct
             // even if shunsai ever emits two `MoveSet`s sharing a `from`.
-            // shunsai's DESIGN.md:64 explicitly refuses to guarantee how moves
-            // are grouped, so we assume nothing about it.
+            // Nothing in shunsai's public documentation says how moves are
+            // grouped into sets — one per origin is what it does today, but it
+            // does not promise that — so this makes no assumption either way.
             _ => ControlFlow::Continue(()),
         })
         .is_break()
