@@ -18,6 +18,10 @@
 pub use shogi_core;
 pub use shunsai;
 
+mod game;
+mod moves;
 mod score;
 
+pub use game::{Game, HistoryEntry, IllegalMove, PositionError};
+pub use moves::{MAX_LEGAL_MOVES, is_legal};
 pub use score::{Depth, MAX_PLY, Score};
