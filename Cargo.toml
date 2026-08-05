@@ -78,9 +78,13 @@ todo = "warn"
 # workspace root is the only place they take effect.
 lto = "fat"
 codegen-units = 1
-# Deliberately NOT `panic = "abort"`. The search runs on a worker thread and a
-# panic there must be observable to the USI loop and diagnosable in the step-7
-# match harness, rather than a silent SIGABRT.
+# Deliberately NOT `panic = "abort"`, and the reason is now one the code
+# delivers: the worker catches a panic from the searcher, answers `resign` for
+# that move, and keeps playing, with the panic message on stderr for the step-7
+# harness. Aborting would take the whole engine down mid-tournament instead.
+# (This comment used to claim the panic was "observable to the USI loop" when
+# nothing observed it — the loop simply believed the dead search was still
+# running. Fixed with the catch.)
 
 # `cargo build --profile profiling` for samply / Instruments.
 [profile.profiling]

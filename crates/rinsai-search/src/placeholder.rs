@@ -34,11 +34,11 @@ impl Searcher for PlaceholderSearcher {
         };
         out.info("info string rinsai has no search yet (E0 step 1): playing a legal move");
 
-        // `infinite` and `ponder` both mean "do not answer until told to".
-        while (job.limits.infinite || job.limits.ponder)
-            && !job.signals.stopped()
-            && !job.signals.ponder_hit()
-        {
+        // `infinite` means "keep searching until told to stop", which is the
+        // searcher's own business. `ponder` is *not* handled here: when a
+        // ponder search may answer is a protocol rule, and the driver holds it
+        // for every searcher (see `search::worker`).
+        while job.limits.infinite && !job.signals.stopped() && !job.signals.ponder_hit() {
             job.signals.wait_until_signalled();
         }
 
@@ -88,7 +88,10 @@ mod tests {
     fn resigns_when_there_is_no_legal_move() {
         let partial = PartialPosition::from_usi("sfen 4k4/9/9/9/9/9/9/9/9 b - 1")
             .expect("the fixture parses");
-        let job = job(Game::from_partial(partial), Limits::default());
+        let job = job(
+            Game::from_partial(partial).expect("the fixture is a valid position"),
+            Limits::default(),
+        );
         assert_eq!(
             PlaceholderSearcher.search(&job, &SilentSink),
             BestMove::Resign
@@ -141,15 +144,28 @@ mod tests {
         );
     }
 
+    /// A searcher does **not** hold a ponder answer back — the driver does.
+    ///
+    /// The split is deliberate. `infinite` is about when a search stops
+    /// searching, which is the searcher's own business; `ponder` is about when
+    /// an answer may be *sent*, which is a protocol rule, and holding it in the
+    /// driver makes every future searcher correct without remembering. Step 2's
+    /// search will return the moment it hits its depth or node limit, and that
+    /// must not become a `bestmove` the GUI never asked for — the test for that
+    /// is `search::tests::a_ponder_search_that_returns_early_still_waits_to_answer`.
     #[test]
-    fn go_ponder_waits_for_ponderhit() {
-        waits_until_signalled(
+    fn go_ponder_is_not_the_searchers_business() {
+        let job = job(
+            Game::from_startpos(),
             Limits {
                 ponder: true,
                 ..Limits::default()
             },
-            SearchSignals::ponderhit,
         );
+        assert!(matches!(
+            PlaceholderSearcher.search(&job, &SilentSink),
+            BestMove::Play { .. }
+        ));
     }
 
     /// The converse, and the one that keeps the pair honest: an ordinary `go`

@@ -3,9 +3,10 @@
 //! # The one invariant
 //!
 //! **Every accepted `go` produces exactly one `bestmove`, and nothing else ever
-//! produces one.** It holds structurally rather than by discipline: a `go`
-//! allocates exactly one job, the worker's loop body emits on every path
-//! because [`Searcher::search`] *returns* an answer instead of printing one,
+//! produces one — including when the search panics.** It holds structurally
+//! rather than by discipline: a `go` allocates exactly one job, the worker's
+//! loop body emits on every path because [`Searcher::search`] *returns* an
+//! answer instead of printing one and a panic is caught and answered,
 //! and [`Output::bestmove`] is called from exactly one closure, constructed in
 //! [`run`] below. To audit it, grep `crates/*/src` for the **string literal** —
 //! the word with its opening double-quote — and it should occur in `output.rs`
@@ -61,15 +62,25 @@ where
     let emitter = out.clone();
 
     // The protocol thread cannot see the worker finish, so the worker tells it:
-    // the counter goes up before a job is submitted and down once its answer is
-    // written. Anything else — a plain `searching` flag cleared only by `stop` —
+    // the counter goes up before a job is submitted and down as its answer is
+    // sent. Anything else — a plain `searching` flag cleared only by `stop` —
     // leaves the engine convinced a finished search is still running, and every
     // subsequent `go` then reads as a protocol violation.
+    //
+    // The counter drops **before** the line is written, and the order matters.
+    // The other way round leaves a window in which the `bestmove` is already on
+    // the wire while the engine still believes it is searching, so a GUI doing
+    // exactly the right thing — wait for `bestmove`, send the next `go` — gets
+    // accused of a protocol violation on stdout. This way the window holds the
+    // opposite state, and both readers of it then do the right thing: a `go`
+    // submits (and queues behind this job, since the worker is a single FIFO
+    // still inside this closure), and a `stop` is ignored, which is correct for
+    // a search that has already finished.
     let outstanding = Arc::new(AtomicUsize::new(0));
     let finished = Arc::clone(&outstanding);
     let driver = SearchDriver::spawn(searcher, sink, move |best| {
-        emitter.bestmove(best);
         finished.fetch_sub(1, Ordering::AcqRel);
+        emitter.bestmove(best);
     });
 
     let mut engine = Engine {
@@ -83,12 +94,31 @@ where
         current: None,
     };
 
-    for line in input.lines() {
-        let Ok(line) = line else {
-            // A read error on stdin is the GUI going away mid-line. There is
-            // nobody left to tell.
-            break;
-        };
+    // Read bytes, not `String`. `BufRead::lines` yields `Err(InvalidData)` for
+    // any line that is not valid UTF-8, which is indistinguishable from a real
+    // I/O error — so treating it as "the GUI went away" makes one stray byte
+    // end the engine silently, exit status 0, nothing in the log. That is not
+    // exotic input: a Japanese Windows GUI speaks CP932, so a path like
+    // `setoption name EvalFile value C:\将棋\eval` is exactly the shape that
+    // arrives, and E3 is going to ask for one. Lossy conversion instead: the
+    // command is either still understood or logged as unknown, and the engine
+    // keeps playing.
+    let mut input = input;
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match input.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) => {
+                warn(&format!("stdin: {e}"));
+                break;
+            }
+        }
+        let line = String::from_utf8_lossy(&buf);
+        if matches!(line, std::borrow::Cow::Owned(_)) {
+            warn("stdin: a line was not valid UTF-8 and was read with replacements");
+        }
         let Some(command) = parse_line(&line) else {
             continue;
         };

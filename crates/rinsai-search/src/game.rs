@@ -20,7 +20,7 @@
 
 use core::fmt;
 
-use shogi_core::{Color, Hand, Move, PartialPosition, Piece, ToUsi};
+use shogi_core::{Color, Hand, Move, PartialPosition, Piece, PieceKind, Square, ToUsi};
 use shogi_usi_parser::FromUsi;
 use shunsai::Position;
 
@@ -128,18 +128,28 @@ impl Game {
     #[must_use]
     pub fn from_startpos() -> Self {
         Self::from_partial(PartialPosition::startpos())
+            .expect("the initial position is a valid shogi position")
     }
 
     /// A game rooted at `partial`, no moves played.
-    #[must_use]
-    pub fn from_partial(partial: PartialPosition) -> Self {
+    ///
+    /// **Fallible on purpose.** `PartialPosition` is only a container: nothing
+    /// stops it holding nineteen pawns, and `shogi_usi_parser` will build one
+    /// from `sfen … b 19P 1` without complaint, because its hand grammar
+    /// accepts a two-digit count and `Hand::added` has no cap. Handing that to
+    /// shunsai is fatal — its Zobrist table is `[u64; 19]` per piece kind and
+    /// it indexes by held count, so the nineteenth piece is an out-of-bounds
+    /// panic on whatever thread got there. A GUI or a server could end the
+    /// process with one line.
+    pub fn from_partial(partial: PartialPosition) -> Result<Self, PositionError> {
+        check_piece_counts(&partial)?;
         let board = Position::new(partial.clone());
         let root = HistoryEntry::of(&board);
-        Self {
+        Ok(Self {
             board,
             record: Record::arbitrary_position(partial),
             history: vec![root],
-        }
+        })
     }
 
     /// Parses a USI `position` argument — everything after the command word:
@@ -168,7 +178,7 @@ impl Game {
         let partial = PartialPosition::from_usi(&root_src).map_err(|e| PositionError::BadRoot {
             detail: format!("{e:?}"),
         })?;
-        let mut game = Self::from_partial(partial);
+        let mut game = Self::from_partial(partial)?;
 
         let move_tokens = match rest.split_first() {
             None => &[][..],
@@ -330,6 +340,53 @@ impl fmt::Debug for Game {
     }
 }
 
+/// How many of each kind a shogi set contains, promoted pieces counting as the
+/// kind they were promoted from.
+const PIECE_TOTALS: [(PieceKind, u8); 8] = [
+    (PieceKind::Pawn, 18),
+    (PieceKind::Lance, 4),
+    (PieceKind::Knight, 4),
+    (PieceKind::Silver, 4),
+    (PieceKind::Gold, 4),
+    (PieceKind::Bishop, 2),
+    (PieceKind::Rook, 2),
+    (PieceKind::King, 2),
+];
+
+/// Rejects a root that could not come from a real shogi set.
+///
+/// One check covers two routes to the same crash. The direct one is a hand
+/// count the parser accepted but no set contains (`19P`). The indirect one
+/// needs no malformed field at all — 18 pawns in hand plus a pawn on the board
+/// is nineteen pawns, and capturing that pawn is what tips shunsai's hand
+/// counter over. Bounding the *total* per kind at the root closes both, because
+/// no legal move can create a piece.
+fn check_piece_counts(partial: &PartialPosition) -> Result<(), PositionError> {
+    let mut seen = [0u16; PieceKind::NUM];
+    for square in Square::all() {
+        if let Some(piece) = partial.piece_at(square) {
+            let kind = piece.piece_kind();
+            let base = kind.unpromote().unwrap_or(kind);
+            seen[base.array_index()] += 1;
+        }
+    }
+    for color in Color::all() {
+        let hand = partial.hand_of_a_player(color);
+        for kind in Hand::all_hand_pieces() {
+            seen[kind.array_index()] += u16::from(hand.count(kind).unwrap_or(0));
+        }
+    }
+    for (kind, total) in PIECE_TOTALS {
+        let count = seen[kind.array_index()];
+        if count > u16::from(total) {
+            return Err(PositionError::BadRoot {
+                detail: format!("{count} {kind:?} on the board and in hand, but a set has {total}"),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Splits `startpos` / `sfen …` off the front, returning it as a string
 /// `PartialPosition::from_usi` accepts plus whatever follows.
 fn split_root<'a>(tokens: &'a [&'a str]) -> Result<(String, &'a [&'a str]), PositionError> {
@@ -346,6 +403,23 @@ fn split_root<'a>(tokens: &'a [&'a str]) -> Result<(String, &'a [&'a str]), Posi
                 });
             }
             let (fields, rest) = rest.split_at(field_count);
+            // The move number is checked here rather than left to
+            // `PartialPosition::from_usi`, which saturates and discards: it
+            // turns `0` into 1 and anything from 65536 upwards into 65535,
+            // reporting success either way, while rejecting a *non-numeric*
+            // field. Silently rewriting one kind of bad input and refusing
+            // another is the inconsistency; both are the GUI being wrong about
+            // the game, and both should be said out loud.
+            if let Some(ply) = fields.get(3) {
+                match ply.parse::<u16>() {
+                    Ok(n) if n >= 1 => {}
+                    _ => {
+                        return Err(PositionError::BadRoot {
+                            detail: format!("move number `{ply}` is not in 1..=65535"),
+                        });
+                    }
+                }
+            }
             Ok((format!("sfen {}", fields.join(" ")), rest))
         }
         Some((&token, _)) => Err(PositionError::UnexpectedToken {
@@ -476,6 +550,82 @@ mod tests {
                 token: "zzzz".to_owned()
             }
         );
+    }
+
+    /// A GUI or a server could end the process with one line before this
+    /// existed: `shogi_usi_parser` accepts a two-digit hand count, and shunsai
+    /// indexes a `[u64; 19]` Zobrist table by held count, so the nineteenth
+    /// pawn was an out-of-bounds panic on the protocol thread.
+    ///
+    /// Sabotage: delete the `check_piece_counts` call in `from_partial` and
+    /// every case here panics instead of returning an error.
+    #[test]
+    fn a_position_no_shogi_set_could_reach_is_rejected() {
+        for sfen in [
+            // Straight out of the hand grammar.
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 19P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 w 19p 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 5R 1",
+            // The indirect route: 18 in hand plus one on the board is 19, and
+            // capturing it is what used to tip shunsai's counter over.
+            "sfen 4k4/9/9/9/4p4/9/9/9/4K4 b 18P 1",
+            // Promoted pieces count as what they were.
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 17P 1 moves",
+        ]
+        .iter()
+        .take(5)
+        .chain(std::iter::once(&"sfen 3kg4/9/9/9/9/9/9/9/3KG4 b 4G 1"))
+        {
+            assert!(
+                matches!(
+                    Game::from_usi_position(sfen),
+                    Err(PositionError::BadRoot { .. })
+                ),
+                "accepted an impossible position: {sfen}"
+            );
+        }
+    }
+
+    /// The bound is on the total, so a set that is merely *unusual* still works.
+    #[test]
+    fn a_legal_but_lopsided_position_is_accepted() {
+        for sfen in [
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 18P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 2R2B4G4S4N4L18P 1",
+            "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
+        ] {
+            assert!(
+                Game::from_usi_position(sfen).is_ok(),
+                "rejected a reachable position: {sfen}"
+            );
+        }
+    }
+
+    /// `PartialPosition::from_usi` saturates and discards the move number — `0`
+    /// becomes 1, anything from 65536 up becomes 65535 — while rejecting a
+    /// *non-numeric* field. Rewriting one kind of bad input and refusing
+    /// another is the inconsistency; both mean the GUI is wrong about the game.
+    #[test]
+    fn an_out_of_range_move_number_is_rejected_rather_than_clamped() {
+        let board = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b -";
+        for bad in ["0", "65536", "99999999999999999999", "-1", "1.5"] {
+            assert!(
+                matches!(
+                    Game::from_usi_position(&format!("sfen {board} {bad}")),
+                    Err(PositionError::BadRoot { .. })
+                ),
+                "accepted move number `{bad}`"
+            );
+        }
+        for good in ["1", "2", "65535"] {
+            assert!(
+                Game::from_usi_position(&format!("sfen {board} {good}")).is_ok(),
+                "rejected move number `{good}`"
+            );
+        }
+        // Still optional.
+        assert!(Game::from_usi_position(&format!("sfen {board}")).is_ok());
     }
 
     #[test]

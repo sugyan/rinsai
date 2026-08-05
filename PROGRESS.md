@@ -26,6 +26,28 @@ E0 is split into seven sub-steps, one per pull request.
   declared finished with this outstanding. `git grep 'TODO(shunsai-0.1-release)'`
   finds all four places that change together.
 
+## Input the engine must survive
+
+Everything below reached the engine from stdin and is now rejected or absorbed,
+each with a regression test. They are listed because the next protocol surface —
+the CSA client at E2 — has to survive the same shapes.
+
+- **A hand count no shogi set contains** (`position sfen … b 19P 1`). It parses:
+  `shogi_usi_parser` accepts a two-digit count and `Hand::added` has no cap.
+  shunsai then indexes a `[u64; 19]` Zobrist table by held count and the
+  nineteenth piece is an out-of-bounds panic **on the protocol thread**, so one
+  line from a GUI or a server ended the process. `Game::from_partial` now bounds
+  the total per kind, which also closes the indirect route (18 pawns in hand plus
+  one on the board, then capture it).
+- **A non-UTF-8 byte** (a CP932 path from a Japanese Windows GUI — and E3 is
+  going to ask for an `EvalFile` path). `BufRead::lines` reports it as
+  `InvalidData`, which the loop could not tell from a real I/O error, so the
+  engine exited silently with status 0. Lines are now read as bytes and
+  converted lossily, with a diagnostic.
+- **An out-of-range SFEN move number.** `PartialPosition::from_usi` saturates and
+  discards — `0` becomes 1, 65536+ becomes 65535 — while rejecting a
+  *non-numeric* field. Now validated in `split_root` instead.
+
 ## What step 1 delivered
 
 `rinsai` starts, holds a USI conversation, and plays legal games. Verified
@@ -226,10 +248,21 @@ never go red. Recorded so it is not re-opened.
 
 ### A `quit` watchdog — not yet
 
-Nothing can hang on `quit` at step 1: the placeholder always returns promptly.
-When a real search lands (step 2), `shutdown` should gain a **bounded** wait
-rather than a `process::exit` watchdog — an unconditional exit would make a
-hung in-process conformance test *pass*.
+`shutdown` now raises `stop` before joining, so a search that respects the flag
+cannot hang it, and a search that *panics* is caught and answered. What is still
+unbounded is a step-2 search that ignores `stop` — an infinite loop with no poll.
+When a real search lands, `shutdown` should gain a **bounded** wait rather than a
+`process::exit` watchdog: an unconditional exit would make a hung in-process
+conformance test *pass*.
+
+### What a caught panic leaves behind
+
+The worker catches a panic from `Searcher::search` and answers `resign`, which
+keeps the engine playing rather than silently dead. The residual risk is named
+rather than solved: a searcher that panicked may have left its own state
+inconsistent — from step 3 that is a transposition table. `usinewgame` clears it,
+and one bad game beats a dead engine, but if step 3 finds a way for a corrupt TT
+to survive into the next game, this is the place to revisit.
 
 ## Where the sparring opposition is
 

@@ -227,6 +227,51 @@ mod tests {
         );
     }
 
+    /// `split_once_token` mixes `split_whitespace` with `haystack[offset..]
+    /// .find(word)`, which *looks* as though it could match a substring before
+    /// the real word boundary, and slices by byte offset, which looks as though
+    /// it could split a multibyte character. It does neither — `offset` is
+    /// always just past the previous word, so everything between it and the
+    /// next word is whitespace — but "looks wrong and is fine" is worth pinning
+    /// rather than re-deriving. Compared against an obviously-correct reference
+    /// over every string of length 0..=4 in a whitespace-heavy alphabet.
+    #[test]
+    fn split_once_token_agrees_with_a_reference_implementation() {
+        fn reference<'a>(haystack: &'a str, token: &str) -> Option<(&'a str, &'a str)> {
+            let mut cursor = 0;
+            for word in haystack.split_whitespace() {
+                let start = cursor + haystack[cursor..].find(word).expect("the word is present");
+                if word == token {
+                    return Some((&haystack[..start], &haystack[start + word.len()..]));
+                }
+                cursor = start + word.len();
+            }
+            None
+        }
+
+        let alphabet = ['v', 'a', 'l', 'u', 'e', ' ', '\t', 'あ'];
+        let mut checked = 0usize;
+        let mut stack = vec![String::new()];
+        while let Some(s) = stack.pop() {
+            for token in ["value", "a", "val", "あ"] {
+                assert_eq!(
+                    split_once_token(&s, token),
+                    reference(&s, token),
+                    "disagreed on {s:?} / {token:?}"
+                );
+                checked += 1;
+            }
+            if s.chars().count() < 4 {
+                for c in alphabet {
+                    let mut next = s.clone();
+                    next.push(c);
+                    stack.push(next);
+                }
+            }
+        }
+        assert!(checked > 10_000, "only {checked} cases");
+    }
+
     #[test]
     fn go_mate_is_its_own_command() {
         assert_eq!(parse_line("go mate 1000"), Some(GuiCommand::GoMate));
