@@ -32,6 +32,7 @@ mod options;
 
 use std::io::{BufRead, Write};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rinsai_search::{Game, SearchDriver, SearchJob, SearchSignals, Searcher};
 
@@ -55,14 +56,25 @@ where
     let out = Output::new(output);
     let sink = Arc::new(out.clone());
     let emitter = out.clone();
-    let driver = SearchDriver::spawn(searcher, sink, move |best| emitter.bestmove(best));
+
+    // The protocol thread cannot see the worker finish, so the worker tells it:
+    // the counter goes up before a job is submitted and down once its answer is
+    // written. Anything else — a plain `searching` flag cleared only by `stop` —
+    // leaves the engine convinced a finished search is still running, and every
+    // subsequent `go` then reads as a protocol violation.
+    let outstanding = Arc::new(AtomicUsize::new(0));
+    let finished = Arc::clone(&outstanding);
+    let driver = SearchDriver::spawn(searcher, sink, move |best| {
+        emitter.bestmove(best);
+        finished.fetch_sub(1, Ordering::AcqRel);
+    });
 
     let mut engine = Engine {
         out,
         driver,
         game: Game::from_startpos(),
         options: Options::default(),
-        searching: false,
+        outstanding,
         pondering: false,
         next_id: 0,
         current: None,
@@ -100,7 +112,11 @@ struct Engine<W: Write + Send + 'static> {
     /// there is no lock on the board anywhere in this program.
     game: Game,
     options: Options,
-    searching: bool,
+    /// Searches submitted but not yet answered. Raised here, lowered by the
+    /// worker — the only thing that tells the protocol thread a search ended on
+    /// its own rather than by `stop`.
+    outstanding: Arc<AtomicUsize>,
+    /// Whether the outstanding search was asked for with `ponder`.
     pondering: bool,
     next_id: u64,
     /// The signals of the search currently running. A *fresh* set is made per
@@ -176,13 +192,18 @@ impl<W: Write + Send + 'static> Engine<W> {
                 self.out.info_string(&message);
             }
         }
-        if self.searching {
+        if self.searching() {
             warn("`position` arrived while a search was running");
         }
     }
 
+    /// Whether a search has been submitted and not yet answered.
+    fn searching(&self) -> bool {
+        self.outstanding.load(Ordering::Acquire) > 0
+    }
+
     fn go(&mut self, limits: rinsai_search::Limits) {
-        if self.searching {
+        if self.searching() {
             // A protocol violation. Answer it rather than dropping it: the
             // worker is a single FIFO, so both searches answer, in order.
             let message = "warning: `go` received while a search was running";
@@ -192,9 +213,10 @@ impl<W: Write + Send + 'static> Engine<W> {
         }
         let signals = Arc::new(SearchSignals::new());
         self.current = Some(Arc::clone(&signals));
-        self.searching = true;
         self.pondering = limits.ponder;
         self.next_id += 1;
+        // Raised *before* the submit, so the worker can never lower it first.
+        self.outstanding.fetch_add(1, Ordering::AcqRel);
         self.driver.submit(SearchJob {
             id: self.next_id,
             game: self.game.clone(),
@@ -204,10 +226,11 @@ impl<W: Write + Send + 'static> Engine<W> {
     }
 
     fn stop(&mut self) {
-        match self.current.take() {
+        // Note the counter is *not* lowered here: a stopped search is still
+        // running until it answers, and it is its answer that lowers it.
+        match self.current.take().filter(|_| self.searching()) {
             Some(signals) => {
                 signals.stop();
-                self.searching = false;
                 self.pondering = false;
             }
             // Silently, and deliberately: a `bestmove` nobody asked for
@@ -217,7 +240,7 @@ impl<W: Write + Send + 'static> Engine<W> {
     }
 
     fn ponderhit(&mut self) {
-        match (self.pondering, self.current.as_ref()) {
+        match (self.pondering && self.searching(), self.current.as_ref()) {
             (true, Some(signals)) => {
                 signals.ponderhit();
                 self.pondering = false;
@@ -227,7 +250,7 @@ impl<W: Write + Send + 'static> Engine<W> {
     }
 
     fn game_over(&mut self) {
-        if self.searching {
+        if self.searching() {
             // The worker still emits that search's `bestmove`; every GUI
             // discards it. An unconditional "one bestmove per go" is worth more
             // than a tidy transcript.
