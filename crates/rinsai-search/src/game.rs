@@ -5,12 +5,18 @@
 //! SFEN. Both gaps land here, and both land at *game* level rather than inside
 //! the search:
 //!
-//! * `shogi_core` has no unmake, so keeping a [`PartialPosition`] in lockstep
-//!   inside a search would mean saving and restoring ~368 bytes per node. At
-//!   game level it is one `make_move` per move actually played — a few hundred
-//!   per game, against a search doing millions of nodes.
+//! * `shogi_core` has no unmake, so keeping its board in lockstep *inside* a
+//!   search would mean saving and restoring ~368 bytes per node. At game level
+//!   it is one `make_move` per move actually played — a few hundred per game,
+//!   against a search doing millions of nodes.
 //! * 千日手 is a rule about a *game*, not a position, so the type that owns the
 //!   history is the one named for it.
+//!
+//! The record half is **`shogi_core::Position`**, imported here as [`Record`].
+//! It is exactly `{ initial, inner, moves }` with a `make_move` that advances
+//! the board and pushes the move, which is precisely the bookkeeping a game
+//! needs — so it is delegated to rather than reimplemented. What is *not* used
+//! is its `from_usi`: see [`Game::from_usi_position`].
 
 use core::fmt;
 
@@ -19,6 +25,15 @@ use shogi_usi_parser::FromUsi;
 use shunsai::Position;
 
 use crate::moves::is_legal;
+
+/// `shogi_core::Position` — the *record* of a game (root position, current
+/// position, moves played), as distinct from [`Position`], which throughout
+/// rinsai means `shunsai::Position`, the board a search actually walks.
+///
+/// Aliased rather than imported under its own name because three types called
+/// `Position` in one file would be unreadable, and because the alias says which
+/// of the two jobs this one does.
+type Record = shogi_core::Position;
 
 /// What repetition detection needs to know about a position that has occurred.
 ///
@@ -93,20 +108,18 @@ impl std::error::Error for IllegalMove {}
 /// reach.
 pub struct Game {
     /// The search-facing board, and the source of truth for anything the search
-    /// asks.
-    position: Position,
-    /// Advanced in lockstep with `position`, solely so the game can emit SFEN
-    /// and hand a fresh root to a search thread.
-    partial: PartialPosition,
-    /// The position `moves` were played from. Kept because it and `moves` *are*
-    /// the `position` command's own semantics, and because step 4 needs to know
-    /// where the recorded history begins — the plies before a mid-game `sfen`
-    /// root are unknowable, and this is what says so.
-    initial: PartialPosition,
-    /// Every move played from `initial`, in order.
-    moves: Vec<Move>,
+    /// asks: shunsai is the only one of the two with unmake and an incremental
+    /// Zobrist key.
+    board: Position,
+    /// The record, advanced in lockstep with `board`. It is what lets the game
+    /// emit SFEN — shunsai deliberately cannot — and hand a fresh root to a
+    /// search thread. It also *is* the `position` command's own semantics: the
+    /// root plus the moves played, which step 4 needs, because the plies before
+    /// a mid-game `sfen` root are unknowable and `initial_position()` is what
+    /// says so.
+    record: Record,
     /// One entry per position *reached*, including the root, so
-    /// `history.len() == moves.len() + 1`.
+    /// `history.len() == moves().len() + 1`.
     history: Vec<HistoryEntry>,
 }
 
@@ -120,13 +133,11 @@ impl Game {
     /// A game rooted at `partial`, no moves played.
     #[must_use]
     pub fn from_partial(partial: PartialPosition) -> Self {
-        let position = Position::new(partial.clone());
-        let root = HistoryEntry::of(&position);
+        let board = Position::new(partial.clone());
+        let root = HistoryEntry::of(&board);
         Self {
-            position,
-            initial: partial.clone(),
-            partial,
-            moves: Vec::new(),
+            board,
+            record: Record::arbitrary_position(partial),
             history: vec![root],
         }
     }
@@ -180,7 +191,7 @@ impl Game {
         // (`src/mv.rs:5-7`). The colour has to come from the side to move.
         let mv = match parsed {
             Move::Drop { piece, to } => Move::Drop {
-                piece: Piece::new(piece.piece_kind(), self.position.side_to_move()),
+                piece: Piece::new(piece.piece_kind(), self.board.side_to_move()),
                 to,
             },
             normal => normal,
@@ -197,19 +208,18 @@ impl Game {
     /// This check is what keeps [`Position::do_move`]'s documented `expect`s
     /// unreachable from anything a GUI or a server can send.
     pub fn push_move(&mut self, mv: Move) -> Result<(), IllegalMove> {
-        if !is_legal(&self.position, mv) {
+        if !is_legal(&self.board, mv) {
             return Err(IllegalMove(mv));
         }
-        self.position.do_move(mv);
-        // A move shunsai just called legal cannot fail `make_move`'s structural
-        // checks, so a `None` here means the two boards have drifted apart.
-        let applied = self.partial.make_move(mv);
+        self.board.do_move(mv);
+        // A move shunsai has just called legal cannot fail `make_move`'s
+        // structural checks, so a `None` here means the two have drifted apart.
+        let applied = self.record.make_move(mv);
         debug_assert!(
             applied.is_some(),
-            "the lockstep PartialPosition rejected a legal move: {mv:?}"
+            "the lockstep record rejected a legal move: {mv:?}"
         );
-        self.moves.push(mv);
-        self.history.push(HistoryEntry::of(&self.position));
+        self.history.push(HistoryEntry::of(&self.board));
         Ok(())
     }
 
@@ -218,27 +228,27 @@ impl Game {
     /// the position balanced" is not an invariant anyone here can violate.
     #[must_use]
     pub fn position(&self) -> &Position {
-        &self.position
+        &self.board
     }
 
     /// The current position in SFEN, without the `sfen` keyword.
     ///
-    /// `O(1)` — this is what the lockstep [`PartialPosition`] buys.
+    /// `O(1)` — this is what keeping the record in lockstep buys.
     #[must_use]
     pub fn sfen(&self) -> String {
-        self.partial.to_sfen_owned()
+        self.record.to_sfen_owned()
     }
 
     /// The root position in SFEN, without the `sfen` keyword.
     #[must_use]
     pub fn initial_sfen(&self) -> String {
-        self.initial.to_sfen_owned()
+        self.record.initial_position().to_sfen_owned()
     }
 
     /// Every move played from the root, in order.
     #[must_use]
     pub fn moves(&self) -> &[Move] {
-        &self.moves
+        self.record.moves()
     }
 
     /// One entry per position reached, root first; `history().len()` is always
@@ -251,51 +261,48 @@ impl Game {
     /// The side to move.
     #[must_use]
     pub fn side_to_move(&self) -> Color {
-        self.position.side_to_move()
+        self.board.side_to_move()
     }
 
     /// Whether the side to move is in check.
     #[must_use]
     pub fn in_check(&self) -> bool {
-        self.position.in_check()
+        self.board.in_check()
     }
 }
 
 impl HistoryEntry {
-    fn of(position: &Position) -> Self {
+    fn of(board: &Position) -> Self {
         Self {
-            key: position.key(),
-            hands: [position.hand(Color::Black), position.hand(Color::White)],
-            in_check: position.in_check(),
+            key: board.key(),
+            hands: [board.hand(Color::Black), board.hand(Color::White)],
+            in_check: board.in_check(),
         }
     }
 }
 
-/// Rebuilds the board from the lockstep [`PartialPosition`] rather than copying
-/// it.
+/// Rebuilds the board from the record rather than copying it.
 ///
-/// [`Position::clone`] would deep-copy the internal undo stack — the whole
-/// game's worth. Rebuilding is cheaper, and it buys two things a copy would
-/// not: the search starts with an *empty* undo stack, so a search that undoes
-/// past its own root trips `undo_move`'s `expect` loudly instead of silently
-/// corrupting the game position; and the from-scratch key is compared against
-/// the incrementally maintained one, which is what makes the lockstep board a
-/// checked property rather than a hope. This is also E2's Lazy SMP shape: each
-/// helper thread takes its own copy from the same source.
+/// [`Position::clone`] would deep-copy shunsai's internal undo stack — the
+/// whole game's worth. Rebuilding is cheaper, and it buys two things a copy
+/// would not: the search starts with an *empty* undo stack, so a search that
+/// unwinds past its own root trips `undo_move`'s `expect` loudly instead of
+/// silently corrupting the game position; and the from-scratch key is compared
+/// against the incrementally maintained one, which is what makes the lockstep
+/// record a checked property rather than a hope. This is also E2's Lazy SMP
+/// shape: each helper thread takes its own copy from the same source.
 impl Clone for Game {
     fn clone(&self) -> Self {
-        let position = Position::new(self.partial.clone());
+        let board = Position::new(self.record.inner().clone());
         debug_assert_eq!(
-            position.key(),
-            self.position.key(),
-            "the lockstep PartialPosition and the incremental Zobrist key disagree"
+            board.key(),
+            self.board.key(),
+            "the lockstep record and the incremental Zobrist key disagree"
         );
-        debug_assert_eq!(position.ply(), self.position.ply());
+        debug_assert_eq!(board.ply(), self.board.ply());
         Self {
-            position,
-            partial: self.partial.clone(),
-            initial: self.initial.clone(),
-            moves: self.moves.clone(),
+            board,
+            record: self.record.clone(),
             history: self.history.clone(),
         }
     }
@@ -304,9 +311,9 @@ impl Clone for Game {
 impl fmt::Debug for Game {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Game {{ sfen {}", self.initial_sfen())?;
-        if !self.moves.is_empty() {
+        if !self.moves().is_empty() {
             f.write_str(" moves")?;
-            for mv in &self.moves {
+            for mv in self.moves() {
                 write!(f, " {}", mv.to_usi_owned())?;
             }
         }
@@ -514,9 +521,29 @@ mod tests {
         );
     }
 
-    /// Sabotage: delete the `partial.make_move` call in `push_move` and this
-    /// fires — the clone rebuilds the board from the lockstep copy and compares
-    /// its from-scratch key against the incrementally maintained one.
+    /// The record's *root* must not move while its current position does —
+    /// that is the half `Game` delegates rather than reimplements, and step 4
+    /// needs it to know where the recorded history begins, since the plies
+    /// before a mid-game `sfen` root are unknowable.
+    #[test]
+    fn the_record_keeps_its_root_while_the_board_advances() {
+        let mut game = Game::from_usi_position("startpos").expect("startpos parses");
+        let root = game.sfen();
+        assert_eq!(game.initial_sfen(), root);
+
+        for token in ["7g7f", "3c3d", "8h2b+", "3a2b", "B*5e"] {
+            game.push_usi_move(token)
+                .unwrap_or_else(|e| panic!("{token}: {e}"));
+        }
+        assert_eq!(game.initial_sfen(), root, "the root moved");
+        assert_ne!(game.sfen(), root);
+        assert_eq!(game.moves().len(), 5);
+        assert_eq!(game.history().len(), 6);
+    }
+
+    /// Sabotage: delete the `record.make_move` call in `push_move` and this
+    /// fires — the clone rebuilds the board from the record and compares its
+    /// from-scratch key against the incrementally maintained one.
     #[test]
     fn cloning_cross_checks_the_lockstep_board() {
         // The bishop trade leaves one in each hand, so the drop exercises the

@@ -68,8 +68,13 @@ depend on the convention below.
 Changing any of these needs a DESIGN.md §9 entry, because code already assumes
 them.
 
-- **A bare `Position` means `shunsai::Position`.** `shogi_core::Position` is
-  never imported — we replay moves ourselves, so it is never needed.
+- **A bare `Position` means `shunsai::Position`** — the board a search walks,
+  and the only one of the two with unmake and an incremental Zobrist key.
+  `shogi_core::Position` is a *record* (root, current position, moves played) and
+  `Game` delegates that half to it under the alias `Record`; it is never
+  imported unqualified. Its `from_usi` is not used at all, for the reason under
+  "Traps" below — **do not confuse "we cannot parse with it" with "we cannot
+  store in it"**, which is the mistake the first draft of `Game` made.
 - **Evaluation is negamax from the side to move.** Positive is good for whoever
   is to move; a parent takes `-child`. At the root the side to move is the
   engine, so USI's `score cp` needs no flip.

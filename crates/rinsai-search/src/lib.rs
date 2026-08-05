@@ -7,8 +7,12 @@
 //!
 //! # Conventions
 //!
-//! * A bare `Position` always means [`shunsai::Position`]. `shogi_core::Position`
-//!   is never imported — we replay moves ourselves, so we never need it.
+//! * A bare `Position` always means [`shunsai::Position`] — the board a search
+//!   walks, and the only one of the two with unmake and an incremental Zobrist
+//!   key. `shogi_core::Position` is a *record* (root, current position, moves
+//!   played); [`Game`] delegates that half to it under the alias `Record`, and
+//!   it is never imported unqualified. Its `from_usi` is not used at all — see
+//!   [`Game::from_usi_position`].
 //! * Evaluation is **negamax, from the side to move**: a positive [`Score`] is
 //!   good for whoever is to move at that node, and a parent takes `-child`.
 //! * Scores are **centipawns**, pawn = 100.
