@@ -310,6 +310,14 @@ impl HistoryEntry {
 /// against the incrementally maintained one, which is what makes the lockstep
 /// record a checked property rather than a hope. This is also E2's Lazy SMP
 /// shape: each helper thread takes its own copy from the same source.
+///
+/// **The cross-check is `debug_assert`, so it runs in tests and in a debug
+/// build and is compiled out of the release binary that actually plays.** That
+/// is the right trade — it is on the path of every `go`, and a release build
+/// has no business paying for it — but it means the guarantee is "the test
+/// suite would have caught a drift", not "a live game will". Making it
+/// unconditional is a decision for step 3, where the transposition table gives
+/// a key mismatch somewhere far worse to go.
 impl Clone for Game {
     fn clone(&self) -> Self {
         let board = Position::new(self.record.inner().clone());
@@ -342,7 +350,11 @@ impl fmt::Debug for Game {
 
 /// How many of each kind a shogi set contains, promoted pieces counting as the
 /// kind they were promoted from.
-const PIECE_TOTALS: [(PieceKind, u8); 8] = [
+///
+/// The king is **not** here: it is the one kind whose bound is per colour rather
+/// than per set, and [`check_piece_counts`] handles it separately. A total of
+/// two admits two black kings and no white one, which no set can produce.
+const PIECE_TOTALS: [(PieceKind, u8); 7] = [
     (PieceKind::Pawn, 18),
     (PieceKind::Lance, 4),
     (PieceKind::Knight, 4),
@@ -350,7 +362,6 @@ const PIECE_TOTALS: [(PieceKind, u8); 8] = [
     (PieceKind::Gold, 4),
     (PieceKind::Bishop, 2),
     (PieceKind::Rook, 2),
-    (PieceKind::King, 2),
 ];
 
 /// Rejects a root that could not come from a real shogi set.
@@ -361,13 +372,26 @@ const PIECE_TOTALS: [(PieceKind, u8); 8] = [
 /// is nineteen pawns, and capturing that pawn is what tips shunsai's hand
 /// counter over. Bounding the *total* per kind at the root closes both, because
 /// no legal move can create a piece.
+///
+/// The king is bounded **per colour**, and at *most* one rather than exactly
+/// one. Per colour because a king is never captured and never enters a hand, so
+/// unlike every other kind it cannot change sides — a per-set total of two would
+/// admit two black kings and no white one. At most rather than exactly because a
+/// 詰将棋 diagram routinely omits the attacking king, and a GUI sending one for
+/// analysis is asking an ordinary question; rejecting it would be a regression
+/// for no safety gained. shunsai's `king_square` returns `Option` and documents
+/// `None` as legal, so the king-less case is one it already handles.
 fn check_piece_counts(partial: &PartialPosition) -> Result<(), PositionError> {
     let mut seen = [0u16; PieceKind::NUM];
+    let mut kings = [0u16; 2];
     for square in Square::all() {
         if let Some(piece) = partial.piece_at(square) {
             let kind = piece.piece_kind();
             let base = kind.unpromote().unwrap_or(kind);
             seen[base.array_index()] += 1;
+            if base == PieceKind::King {
+                kings[piece.color().array_index()] += 1;
+            }
         }
     }
     for color in Color::all() {
@@ -381,6 +405,14 @@ fn check_piece_counts(partial: &PartialPosition) -> Result<(), PositionError> {
         if count > u16::from(total) {
             return Err(PositionError::BadRoot {
                 detail: format!("{count} {kind:?} on the board and in hand, but a set has {total}"),
+            });
+        }
+    }
+    for color in Color::all() {
+        let count = kings[color.array_index()];
+        if count > 1 {
+            return Err(PositionError::BadRoot {
+                detail: format!("{count} {color:?} kings, but a set has one each"),
             });
         }
     }
@@ -570,13 +602,15 @@ mod tests {
             // The indirect route: 18 in hand plus one on the board is 19, and
             // capturing it is what used to tip shunsai's counter over.
             "sfen 4k4/9/9/9/4p4/9/9/9/4K4 b 18P 1",
-            // Promoted pieces count as what they were.
-            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 17P 1 moves",
-        ]
-        .iter()
-        .take(5)
-        .chain(std::iter::once(&"sfen 3kg4/9/9/9/9/9/9/9/3KG4 b 4G 1"))
-        {
+            // Promoted pieces count as what they were: a +P on the board plus
+            // 18 in hand is nineteen pawns. Sabotage: drop the `unpromote()`
+            // in `check_piece_counts` and this line alone is *accepted* — so
+            // the assertion below fires — because `ProPawn` is not a key in
+            // `PIECE_TOTALS` and the pawn on the board stops being counted.
+            "sfen 4k4/9/9/9/4+P4/9/9/9/4K4 b 18P 1",
+            // Golds, to show the bound is per kind and not only about pawns.
+            "sfen 3kg4/9/9/9/9/9/9/9/3KG4 b 4G 1",
+        ] {
             assert!(
                 matches!(
                     Game::from_usi_position(sfen),
@@ -598,6 +632,46 @@ mod tests {
             assert!(
                 Game::from_usi_position(sfen).is_ok(),
                 "rejected a reachable position: {sfen}"
+            );
+        }
+    }
+
+    /// The king is the one kind that cannot change sides, so its bound is per
+    /// colour. A per-*set* total of two admits the first case below.
+    ///
+    /// Sabotage: put `(PieceKind::King, 2)` back into `PIECE_TOTALS` and drop
+    /// the per-colour loop, and both of these are accepted.
+    #[test]
+    fn two_kings_of_one_colour_are_rejected() {
+        for sfen in [
+            "sfen 4k4/9/9/9/9/9/9/9/3KK4 b - 1",
+            "sfen 3kk4/9/9/9/9/9/9/9/4K4 b - 1",
+        ] {
+            assert!(
+                matches!(
+                    Game::from_usi_position(sfen),
+                    Err(PositionError::BadRoot { .. })
+                ),
+                "accepted two kings of one colour: {sfen}"
+            );
+        }
+    }
+
+    /// …but *at most* one, not exactly one. A 詰将棋 diagram routinely omits the
+    /// attacking king, and a GUI sending one for analysis is asking an ordinary
+    /// question. shunsai's `king_square` returns `Option` and documents `None`
+    /// as legal, so nothing downstream needs the king to be there.
+    #[test]
+    fn a_position_with_no_king_for_one_side_is_accepted() {
+        for sfen in [
+            // The shape a tsume diagram arrives in: no black king at all.
+            "sfen 4k4/9/4P4/9/9/9/9/9/9 b G2r2b3g4s4n4l17p 1",
+            // And the empty board, which is what `9/9/…` degenerates to.
+            "sfen 9/9/9/9/9/9/9/9/9 b - 1",
+        ] {
+            assert!(
+                Game::from_usi_position(sfen).is_ok(),
+                "rejected a king-less position: {sfen}"
             );
         }
     }
