@@ -12,8 +12,8 @@ E0 is split into seven sub-steps, one per pull request.
 | # | Step | Status |
 |---|---|---|
 | 1 | Skeleton + USI shell — workspace, CI, shunsai wiring, protocol loop, `bestmove` = a legal move | **done** |
-| 2 | Material evaluation + iterative-deepening negamax αβ — PV, `info` output, mate scoring | next |
-| 3 | TT + quiescence search — `rinsai bench`, fixed-depth node-count regression | |
+| 2 | Material evaluation + iterative-deepening negamax αβ — PV, `info` output, mate scoring | **done** |
+| 3 | TT + quiescence search — `rinsai bench`, fixed-depth node-count regression | next |
 | 4 | Repetition (千日手) + 連続王手 — history *queries*, mate-in-1..5 suite | |
 | 5 | Time management — byoyomi / Fischer / movetime, `stop` responsiveness | |
 | 6 | `openings-v1` extractor — floodgate CSA → balanced opening SFENs (`crates/xtask` arrives here) | |
@@ -72,7 +72,8 @@ diagnostics. It is extremely weak on purpose — there is no search.
 
 - `crates/rinsai-search` — `Game` (board + lockstep SFEN + history), `is_legal`,
   `Score`/`Depth`, the `Searcher` seam (`SearchJob`, `Limits`, `SearchSignals`,
-  `BestMove`, `InfoSink`, `SearchDriver`), and `PlaceholderSearcher`.
+  `BestMove`, `InfoSink`, `SearchDriver`), and `PlaceholderSearcher` (deleted at
+  step 2, as planned).
 - `crates/rinsai` — the USI protocol loop, its state machine, the option table
   and the single output sink.
 - CI: fmt, clippy `-D warnings`, tests, `cargo doc` with `-D warnings` (the doc
@@ -85,26 +86,68 @@ diagnostics. It is extremely weak on purpose — there is no search.
 no search, no move buffer, no transposition table, no repetition *queries* (the
 history is recorded, nothing reads it), no time management, no `bench`.
 
-## Step 2 — the first three things to do
+## What step 2 delivered
 
-1. **Material evaluation** behind `Score`, in centipawns. The sign convention is
-   already fixed: negamax, positive = good for the side to move. Keep a naive
-   from-scratch evaluator as a permanent oracle (shunsai's habit) even after an
-   incremental one arrives.
-2. **A move buffer.** Step 1 has none, because until recursion exists there is
-   no caller. The analysis is below — do not re-derive it, and do not adopt
-   `ArrayVec` without re-reading it.
-3. **Iterative-deepening negamax** implementing `Searcher`, replacing
-   `PlaceholderSearcher` (delete `placeholder.rs`). Fill `SearchInfo`-style
-   `info` lines through the existing `InfoSink`. **The only lines in
-   `crates/rinsai` that should need to change are the two that name the
-   searcher** — `main.rs` and `dialogue` in `tests/usi_conformance.rs`. Anything
-   else changing means step 1 got the seam wrong, and that is worth recording.
-   (An earlier draft said "nothing in `crates/rinsai`", which cannot be true:
-   deleting `placeholder.rs` necessarily touches both of those call sites.)
+`rinsai` searches. Iterative-deepening negamax with alpha-beta, material
+evaluation, a principal variation, `info` lines and mate scoring;
+`PlaceholderSearcher` is gone.
 
-Then: `cargo run --release -- bench` is step 3, and the node counts it freezes
-depend on the convention below.
+- `crates/rinsai-search/src/eval.rs` — the value tables and `evaluate`, plus a
+  `#[cfg(test)]` square-scan oracle it is differentially tested against.
+- `crates/rinsai-search/src/negamax.rs` — `NegamaxSearcher`, `Window`, `Budget`,
+  the deepening loop, the root and the interior node.
+- `crates/rinsai-search/src/info.rs` — `SearchInfo` and its USI `Display`,
+  testable without running a search.
+- `crates/rinsai-search/src/moves.rs` — `MoveBuf`, the shape decided in step 1.
+- `Game::search_board()` — the board a searcher does its do/undo on.
+
+**The step-1 seam held.** `Searcher::search` takes `&SearchJob`, `Game` hands
+out no `&mut Position`, and neither had to change: the searcher asks `Game` for
+a board of its own. The only lines in `crates/rinsai` that changed are the two
+that *name* the searcher, exactly as step 1 predicted. Every pre-existing
+conformance and process test passed unmodified.
+
+Measured, release build, this machine. Not a strength claim — E0 has no
+instrument for that (see below) — just what the thing does:
+
+| Position | Depth | Nodes | Time |
+|---|---|---|---|
+| initial | 6 | 585 568 | 23 ms |
+| drop-heavy middlegame | 4 | 838 976 | 62 ms |
+| drop-heavy middlegame | 5 | 13 888 371 | 465 ms |
+
+**Expect the scores to alternate by depth parity, and do not go looking for the
+bug.** From the initial position, odd depths report +215 and even depths 0: 215
+is a pawn's board value plus a pawn's hand value, i.e. a capture the search sees
+but not the recapture. That is the horizon effect, it is what DESIGN.md means by
+"material evaluation without qsearch fails", and step 3 is the answer.
+
+And it holds a whole game: 70 plies against the local material-only YaneuraOu
+(`NodesLimit 10000` against `go byoyomi 200`), ending in rinsai being mated and
+answering `resign`. No illegal move, no protocol stall, nothing on stderr. Step
+1's game ended at 22 plies, and **the comparison means nothing** — different
+time controls, one game each, and E0 has no instrument for strength. It is
+recorded as "it plays", which is all it is.
+
+## Step 3 — what to do next
+
+TT + quiescence search + `bench`. Two things to carry in from step 2:
+
+1. **The transposition move must be tried first, in the same PR as the table.**
+   DESIGN.md's E1 list puts "TT move ordering" at item 1 of a *later* phase,
+   which would leave steps 3–7 — the whole SPRT harness bring-up — running on a
+   search with no ordering at all, and a table whose move nobody tries is half a
+   table. MVV-LVA, killers and history stay at E1: those are interior-node
+   heuristics that each want their own SPRT.
+2. **`bench` freezes node counts, so the counting convention below is now
+   load-bearing.** Note that step 2's counts will change wholesale when
+   quiescence lands; freeze after, not before.
+
+Also waiting at step 3: `seldepth` and `hashfull` in the `info` line (both are
+meaningless until there is a qsearch and a table), a `Stack` struct for per-ply
+state (step 2 has only the principal variation there, so a one-field struct
+would have been premature), and whether `Game::clone`'s Zobrist cross-check
+should stop being a `debug_assert`.
 
 ## Conventions frozen in step 1
 
@@ -153,6 +196,73 @@ them.
   a position the test builds itself. (An earlier draft of this file cited
   "shunsai DESIGN.md:64" for an explicit non-guarantee; **no such statement
   exists** — the citation was carried over from a survey and never checked.)
+
+## Conventions frozen in step 2
+
+- **Piece values are a starting point for SPSA at E4, not a measurement.** The
+  ordering comes from the rules of shogi — empty-board destination counts,
+  slider or stepper, colour-bound or not, promotion potential — the magnitudes
+  are interpolated on that ordering, and everything is rounded to a multiple of
+  five so that nobody reads them as fitted. Pawn = 100 anchors it. Two
+  modelling choices worth naming: a **promoted minor is exactly a gold on the
+  board**, because it moves exactly as a gold and anything else would be a claim
+  about the position rather than the material; and **a piece in hand is worth
+  10–15% more than the same piece on the board**, most for the kinds whose board
+  placement is most constrained. "と金は金以上" then falls out on its own —
+  taking a と gains 600 + 115, taking a gold gains 600 + 660. The one known
+  simplification: 成銀 is genuinely worse than 銀 sometimes (a silver retreats
+  diagonally, a promoted one does not) and this model says it is always 50
+  better. Left unmodelled deliberately; E3 replaces the whole table anyway.
+
+- **`movetime` and `byoyomi` are honoured; `btime`/`wtime`/`binc`/`winc` are
+  ignored.** The line is *a budget the engine was told* versus *a budget it
+  would have to decide*. `movetime n` means "spend n ms" and has no judgement in
+  it; turning a remaining clock into a per-move allowance — with the fail-low
+  extension, the early cut-off and the delay margin that go with it — is step
+  5's whole subject and is not approximated. `byoyomi 0` means "this time
+  control has no byoyomi", not a zero-millisecond budget.
+
+- **`DEFAULT_DEPTH = 4`, and it must stay even.** It answers "no budget of any
+  kind was named" and only that — applying it as a ceiling over a stated budget
+  as well was a real bug in this step, caught by driving the release binary
+  rather than by any test, and `the_depth_ceiling_follows_the_budget_that_was_named`
+  now pins it. Even because the root is the engine's own move, so an odd depth
+  ends the line on a capture of ours nobody answers; even ends after the reply,
+  which is the safe side while there is no quiescence search.
+
+- **The poll interval is 1024 nodes**, checked at the top of the interior node
+  and once per deepening iteration — *not* per root move, which would break the
+  guarantee below. Measured rather than assumed: a release build runs at roughly
+  20–30 M nodes/s at this step, because most nodes are depth-zero leaves that
+  only evaluate, so 1024 nodes is about 40 µs. Expect that to grow as nodes get
+  more expensive; step 5's SPRT is where the number stops being inherited.
+
+- **Depth 1 always completes.** The poll only fires on a multiple of 1024 and a
+  depth-1 iteration is `1 + N ≤ 594` nodes, so every `go` emits at least one
+  `info` line and returns a move the search actually chose rather than the seed.
+  This is what keeps `go movetime 1` honest instead of degenerate.
+
+- **Each iteration re-seeds the root list with its own answer.** Without it,
+  deepening is only repeated work: an iteration cut short reports the best of
+  whatever prefix of the root list it reached, which can be a *worse* move than
+  the last completed iteration chose — measured at 1 590 cp worse in the
+  middlegame fixture before the three lines existed. This is root-only and is
+  not the interior move ordering E1 is about.
+
+- **The `info` line carries `depth time nodes nps score pv`, and nothing else.**
+  `seldepth` would be a constant equal to `depth` until there is a quiescence
+  search; `hashfull` needs a table; `multipv` and `currmove` have no consumer.
+  A field that cannot be filled honestly is not printed.
+
+- **`MoveBuf::get` returns a `Move` by value, not a slice**, and that is what
+  makes the recursion compile: a slice would borrow the buffer across the
+  recursive `&mut self` call. **The root move list lives outside the buffer**,
+  because it persists across iterations and gets reordered, which is not what a
+  ply-threaded buffer is for.
+
+- **A surface with no caller stays if — and only if — its caller can be named.**
+  This replaces the rule the step-1 exception wrote for itself ("if step 2 does
+  not reach for it, delete it"). See the section below.
 
 ## The shunsai constraint sheet
 
@@ -242,49 +352,67 @@ Note that a git worktree under `.claude/worktrees/` is two levels deeper, so
 CLAUDE.md forbids building for a consumer that does not exist yet, and requires
 recording the condition instead. These are those records.
 
-### …and the one exception, stated so the rule stays honest
+### …and the one exception, and the rule that replaced its test
 
-`score.rs` is in the tree with no caller at all: nothing constructs a [`Score`]
-outside its own tests. By the rule above it should have waited for step 2, and
-the move buffer — which *did* wait — is the same shape of thing.
+`score.rs` went into step 1 with no caller at all. The exception was deliberate
+and narrow: **a type that exists to freeze a convention is not speculative
+building, because the convention is what the next step is about to depend on.**
+Negamax sign, centipawn scale, the mate band and `MAX_PLY` are decisions step 2
+would otherwise have made implicitly, and the cost of getting one wrong is a
+class of sign bug that SPRT reads as "that patch was bad". That half held: step
+2 uses every one of them.
 
-The exception is deliberate and narrow: **a type that exists to freeze a
-convention is not speculative building, because the convention is what the next
-step is about to depend on.** Negamax sign, centipawn scale, the mate band and
-`MAX_PLY` are decisions step 2 would otherwise make implicitly and by accident,
-and the cost of getting one wrong is a whole class of sign bug that SPRT reads
-as "that patch was bad". The move buffer has no such property — it is an
-allocation strategy, and choosing it without the first real caller means
-choosing it blind.
+The *test* step 1 wrote for itself did not. It said: if a step-1 type has API
+that no step-2 caller uses, it was built too early — so delete `clamp_to_eval`,
+`Score::NONE` and the four arithmetic impls at step 2. Step 2 uses none of the
+six. **The rule is now:**
 
-The test for whether this exception is being abused: if a step-1 type has an
-API surface that no step-2 caller ends up using, it was built too early.
-`clamp_to_eval`, `Score::NONE` and the arithmetic impls are the ones to look at
-at step 2 — if the search does not reach for them, delete them then.
+> A surface with no caller stays if — and only if — a *specific* caller can be
+> named, and the name goes in its doc comment. Otherwise it goes.
 
-### The move buffer — decide at step 2, with the first real caller
+"It'll probably be useful" is what produces the state this audit exists to
+prevent; a named caller is a record rather than a wish, and re-adding three
+lines later is not the expensive part. All six can be named — `Score::NONE` is
+step 3's empty transposition-table slot, the arithmetic is E1's aspiration
+widening and step 3's mate-score-by-ply adjustment, `clamp_to_eval` is E3's
+network scale conversion — so all six stay, each carrying its name.
 
-A **shared, ply-threaded `Vec<Move>`**, reserved once at
-`MAX_LEGAL_MOVES * MAX_PLY` (593 × 3 B × 128 ≈ **222 KiB per thread**, one
-allocation), sliced per ply: generation appends, the caller records the base and
-truncates back to it on the way out. This is shunsai's own `perft_materialize`
-shape (`examples/perft.rs:71`).
+`Score::NONE` additionally carries a warning, because it is an active trap: it
+compares as +32 002, above everything including `INFINITE`, so using it to seed
+a maximum means `if score > best` never fires and the search silently keeps its
+first candidate. `Option<Score>` is the right shape and the search uses it.
 
-Why not the alternatives:
+Rationale for the change is in DESIGN.md §9.
 
-- **`ArrayVec<Move, 593>` per ply on the stack** — same 1 779 B but *per node*.
-  `Move` has no `Default`, so an `unsafe`-free version needs a dummy fill: a
-  1 779-byte memset per node, which at 10 M nodes/s is ~17 GB/s of pure memset.
-  Avoiding it means `MaybeUninit`, and the workspace denies `unsafe_code`.
+### The move buffer — decided in step 1, built in step 2 as recorded
+
+Built as specified: a **shared, ply-threaded `Vec<Move>`** reserved once at
+`MAX_LEGAL_MOVES * MAX_PLY` elements, sliced per ply, generation appending and
+the caller truncating back. shunsai's own `perft_materialize` shape
+(`examples/perft.rs:71`). The rejected alternatives, still the reasons:
+
+- **`ArrayVec<Move, 593>` per ply on the stack** — same size but *per node*.
+  `Move` has no `Default`, so an `unsafe`-free version needs a dummy fill, and
+  avoiding that means `MaybeUninit`, which the workspace denies.
 - **`Vec<Move>` per ply** — one malloc/free per node.
-- **A ply-indexed array inside the search stack** — attractive, and it is where
-  E3's accumulator stack goes, but it makes the move list borrowed while
-  recursing on `&mut stack`. Keeping the buffer a separate `&mut` argument means
-  the two never alias.
+- **A ply-indexed array inside the search stack** — where E3's accumulator stack
+  goes, but it makes the move list borrowed while recursing on `&mut stack`.
+
+Two things the decision did not say, learned from building it. The buffer hands
+out **moves by value, never a slice** — a slice borrows the buffer across the
+recursive `&mut self` call and does not compile. And **forgetting to truncate is
+a leak, not a wrong answer**: every ply reads its base before generating, so no
+ply ever sees another's moves. `MoveBuf`'s own tests therefore cannot catch a
+missing truncate; `negamax::tests::the_move_buffer_comes_back_empty` is what
+does, and the sabotage was run to confirm it.
+
+The original note put the buffer at 593 × 3 B × 128 ≈ 222 KiB. `Move`'s layout
+is not something Rust guarantees, so the reservation and its test are both in
+**elements**.
 
 At E1 the element becomes scored — either a parallel score array indexed
-identically, or a `ScoredMove`. Having a domain type rather than `ArrayVec` is
-what makes that change local.
+identically, or a `ScoredMove`. `get` keeps its signature either way, so the
+search's loop does not change shape.
 
 ### `[patch.crates-io]` for an unpublished crate — checked, and rejected anyway
 
@@ -297,14 +425,48 @@ saying where shunsai comes from; and a patch would keep silently overriding the
 real crate once it is published, so the switch we are trying not to forget would
 never go red. Recorded so it is not re-opened.
 
-### A `quit` watchdog — not yet
+### A `quit` watchdog — still not yet, and now for a better reason
 
-`shutdown` now raises `stop` before joining, so a search that respects the flag
-cannot hang it, and a search that *panics* is caught and answered. What is still
-unbounded is a step-2 search that ignores `stop` — an infinite loop with no poll.
-When a real search lands, `shutdown` should gain a **bounded** wait rather than a
-`process::exit` watchdog: an unconditional exit would make a hung in-process
-conformance test *pass*.
+The step-1 note said the open risk was "a step-2 search that ignores `stop` — an
+infinite loop with no poll". Step 2's search polls, `an_infinite_search_stops_when_told`
+proves it, and removing the poll is one of the sabotage mutations that goes red.
+So the specific hazard is closed and a watchdog is still not needed. If one is
+ever added it should be a **bounded wait** in `shutdown` rather than a
+`process::exit`: an unconditional exit would make a hung in-process conformance
+test *pass*.
+
+### `quit` stops the search, and that shapes how the engine can be tested
+
+`usi::run` reads its input as fast as it arrives, so in `printf … | rinsai` the
+`quit` reaches `shutdown` microseconds after the `go` and the search returns
+whatever depth 1 gave it. That is correct — `quit` means quit — but it has two
+consequences worth writing down, because both were discovered the hard way:
+
+- **Every dialogue in `tests/usi_conformance.rs` is really answered from the
+  depth-1 iteration**, `go movetime 1` included. A conformance test cannot
+  exercise a search of a stated size. Anything that needs one belongs in
+  `rinsai-search`'s own tests or in `usi_process.rs` over real pipes.
+- **Driving the release binary by hand needs a reader that waits for
+  `bestmove`** before sending `quit`, the way a GUI does. A plain pipe measures
+  nothing.
+
+### `go ponder` starts its clock too early
+
+A `go ponder movetime n` starts its deadline when the search starts, not at
+`ponderhit`. Harmless at step 2 — the driver holds the answer back anyway and
+the search simply finishes early and waits — but wrong, and E2 is where ponder
+becomes real and this gets fixed.
+
+### There is no instrument for strength during E0, and that is structural
+
+CLAUDE.md calls the measurement loop the project's spine and DESIGN.md §8 says
+it starts at E0. In practice `bench` arrives at step 3, the opening set at step
+6 and the SPRT harness at step 7, so **steps 2 to 5 cannot be measured at all**.
+"One feature = one SPRT" is a rule about SPRT hygiene and it does not bite yet;
+what the E0 step boundaries actually buy is reviewable diffs and isolated risk.
+Worth stating plainly so that nobody reads E0's merges as measurement debt, and
+so that nobody reaches for an SPRT number that cannot exist. Games against
+`../benchmarks` during E0 are "it plays", never "it is stronger".
 
 ### Threads, not async — and no `tokio`
 

@@ -1,7 +1,7 @@
 use std::io;
 use std::process::ExitCode;
 
-use rinsai_search::PlaceholderSearcher;
+use rinsai_search::NegamaxSearcher;
 
 fn main() -> ExitCode {
     // `--version` is what packagers and match harnesses ask for. Anything else
@@ -25,14 +25,13 @@ fn main() -> ExitCode {
         }
     }
 
-    // E0 step 1 has no search. `PlaceholderSearcher` answers with a legal move
-    // and is deleted at step 2. The layering test is that the only lines in this
-    // crate that need to change then are the ones *naming* the searcher — this
-    // one, and `dialogue` in tests/usi_conformance.rs. Anything else changing
-    // means step 1 got the seam wrong, and that is worth recording.
+    // Step 1 shipped a placeholder here and predicted that swapping in a real
+    // search would change only the two lines that *name* the searcher — this
+    // one, and `dialogue` in tests/usi_conformance.rs. It held: step 2 deleted
+    // the placeholder and touched nothing else in this crate.
     // `stdout()` rather than `stdout().lock()`: the lock guard is not `Send`,
     // and the handle has to reach the search thread. `Output` serialises writes
     // itself, so the extra internal lock costs nothing at USI's line volume.
-    rinsai::usi::run(io::stdin().lock(), io::stdout(), PlaceholderSearcher);
+    rinsai::usi::run(io::stdin().lock(), io::stdout(), NegamaxSearcher::new());
     ExitCode::SUCCESS
 }

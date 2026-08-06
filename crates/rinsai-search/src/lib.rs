@@ -25,15 +25,17 @@
 pub use shogi_core;
 pub use shunsai;
 
+mod eval;
 mod game;
+mod info;
 mod moves;
-mod placeholder;
+mod negamax;
 mod score;
 mod search;
 
 pub use game::{Game, HistoryEntry, IllegalMove, PositionError};
 pub use moves::{MAX_LEGAL_MOVES, is_legal};
-pub use placeholder::PlaceholderSearcher;
+pub use negamax::NegamaxSearcher;
 pub use score::{Depth, MAX_PLY, Score};
 pub use search::{
     BestMove, InfoSink, Limits, SearchDriver, SearchJob, SearchSignals, Searcher, SilentSink,

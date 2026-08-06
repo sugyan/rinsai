@@ -11,10 +11,10 @@ use core::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 
 /// The deepest ply the search will ever reach, counting quiescence.
 ///
-/// It is meant to size three things together so they cannot drift apart — the
-/// mate band below, the search stack (from E0 step 2) and the move buffer (also
-/// step 2) — but today only the mate band exists, because there is no search.
-/// 128 is the conventional value; nothing here has yet forced it.
+/// It sizes three things together so they cannot drift apart: the mate band
+/// below, the search's per-ply state (E0 step 2 — the principal variation, and
+/// from step 3 the static evaluation beside it) and the move buffer. 128 is the
+/// conventional value; nothing here has yet forced it.
 pub const MAX_PLY: usize = 128;
 
 /// A search depth, in **whole plies**, signed.
@@ -46,8 +46,17 @@ impl Score {
     /// `-INFINITE` is representable without overflow.
     pub const INFINITE: Self = Self(32_001);
 
-    /// "No score recorded" — an empty transposition-table slot (E0 step 3), or
-    /// a search that was stopped before it produced anything.
+    /// "No score recorded" — an empty transposition-table slot.
+    ///
+    /// **No caller yet**; its caller is E0 step 3's transposition table. Kept
+    /// under the rule in PROGRESS.md: a surface whose caller can be *named*
+    /// stays, with the name written down.
+    ///
+    /// ⚠️ It is **not** a "nothing found yet" seed for a maximum. It compares
+    /// as +32_002 — above every real score, [`Self::INFINITE`] included — so
+    /// `best = Score::NONE; if score > best { … }` never fires, and the search
+    /// keeps its first candidate forever without a single failing assertion.
+    /// `Option<Score>` is the right shape for that, and the search uses it.
     pub const NONE: Self = Self(32_002);
 
     /// The lowest absolute value that still means mate.
@@ -115,6 +124,13 @@ impl Score {
 
     /// Clamps into the ordinary-evaluation band, so a static evaluation can
     /// never masquerade as a mate.
+    ///
+    /// **No caller yet**; its caller is E3's inference boundary, where the
+    /// network emits its own scale and the conversion into centipawns is
+    /// unbounded by construction. Step 2's material evaluation deliberately
+    /// does *not* use it: the largest balance a legal position can hold is far
+    /// below the mate band, and `eval` asserts that instead — a clamp there
+    /// would hide a broken value table rather than fail on it.
     #[inline]
     #[must_use]
     pub const fn clamp_to_eval(self) -> Self {
@@ -136,6 +152,14 @@ impl Neg for Score {
         Self(-self.0)
     }
 }
+
+// The four arithmetic impls below have **no caller yet**, and are kept for the
+// same reason as `Score::NONE` and `clamp_to_eval`: their callers are named.
+// E1's aspiration windows widen with `alpha - delta` and `beta + delta`, and
+// step 3's transposition table adjusts a stored mate score by ply on the way in
+// and out. Step 2 needs none of it — the evaluator accumulates in `i32` and
+// wraps once, the mate constructors produce mate scores, and the root window is
+// `±INFINITE`.
 
 impl Add<i32> for Score {
     type Output = Self;

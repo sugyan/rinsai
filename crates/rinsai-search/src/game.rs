@@ -244,10 +244,40 @@ impl Game {
 
     /// The board. There is deliberately no `&mut` counterpart: the search is
     /// handed a [`Game`] of its own (see [`Clone`]), so "the search must leave
-    /// the position balanced" is not an invariant anyone here can violate.
+    /// the position balanced" is not an invariant anyone here can violate. A
+    /// search that needs to move pieces takes [`Self::search_board`].
     #[must_use]
     pub fn position(&self) -> &Position {
         &self.board
+    }
+
+    /// A board of the search's own, **rebuilt from the record** rather than
+    /// copied — the board a searcher does its do/undo on.
+    ///
+    /// [`Position::clone`] would deep-copy shunsai's undo stack. Rebuilding
+    /// hands the search an *empty* one, so a search that unwinds past its own
+    /// root trips `undo_move`'s `expect` loudly instead of quietly walking into
+    /// a position nobody described.
+    ///
+    /// It matters that this is a method rather than a `position().clone()` at
+    /// the call site. Today's one caller reaches the searcher through
+    /// `SearchJob`, whose game the protocol layer has already `clone`d — so its
+    /// undo stack happens to be empty and a copy would cost the same. That is a
+    /// property of *that caller*, not of the type: `SearchJob` is public, E3's
+    /// self-play driver is its second caller, and a job built straight from a
+    /// game with fifty moves played would both copy fifty undo entries and lose
+    /// the unwind guarantee. Asking for the board this way makes the search's
+    /// requirement independent of how the job was assembled.
+    #[must_use]
+    pub fn search_board(&self) -> Position {
+        let board = Position::new(self.record.inner().clone());
+        debug_assert_eq!(
+            board.key(),
+            self.board.key(),
+            "the lockstep record and the incremental Zobrist key disagree"
+        );
+        debug_assert_eq!(board.ply(), self.board.ply());
+        board
     }
 
     /// The current position in SFEN, without the `sfen` keyword.
@@ -300,16 +330,14 @@ impl HistoryEntry {
     }
 }
 
-/// Rebuilds the board from the record rather than copying it.
+/// Rebuilds the board from the record rather than copying it — see
+/// [`Game::search_board`], which this delegates to and which carries the
+/// argument.
 ///
-/// [`Position::clone`] would deep-copy shunsai's internal undo stack — the
-/// whole game's worth. Rebuilding is cheaper, and it buys two things a copy
-/// would not: the search starts with an *empty* undo stack, so a search that
-/// unwinds past its own root trips `undo_move`'s `expect` loudly instead of
-/// silently corrupting the game position; and the from-scratch key is compared
-/// against the incrementally maintained one, which is what makes the lockstep
-/// record a checked property rather than a hope. This is also E2's Lazy SMP
-/// shape: each helper thread takes its own copy from the same source.
+/// The rebuild also cross-checks the from-scratch key against the
+/// incrementally maintained one, which is what makes the lockstep record a
+/// checked property rather than a hope. This is E2's Lazy SMP shape too: each
+/// helper thread takes its own copy from the same source.
 ///
 /// **The cross-check is `debug_assert`, so it runs in tests and in a debug
 /// build and is compiled out of the release binary that actually plays.** That
@@ -320,15 +348,8 @@ impl HistoryEntry {
 /// a key mismatch somewhere far worse to go.
 impl Clone for Game {
     fn clone(&self) -> Self {
-        let board = Position::new(self.record.inner().clone());
-        debug_assert_eq!(
-            board.key(),
-            self.board.key(),
-            "the lockstep record and the incremental Zobrist key disagree"
-        );
-        debug_assert_eq!(board.ply(), self.board.ply());
         Self {
-            board,
+            board: self.search_board(),
             record: self.record.clone(),
             history: self.history.clone(),
         }
