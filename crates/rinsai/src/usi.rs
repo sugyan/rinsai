@@ -7,8 +7,10 @@
 //! rather than by discipline: a `go` allocates exactly one job, the worker's
 //! loop body emits on every path because [`Searcher::search`] *returns* an
 //! answer instead of printing one and a panic is caught and answered,
-//! and [`Output::bestmove`] is called from exactly one closure, constructed in
-//! [`run`] below. To audit it, grep `crates/*/src` for the **string literal** —
+//! and [`Output::bestmove`] has exactly two callers, both here: the worker's
+//! emit closure, constructed in [`run`] below, and the fallback in
+//! [`Engine::go`] for when the worker is gone and the answer it owes will never
+//! come. To audit it, grep `crates/*/src` for the **string literal** —
 //! the word with its opening double-quote — and it should occur in `output.rs`
 //! and nowhere else. Grepping for the bare word instead matches this sentence,
 //! the call site and the tests, so it proves nothing; and a grep pattern that
@@ -38,7 +40,7 @@ use std::io::{BufRead, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rinsai_search::{Game, SearchDriver, SearchJob, SearchSignals, Searcher};
+use rinsai_search::{BestMove, Game, SearchDriver, SearchJob, SearchSignals, Searcher};
 
 use crate::output::Output;
 use command::{GuiCommand, parse_line};
@@ -163,7 +165,11 @@ impl<W: Write + Send + 'static> Engine<W> {
             GuiCommand::Usi => self.greet(),
             GuiCommand::IsReady => self.ready(),
             GuiCommand::SetOption { name, value } => self.set_option(&name, value.as_deref()),
-            GuiCommand::UsiNewGame => self.driver.new_game(),
+            GuiCommand::UsiNewGame => {
+                if !self.driver.new_game() {
+                    warn("the search thread is gone; `usinewgame` was not delivered");
+                }
+            }
             GuiCommand::Position(args) => self.set_position(&args),
             GuiCommand::Go(limits) => self.go(limits),
             GuiCommand::GoMate => {
@@ -250,12 +256,27 @@ impl<W: Write + Send + 'static> Engine<W> {
         self.next_id += 1;
         // Raised *before* the submit, so the worker can never lower it first.
         self.outstanding.fetch_add(1, Ordering::AcqRel);
-        self.driver.submit(SearchJob {
+        let queued = self.driver.submit(SearchJob {
             id: self.next_id,
             game: self.game.clone(),
             limits,
             signals,
         });
+        if !queued {
+            // The worker is gone. Having taken the `go`, we owe exactly one
+            // answer, and there is now nobody to produce it — so undo the
+            // bookkeeping and answer here. Without this the counter stays above
+            // zero for the rest of the session and every later command reads as
+            // "a search is still running", which is how an engine ends up
+            // looking busy forever and losing on time in silence.
+            self.outstanding.fetch_sub(1, Ordering::AcqRel);
+            self.current = None;
+            self.pondering = false;
+            let message = "error: the search thread is gone; answering `resign`";
+            warn(message);
+            self.out.info_string(message);
+            self.out.bestmove(BestMove::Resign);
+        }
     }
 
     fn stop(&mut self) {

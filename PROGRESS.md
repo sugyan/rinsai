@@ -255,6 +255,34 @@ When a real search lands, `shutdown` should gain a **bounded** wait rather than 
 `process::exit` watchdog: an unconditional exit would make a hung in-process
 conformance test *pass*.
 
+### Threads, not async — and no `tokio`
+
+Asked and answered rather than assumed. The concurrency here is two threads: one
+blocked on stdin, one running a search flat out. Async runtimes exist to wait on
+many I/O sources cheaply, and this has exactly two (stdin, stdout) and one
+long-running **CPU-bound** task — which under `tokio` would have to go to
+`spawn_blocking`, i.e. back to a thread, having gained nothing but a dependency.
+
+It gets less appealing with each phase, not more. E2's Lazy SMP is N OS threads
+each searching at full tilt over a shared transposition table: the shape async
+is specifically not for. E2's CSA client is **one** TCP connection, which a
+blocking socket on its own thread handles with less machinery. E3's self-play
+drives the search library in-process with no protocol at all. And `tokio` is a
+large dependency in a project where every one of them is provenance-scan surface
+(CLAUDE.md §7) — the whole tree is three third-party crates today.
+
+The condition that would reopen it: something that has to wait on *many*
+independent I/O sources at once inside the engine process. Nothing on the E0–E6
+roadmap does. (The match harness at step 7 runs many engine processes, but that
+is Ayane, in Python.)
+
+### `usi.rs`, not `usi/mod.rs`
+
+Modules with children are `foo.rs` beside `foo/`, not `foo/mod.rs`. This is
+shunsai's layout too (`src/sliders.rs` beside `src/sliders/`), so it is the
+family convention rather than a preference — and it keeps editor tabs and greps
+distinguishable, which is the reason the ecosystem moved.
+
 ### What a caught panic leaves behind
 
 The worker catches a panic from `Searcher::search` and answers `resign`, which

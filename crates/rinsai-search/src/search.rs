@@ -222,23 +222,29 @@ impl SearchDriver {
         }
     }
 
-    /// Queues a search. Dropped silently if the worker is already gone, which
-    /// only happens during shutdown.
-    pub fn submit(&self, job: SearchJob) {
+    /// Queues a search. **Returns `false` if it could not be queued**, which
+    /// means the worker is gone.
+    ///
+    /// The caller has to know: it has already committed to producing one
+    /// `bestmove` for this `go`, and a dropped job produces none. Reporting it
+    /// is what lets the protocol layer answer anyway rather than leaving the
+    /// engine looking like it is still thinking, forever.
+    #[must_use]
+    pub fn submit(&self, job: SearchJob) -> bool {
         *self.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&job.signals));
-        if let Some(tx) = &self.tx {
-            // The receiver is gone only if the worker thread is gone, which
-            // means it panicked — `worker` otherwise runs until the channel
-            // closes. Nothing here can recover from that, so the job is
-            // dropped; the panic itself is already on stderr.
-            let _ = tx.send(Command::Go(Box::new(job)));
+        match &self.tx {
+            Some(tx) => tx.send(Command::Go(Box::new(job))).is_ok(),
+            None => false,
         }
     }
 
-    /// Queues a `usinewgame`, in order with the searches around it.
-    pub fn new_game(&self) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(Command::NewGame);
+    /// Queues a `usinewgame`, in order with the searches around it. `false` if
+    /// the worker is gone — nothing is owed to the GUI for one of these, so the
+    /// caller may simply log it.
+    pub fn new_game(&self) -> bool {
+        match &self.tx {
+            Some(tx) => tx.send(Command::NewGame).is_ok(),
+            None => false,
         }
     }
 
@@ -280,45 +286,61 @@ fn worker<S: Searcher>(
     emit: &dyn Fn(BestMove),
 ) {
     for command in rx {
-        match command {
-            Command::NewGame => searcher.new_game(),
-            Command::Go(job) => {
-                // Catching the panic is what keeps "one answer per job" true
-                // when a search goes wrong. Without it the worker thread dies
-                // with this loop: the answer never comes, every later job is
-                // sent into a closed channel, and the engine goes on answering
-                // `usi` and `isready` normally while never moving again — a
-                // failure that reads, from a match harness, as a clean exit
-                // after a game lost on time. Resigning is a far better failure
-                // than hanging, and the panic message is already on stderr.
-                //
-                // `AssertUnwindSafe` is needed for the `&mut S`, and is not
-                // `unsafe`. The residual risk is real and worth naming: a
-                // searcher that panics may have left its own state (from step 3,
-                // a transposition table) inconsistent. `usinewgame` clears it,
-                // and one bad game beats a dead engine.
-                let best = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    searcher.search(&job, sink)
-                }))
-                .unwrap_or_else(|_| {
-                    eprintln!("rinsai: the search panicked; answering `resign` for this move");
-                    BestMove::Resign
-                });
+        // The outer catch is what keeps the *worker* alive. The inner one below
+        // keeps the *job* answered. They are different guarantees and both are
+        // needed: a panic anywhere in this loop body — `new_game` clearing a
+        // transposition table at step 3, or the emit closure writing to a
+        // broken stdout — would otherwise end the thread with the loop, after
+        // which every later job is sent into a closed channel and the engine
+        // answers the handshake forever while never moving again.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match command {
+                Command::NewGame => searcher.new_game(),
+                Command::Go(job) => {
+                    // Catching the panic is what keeps "one answer per job" true
+                    // when a search goes wrong. Without it the worker thread dies
+                    // with this loop: the answer never comes, every later job is
+                    // sent into a closed channel, and the engine goes on answering
+                    // `usi` and `isready` normally while never moving again — a
+                    // failure that reads, from a match harness, as a clean exit
+                    // after a game lost on time. Resigning is a far better failure
+                    // than hanging, and the panic message is already on stderr.
+                    //
+                    // `AssertUnwindSafe` is needed for the `&mut S`, and is not
+                    // `unsafe`. The residual risk is real and worth naming: a
+                    // searcher that panics may have left its own state (from step 3,
+                    // a transposition table) inconsistent. `usinewgame` clears it,
+                    // and one bad game beats a dead engine.
+                    let best = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        searcher.search(&job, sink)
+                    }))
+                    .unwrap_or_else(|_| {
+                        eprintln!("rinsai: the search panicked; answering `resign` for this move");
+                        BestMove::Resign
+                    });
 
-                // USI forbids answering a ponder search before `ponderhit` or
-                // `stop`, and that is a *protocol* obligation, not a search one:
-                // a real search returns as soon as it hits its depth or node
-                // limit, which during ponder would be a `bestmove` the GUI never
-                // asked for. Holding it here makes every future searcher correct
-                // by construction rather than by remembering.
-                if job.limits.ponder {
-                    while !job.signals.ponder_hit() && !job.signals.stopped() {
-                        job.signals.wait_until_signalled();
+                    // USI forbids answering a ponder search before `ponderhit` or
+                    // `stop`, and that is a *protocol* obligation, not a search one:
+                    // a real search returns as soon as it hits its depth or node
+                    // limit, which during ponder would be a `bestmove` the GUI never
+                    // asked for. Holding it here makes every future searcher correct
+                    // by construction rather than by remembering.
+                    if job.limits.ponder {
+                        while !job.signals.ponder_hit() && !job.signals.stopped() {
+                            job.signals.wait_until_signalled();
+                        }
                     }
-                }
 
-                emit(best);
+                    emit(best);
+                }
             }
+        }));
+        if outcome.is_err() {
+            // Note the counter has already been lowered by the emit closure
+            // before the write, so the protocol layer is not left believing a
+            // search is still running. The answer itself may be missing or
+            // half-written, which is degraded but not stuck.
+            eprintln!("rinsai: the search thread recovered from a panic outside the search");
         }
     }
 }
@@ -395,13 +417,13 @@ mod tests {
 
         driver.new_game();
         for id in 0..5 {
-            driver.submit(job(
+            assert!(driver.submit(job(
                 id,
                 Limits {
                     depth: Some(id as u32),
                     ..Limits::default()
                 },
-            ));
+            )));
         }
         driver.shutdown();
 
@@ -444,8 +466,8 @@ mod tests {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(best.to_string());
         });
-        driver.submit(job(1, Limits::default()));
-        driver.submit(job(2, Limits::default()));
+        assert!(driver.submit(job(1, Limits::default())));
+        assert!(driver.submit(job(2, Limits::default())));
         driver.shutdown();
 
         // One answer per job, the first of them from the panic path.
@@ -453,6 +475,62 @@ mod tests {
             *answers.lock().unwrap_or_else(|e| e.into_inner()),
             vec!["resign", "resign"]
         );
+    }
+
+    /// A panic *outside* the searcher — here in `new_game`, at step 3 a
+    /// transposition table being cleared — must not take the worker with it.
+    ///
+    /// The inner `catch_unwind` only covers `search`. Without the outer one the
+    /// thread ends with the loop, and every later job is then sent into a
+    /// closed channel: the engine answers the handshake forever and never
+    /// moves. Sabotage: remove the outer catch and the `go` below is never
+    /// answered.
+    ///
+    /// (The panic message on stderr during this test is expected.)
+    #[test]
+    fn a_panic_outside_the_search_does_not_kill_the_worker() {
+        struct BadNewGame;
+        impl Searcher for BadNewGame {
+            fn search(&mut self, _job: &SearchJob, _out: &dyn InfoSink) -> BestMove {
+                BestMove::Resign
+            }
+            fn new_game(&mut self) {
+                panic!("AUDIT: injected new_game panic");
+            }
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut driver = SearchDriver::spawn(BadNewGame, Arc::new(SilentSink), move |_| {
+            let _ = tx.send(());
+        });
+        assert!(driver.new_game());
+        assert!(driver.submit(job(1, Limits::default())));
+        assert!(
+            rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the worker died with `new_game` and never answered the `go`"
+        );
+        driver.shutdown();
+    }
+
+    /// Once the worker is gone, `submit` must say so rather than swallowing the
+    /// job — the caller has already promised the GUI an answer.
+    #[test]
+    fn submit_reports_that_a_gone_worker_took_no_job() {
+        struct Idle;
+        impl Searcher for Idle {
+            fn search(&mut self, _job: &SearchJob, _out: &dyn InfoSink) -> BestMove {
+                BestMove::Resign
+            }
+        }
+
+        let mut driver = SearchDriver::spawn(Idle, Arc::new(SilentSink), |_| {});
+        assert!(driver.submit(job(1, Limits::default())));
+        driver.shutdown();
+        assert!(
+            !driver.submit(job(2, Limits::default())),
+            "reported success after the worker was gone"
+        );
+        assert!(!driver.new_game());
     }
 
     /// Dropping the driver with a search in flight must not block forever.
@@ -475,13 +553,13 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         thread::spawn(move || {
             let driver = SearchDriver::spawn(Waiter, Arc::new(SilentSink), |_| {});
-            driver.submit(job(
+            assert!(driver.submit(job(
                 1,
                 Limits {
                     infinite: true,
                     ..Limits::default()
                 },
-            ));
+            )));
             drop(driver);
             let _ = tx.send(());
         });
@@ -510,7 +588,7 @@ mod tests {
         let driver = SearchDriver::spawn(Immediate, Arc::new(SilentSink), move |_| {
             let _ = tx.send(());
         });
-        driver.submit(SearchJob {
+        assert!(driver.submit(SearchJob {
             id: 1,
             game: Game::from_startpos(),
             limits: Limits {
@@ -518,7 +596,7 @@ mod tests {
                 ..Limits::default()
             },
             signals: Arc::clone(&signals),
-        });
+        }));
 
         assert!(
             rx.recv_timeout(Duration::from_millis(200)).is_err(),
