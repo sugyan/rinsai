@@ -8,9 +8,11 @@
 //! loop body emits on every path because [`Searcher::search`] *returns* an
 //! answer instead of printing one and a panic is caught and answered,
 //! and [`Output::bestmove`] has exactly two callers, both here: the worker's
-//! emit closure, constructed in [`run`] below, and the fallback in
-//! [`Engine::go`] for when the worker is gone and the answer it owes will never
-//! come. To audit it, grep `crates/*/src` for the **string literal** —
+//! emit closure, constructed in [`run`] below, and the fallback in `Engine::go`
+//! for when the worker is gone and the answer it owes will never come. (That
+//! second one is spelled without a link on purpose — `Engine` is private, and
+//! rustdoc rejects a public doc that links into it.) To audit the invariant,
+//! grep `crates/*/src` for the **string literal** —
 //! the word with its opening double-quote — and it should occur in `output.rs`
 //! and nowhere else. Grepping for the bare word instead matches this sentence,
 //! the call site and the tests, so it proves nothing; and a grep pattern that

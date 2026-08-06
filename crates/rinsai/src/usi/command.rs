@@ -37,9 +37,11 @@ pub(crate) enum GuiCommand {
 /// Parses one line. `None` for a blank one.
 ///
 /// Tokens are split on any run of whitespace, so the irregular spacing real
-/// GUIs emit is not a special case. `BufRead::lines` has already removed a
-/// trailing CRLF, and the trim below covers a line that arrives by another
-/// route.
+/// GUIs emit is not a special case. The line still carries its terminator: the
+/// loop in [`usi::run`](crate::usi::run) reads with `read_until(b'\n')` rather
+/// than `BufRead::lines`, so that a non-UTF-8 byte can be absorbed instead of
+/// ending the session. The `trim` below is therefore what removes the `\n` and
+/// a Windows GUI's `\r`, not a leftover safeguard.
 pub(crate) fn parse_line(line: &str) -> Option<GuiCommand> {
     let line = line.trim();
     let (word, rest) = match line.split_once(char::is_whitespace) {

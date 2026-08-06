@@ -5,6 +5,26 @@
 # does catch is the easy failure: a permissively-licensed crate somewhere in the
 # tree quietly gaining a copyleft dependency.
 
+[advisories]
+# Checked, and the reason is recorded because every other choice in this file
+# has one. RUSTSEC is about *security*, which the licence and source checks say
+# nothing about, and the whole tree is three third-party crates — so the run is
+# nearly free and a hit would be real rather than noise.
+#
+# The cost is named rather than discovered later: this is the one CI check that
+# can go red on a day nobody touched the code, when a new advisory lands against
+# something already in the graph. That is information the project wants — an
+# engine that runs on floodgate and on a championship machine is software other
+# people host — so it is a `deny`, not a warning, and an unavoidable one gets an
+# explicit `ignore` entry here with the reason, in the same style as the
+# `TODO(shunsai-0.1-release)` markers.
+#
+# Note this cannot see shunsai, which is not on crates.io yet: an advisory is
+# keyed by registry crate. That gap closes with the release.
+version = 2
+yanked = "deny"
+ignore = []
+
 [licenses]
 # Everything rinsai links must be usable under `MIT OR Apache-2.0`. The list is
 # exactly what the graph uses today and nothing more: an unmatched allowance is
