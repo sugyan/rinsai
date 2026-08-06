@@ -128,7 +128,13 @@ fn assert_legal_after(position_args: &str, bestmove_line: &str) {
 #[test]
 fn usi_handshake_ends_in_usiok() {
     let lines = dialogue("usi\nquit\n");
-    assert_eq!(lines[0], "id name rinsai 0.1.0");
+    // The version comes from the manifest, as it does in `usi_process.rs`:
+    // spelling it out here would make the next `version` bump a red test that
+    // says nothing about the protocol.
+    assert_eq!(
+        lines[0],
+        format!("id name rinsai {}", env!("CARGO_PKG_VERSION"))
+    );
     assert_eq!(lines[1], "id author sugyan");
     assert!(
         lines[2..lines.len() - 1]

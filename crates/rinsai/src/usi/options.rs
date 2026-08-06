@@ -189,6 +189,17 @@ fn spin(spec: &OptionSpec, value: &str) -> Result<i64, OptionError> {
 }
 
 fn check(spec: &OptionSpec, value: &str) -> Result<bool, OptionError> {
+    // The kind guard matches `spin` above. Without it this function would
+    // happily accept `true` for an option the table declares as a spin, and a
+    // (slot, kind) pair that disagrees would go unnoticed until an operator
+    // wondered why a value did nothing — which is the class of silent lie this
+    // module opens by warning against.
+    let OptionKind::Check { .. } = spec.kind else {
+        return Err(OptionError::BadValue {
+            name: spec.name,
+            value: value.to_owned(),
+        });
+    };
     value.parse().map_err(|_| OptionError::BadValue {
         name: spec.name,
         value: value.to_owned(),
@@ -238,6 +249,17 @@ mod tests {
             options
                 .set(spec.name, Some(&value))
                 .unwrap_or_else(|e| panic!("{}: {e}", spec.name));
+
+            // …and it must have changed the one that *was* set. This is the
+            // half that catches a table whose `slot` and `kind` disagree: such
+            // an entry either fails `set` above or falls into
+            // `differs_from_default`'s catch-all and reports "unchanged"
+            // forever, which would silently disable its `isready` disclosure.
+            assert!(
+                options.differs_from_default(spec),
+                "setting {} to {value} left it reading as unchanged — check its (slot, kind) pair",
+                spec.name
+            );
 
             for other in OPTIONS.iter().filter(|o| o.slot != spec.slot) {
                 assert!(

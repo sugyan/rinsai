@@ -34,6 +34,15 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
 
+      # The doc comments here carry the design record, and they link into it
+      # with intra-doc links. A link that no longer resolves — a renamed item, a
+      # moved module — is exactly the kind of quiet drift between comment and
+      # code this project cannot afford, and `cargo test` does not see it.
+      - name: Docs build with no broken links
+        run: cargo doc --workspace --no-deps --all-features --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       # Checked on the *resolved graph*, not by grepping manifests. A grep for
       # `"shunsai/…"` only catches the `[features]`-table forwarding syntax and
       # misses the ordinary route — `features = ["slider-naive"]` on the
@@ -51,7 +60,13 @@ jobs:
 
       - name: Exactly one shogi_core in the graph
         run: |
-          n=$(grep -c '^name = "shogi_core"$' Cargo.lock)
+          # `|| true` is load-bearing, as in the step above: the default shell
+          # is `bash -e`, and `grep -c` exits 1 when it matches nothing, so
+          # without it a count of zero kills the step *before* the message
+          # below can explain why — and explaining why is this guard's whole
+          # job. Measured: `bash -e` on `n=$(grep -c …)` with no match exits 1
+          # having printed nothing.
+          n=$(grep -c '^name = "shogi_core"$' Cargo.lock || true)
           test "$n" -eq 1 || {
             echo "::error::shogi_core appears $n times in Cargo.lock. rinsai's requirement must stay compatible with shunsai's, or the shogi_core types stop unifying and Move/Square silently become two different types."
             exit 1
@@ -76,4 +91,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check licenses bans sources
+          command: check advisories licenses bans sources
