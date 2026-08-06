@@ -8,7 +8,7 @@
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -195,10 +195,20 @@ enum Command {
 pub struct SearchDriver {
     tx: Option<Sender<Command>>,
     handle: Option<JoinHandle<()>>,
-    /// The most recently submitted job's signals, so [`Drop`] can stop a search
-    /// it is about to wait for. Touched twice per `go` and never on a search's
-    /// hot path, so the lock costs nothing.
-    latest: Mutex<Option<Arc<SearchSignals>>>,
+    /// The signals of every job submitted and not yet finished, so [`Drop`] can
+    /// stop all of what it is about to wait for.
+    ///
+    /// **Every** rather than the most recent: the worker is a single FIFO, so a
+    /// second `go` queues behind the first, and remembering one set would stop
+    /// the job that has not started while joining on the one that is running.
+    ///
+    /// `Weak`, not `Arc`, and that is the whole lifetime rule: a job's signals
+    /// live exactly as long as the job and its submitter, and this field only
+    /// *observes* them. An `Arc` here would instead keep every set alive until
+    /// the next `submit` swept it, and a dead entry that still answers `stop()`
+    /// is indistinguishable from a live one. Touched once per `go` and never on
+    /// a search's hot path, so the lock costs nothing.
+    outstanding: Mutex<Vec<Weak<SearchSignals>>>,
 }
 
 impl SearchDriver {
@@ -218,7 +228,7 @@ impl SearchDriver {
         Self {
             tx: Some(tx),
             handle: Some(handle),
-            latest: Mutex::new(None),
+            outstanding: Mutex::new(Vec::new()),
         }
     }
 
@@ -231,7 +241,15 @@ impl SearchDriver {
     /// engine looking like it is still thinking, forever.
     #[must_use]
     pub fn submit(&self, job: SearchJob) -> bool {
-        *self.latest.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&job.signals));
+        {
+            let mut outstanding = self.outstanding.lock().unwrap_or_else(|e| e.into_inner());
+            // Sweep the entries whose job has answered and been dropped. This
+            // is housekeeping, not correctness — `shutdown` skips a dead entry
+            // anyway — and it is what keeps the set proportional to searches in
+            // flight rather than to searches ever run.
+            outstanding.retain(|signals| signals.strong_count() > 0);
+            outstanding.push(Arc::downgrade(&job.signals));
+        }
         match &self.tx {
             Some(tx) => tx.send(Command::Go(Box::new(job))).is_ok(),
             None => false,
@@ -248,16 +266,34 @@ impl SearchDriver {
         }
     }
 
-    /// Stops any running search, drops the queue, and waits for the worker.
+    /// Stops every search that has not yet answered, then waits for the worker
+    /// to drain the queue and exit.
     ///
     /// Raising `stop` here rather than requiring the caller to have done it is
     /// what keeps [`Drop`] from blocking forever: a `go infinite` never ends on
     /// its own, so a `join` without a `stop` waits for something that will not
     /// happen. The caller may of course have stopped it already; `stop` is
     /// idempotent.
+    ///
+    /// Note that closing the channel does **not** discard what is queued —
+    /// `mpsc` delivers messages sent before the disconnect — so a job waiting
+    /// behind the running one still runs and still answers. That is the
+    /// intended behaviour rather than a leak: it is what keeps "one `bestmove`
+    /// per accepted `go`" true across a shutdown. Because its signals were
+    /// raised above, it returns at once instead of searching.
     pub fn shutdown(&mut self) {
-        if let Some(signals) = self.latest.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            signals.stop();
+        for signals in self
+            .outstanding
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+        {
+            // `None` is a job that already answered and was dropped — there is
+            // nothing left to stop, which is the outcome `stop()` would have
+            // produced anyway.
+            if let Some(signals) = signals.upgrade() {
+                signals.stop();
+            }
         }
         drop(self.tx.take());
         if let Some(handle) = self.handle.take() {
@@ -566,6 +602,51 @@ mod tests {
         assert!(
             rx.recv_timeout(Duration::from_secs(10)).is_ok(),
             "dropping the driver blocked on a search that never ends"
+        );
+    }
+
+    /// …and it must stop **every** search that has not answered, not just the
+    /// last one submitted.
+    ///
+    /// The worker is a single FIFO, so a second `go` queues behind the first.
+    /// A driver that remembers only the most recent job's signals therefore
+    /// raises `stop` on the one that has not started yet and joins on the one
+    /// that is actually running — which, for a search that ends only on `stop`,
+    /// never returns. `usi::run` cannot reach this because `Engine::go` stops
+    /// the previous search before submitting, but [`SearchDriver`] is public
+    /// API and E3's self-play driver is its second caller.
+    ///
+    /// Sabotage: replace the sweep in `submit` with `outstanding.clear()`, so
+    /// that only the most recent job is remembered, and this times out after
+    /// the ten seconds below.
+    #[test]
+    fn shutdown_stops_every_outstanding_search_not_only_the_last() {
+        struct Waiter;
+        impl Searcher for Waiter {
+            fn search(&mut self, job: &SearchJob, _out: &dyn InfoSink) -> BestMove {
+                while !job.signals.stopped() {
+                    job.signals.wait_until_signalled();
+                }
+                BestMove::Resign
+            }
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let mut driver = SearchDriver::spawn(Waiter, Arc::new(SilentSink), |_| {});
+            let infinite = Limits {
+                infinite: true,
+                ..Limits::default()
+            };
+            // The first runs; the second queues behind it.
+            assert!(driver.submit(job(1, infinite)));
+            assert!(driver.submit(job(2, infinite)));
+            driver.shutdown();
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "shutdown blocked on a search it never stopped"
         );
     }
 
