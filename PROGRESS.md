@@ -47,6 +47,21 @@ the CSA client at E2 — has to survive the same shapes.
 - **An out-of-range SFEN move number.** `PartialPosition::from_usi` saturates and
   discards — `0` becomes 1, 65536+ becomes 65535 — while rejecting a
   *non-numeric* field. Now validated in `split_root` instead.
+- **Two kings of one colour** (`position sfen 4k4/…/3KK4 b - 1`). The piece-count
+  bound was per *set* — two kings total — which admits two black kings and no
+  white one, a position no set can produce. The king is the one kind that never
+  changes sides, so its bound is **per colour**, and it is *at most* one rather
+  than exactly one: a 詰将棋 diagram routinely omits the attacking king, and
+  shunsai's `king_square` returns `Option` with `None` documented as legal.
+
+### Still unbounded: the length of one line
+
+`usi::run` reads with `read_until(b'\n')` and no cap, so a peer that never sends
+a newline grows the buffer until the process dies. Harmless at E0 — the peer is
+a local GUI — but **E2's CSA client takes its input from a network socket**, and
+that is the phase to bound it in. Recorded here rather than fixed now for the
+same reason as the move buffer: there is no consumer yet, and the bound wants to
+be chosen against the real longest line a CSA server sends, not guessed.
 
 ## What step 1 delivered
 
@@ -60,8 +75,11 @@ diagnostics. It is extremely weak on purpose — there is no search.
   `BestMove`, `InfoSink`, `SearchDriver`), and `PlaceholderSearcher`.
 - `crates/rinsai` — the USI protocol loop, its state machine, the option table
   and the single output sink.
-- CI: fmt, clippy `-D warnings`, tests, an MSRV job on 1.88, `cargo deny`, and
-  two CI guards, both described under Traps below.
+- CI: fmt, clippy `-D warnings`, tests, `cargo doc` with `-D warnings` (the doc
+  comments carry the design record and link into it; a link that stops resolving
+  is drift `cargo test` cannot see), an MSRV job on 1.88, `cargo deny check
+  advisories licenses bans sources`, and two CI guards, both described under
+  Traps below.
 
 **Deliberately not built**, so step 2 does not inherit guesses: no evaluation,
 no search, no move buffer, no transposition table, no repetition *queries* (the
@@ -92,6 +110,19 @@ depend on the convention below.
 
 Changing any of these needs a DESIGN.md §9 entry, because code already assumes
 them.
+
+- **A rationale has one home, and it is this file.** Step 1 shipped several
+  arguments copied into four or five places at once — why USI drop notation
+  needs a colour rewrite, why `shogi_core::Position::from_usi` is not used for
+  the `moves` list, why no shunsai feature may be enabled — each restated in the
+  implementation, in a test doc, in a second module, and here. One of them then
+  went stale exactly as that predicts: `parse_line`'s doc still described
+  `BufRead::lines` stripping the CRLF after the loop had moved to `read_until`,
+  because the fix updated the copy next to the code and not the copy next to the
+  parser. **So: the argument lives in PROGRESS.md or DESIGN.md §9; the code
+  carries the conclusion and, where it earns it, a pointer.** A sabotage note is
+  the deliberate exception — it has to sit on the test it describes to be worth
+  anything.
 
 - **A bare `Position` means `shunsai::Position`** — the board a search walks,
   and the only one of the two with unmake and an incremental Zobrist key.
@@ -211,6 +242,26 @@ Note that a git worktree under `.claude/worktrees/` is two levels deeper, so
 CLAUDE.md forbids building for a consumer that does not exist yet, and requires
 recording the condition instead. These are those records.
 
+### …and the one exception, stated so the rule stays honest
+
+`score.rs` is in the tree with no caller at all: nothing constructs a [`Score`]
+outside its own tests. By the rule above it should have waited for step 2, and
+the move buffer — which *did* wait — is the same shape of thing.
+
+The exception is deliberate and narrow: **a type that exists to freeze a
+convention is not speculative building, because the convention is what the next
+step is about to depend on.** Negamax sign, centipawn scale, the mate band and
+`MAX_PLY` are decisions step 2 would otherwise make implicitly and by accident,
+and the cost of getting one wrong is a whole class of sign bug that SPRT reads
+as "that patch was bad". The move buffer has no such property — it is an
+allocation strategy, and choosing it without the first real caller means
+choosing it blind.
+
+The test for whether this exception is being abused: if a step-1 type has an
+API surface that no step-2 caller ends up using, it was built too early.
+`clamp_to_eval`, `Score::NONE` and the arithmetic impls are the ones to look at
+at step 2 — if the search does not reach for them, delete them then.
+
 ### The move buffer — decide at step 2, with the first real caller
 
 A **shared, ply-threaded `Vec<Move>`**, reserved once at
@@ -291,6 +342,21 @@ rather than solved: a searcher that panicked may have left its own state
 inconsistent — from step 3 that is a transposition table. `usinewgame` clears it,
 and one bad game beats a dead engine, but if step 3 finds a way for a corrupt TT
 to survive into the next game, this is the place to revisit.
+
+### Two branches with no test, named rather than left to be discovered
+
+- **`Engine::go`'s fallback for a gone worker.** `submit` returns `false` and the
+  protocol layer answers `bestmove resign` itself, because it has already taken
+  the `go` and owes exactly one answer. `SearchDriver` has a unit test that
+  `submit` reports the failure; the *protocol* half has none, and with the outer
+  `catch_unwind` now keeping the worker alive through any panic in the loop
+  body, there is no longer a way to reach it from a dialogue. It is defensive
+  code guarding an invariant, kept for that reason and untested for the same one.
+- **`Game::clone`'s Zobrist cross-check is `debug_assert`.** It runs under
+  `cargo test` and in a debug build, and is compiled out of the release binary
+  that plays. The lockstep record is therefore a property the *suite* checks,
+  not one a live game does. Step 3 is where to reconsider: a key mismatch with a
+  transposition table in play has somewhere much worse to go.
 
 ## Where the sparring opposition is
 
