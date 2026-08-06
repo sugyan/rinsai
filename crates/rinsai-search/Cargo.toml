@@ -1,0 +1,19 @@
+[package]
+name = "rinsai-search"
+description = "rinsai's search and evaluation library — the only crate that depends on shunsai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# No [features] table, deliberately. See the workspace manifest.
+[dependencies]
+shunsai.workspace = true
+shogi_core.workspace = true
+shogi_usi_parser.workspace = true

@@ -1,0 +1,105 @@
+[workspace]
+resolver = "3"
+members = ["crates/rinsai-search", "crates/rinsai"]
+
+# `crates/xtask` joins at E0 step 6 (gen-openings, then sprt); rinsai-nnue,
+# rinsai-protocol and rinsai-selfplay at the phases DESIGN.md §4 names. Crates
+# are split when there is a reason, not up front.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# shunsai declares no `rust-version`, but its movegen uses a let-chain
+# (src/movegen.rs:589) stabilised in 1.88, so 1.88 is the real floor. Edition
+# 2024 only needs 1.85, so the edition is not the binding constraint. Raising
+# this is a decision-log event: floodgate and WCSC hosts may lag, and an engine
+# has no reason to chase the toolchain.
+rust-version = "1.88"
+authors = ["sugyan"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sugyan/rinsai"
+
+[workspace.dependencies]
+# TEMPORARY DEVIATION from DESIGN.md §2 ("a released version, not a git pin").
+# shunsai is not on crates.io yet and has no remote tags, so the pin is a full
+# 40-hex commit — never a branch, which would be the silent drift that
+# ../benchmarks' pin policy exists to forbid. https rather than the local
+# clone's ssh remote, so CI fetches anonymously.
+#
+#   TODO(shunsai-0.1-release): when shunsai v0.1.0 is on crates.io, replace this
+#   line with `shunsai = "0.1"`, drop the allow-git entry in deny.toml, remove
+#   the deviation footnote in DESIGN.md §2, and append the switch to §9. It is
+#   an E0 exit criterion in PROGRESS.md. `git grep 'TODO(shunsai-0.1-release)'`.
+#
+# `version` alongside `git` states the semver expectation the rev is standing in
+# for, and turns the eventual switch into deleting two fields. It does *not*
+# affect `cargo deny`: measured, the wildcard ban reports `bans ok` with or
+# without it, because cargo-deny does not treat a version-less git dependency as
+# a wildcard. An earlier version of this comment claimed otherwise.
+shunsai = { git = "https://github.com/sugyan/shunsai", rev = "e58c16fc073f07ae79f6a94b3bcd69f7e7937bb2", version = "0.1" }
+
+# Must stay compatible with shunsai's own requirement so the types unify into a
+# single copy — otherwise `Move` and `Square` silently become two types. CI
+# asserts exactly one `shogi_core` in Cargo.lock.
+shogi_core = "0.1.5"
+shogi_usi_parser = "0.1"
+
+rinsai-search = { path = "crates/rinsai-search" }
+
+# NOTE: no shunsai feature may ever be enabled from here — not by a `[features]`
+# forward, and not by a `features = [...]` list on the dependency above.
+# `slider-naive` wins shunsai's backend priority order and would silently select
+# a 5-8x slower generator, which would make every SPRT number afterwards noise;
+# `bench-internals` is documented "never enable as a dependency". CI checks the
+# *resolved graph* (`cargo tree -e features -i shunsai`) rather than manifest
+# text, because a grep catches only the first of those two forms. That check is
+# also what keeps `--all-features` safe to run.
+
+[workspace.lints.rust]
+# `deny`, not `forbid`: E2's shared transposition table and E3's SIMD inference
+# will need annotated exceptions, and `forbid` cannot be lifted locally — which
+# would force an edit to this file under pressure and tempt a blanket removal.
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# Pairs with unsafe_code above: when unsafe does arrive, every block already has
+# to carry a `// SAFETY:` comment.
+undocumented_unsafe_blocks = "deny"
+# stdout IS the USI protocol channel — a stray `println!` corrupts a live game.
+# Exactly one module (the protocol writer) carries an allow.
+print_stdout = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+# shunsai sets these for itself, but a dependency's profile is ignored: the
+# workspace root is the only place they take effect.
+lto = "fat"
+codegen-units = 1
+# Deliberately NOT `panic = "abort"`, and the reason is now one the code
+# delivers: the worker catches a panic from the searcher, answers `resign` for
+# that move, and keeps playing, with the panic message on stderr for the step-7
+# harness. Aborting would take the whole engine down mid-tournament instead.
+# (This comment used to claim the panic was "observable to the USI loop" when
+# nothing observed it — the loop simply believed the dead search was still
+# running. Fixed with the catch.)
+
+# `cargo build --profile profiling` for samply / Instruments.
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"
+
+# Measured on the step-1 tree: the rinsai-search suite runs in ~0.01 s here
+# against ~0.08 s at opt-level 0, and the whole `cargo test` differs by ~70 ms —
+# so this is not yet load-bearing. Kept because step 3's `bench` and the
+# fixed-depth node counts will make it so, and because shunsai's movegen is the
+# hot loop in a debug run too. Re-state the number once a search exists.
+# debug_assertions stay on.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

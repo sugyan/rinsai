@@ -1,0 +1,375 @@
+# rinsai — progress ledger
+
+Where the implementation is, what the next step is, and what a session needs to
+know before touching the code. [DESIGN.md](./DESIGN.md) is the plan and
+[CLAUDE.md](./CLAUDE.md) is the rules; **this file is the state**. Update it at
+the end of every step.
+
+## E0 — baseline: play legal moves and don't hang pieces
+
+E0 is split into seven sub-steps, one per pull request.
+
+| # | Step | Status |
+|---|---|---|
+| 1 | Skeleton + USI shell — workspace, CI, shunsai wiring, protocol loop, `bestmove` = a legal move | **done** |
+| 2 | Material evaluation + iterative-deepening negamax αβ — PV, `info` output, mate scoring | next |
+| 3 | TT + quiescence search — `rinsai bench`, fixed-depth node-count regression | |
+| 4 | Repetition (千日手) + 連続王手 — history *queries*, mate-in-1..5 suite | |
+| 5 | Time management — byoyomi / Fischer / movetime, `stop` responsiveness | |
+| 6 | `openings-v1` extractor — floodgate CSA → balanced opening SFENs (`crates/xtask` arrives here) | |
+| 7 | Match harness + SPRT — Ayane vendored, `tools/opponents.toml.example` | |
+
+### E0 exit criteria not yet met
+
+- **`TODO(shunsai-0.1-release)`** — the dependency is a git rev, which DESIGN.md
+  §2 and shunsai's own DESIGN.md both say it should not be. E0 cannot be
+  declared finished with this outstanding. `git grep 'TODO(shunsai-0.1-release)'`
+  finds all four places that change together.
+
+## Input the engine must survive
+
+Everything below reached the engine from stdin and is now rejected or absorbed,
+each with a regression test. They are listed because the next protocol surface —
+the CSA client at E2 — has to survive the same shapes.
+
+- **A hand count no shogi set contains** (`position sfen … b 19P 1`). It parses:
+  `shogi_usi_parser` accepts a two-digit count and `Hand::added` has no cap.
+  shunsai then indexes a `[u64; 19]` Zobrist table by held count and the
+  nineteenth piece is an out-of-bounds panic **on the protocol thread**, so one
+  line from a GUI or a server ended the process. `Game::from_partial` now bounds
+  the total per kind, which also closes the indirect route (18 pawns in hand plus
+  one on the board, then capture it).
+- **A non-UTF-8 byte** (a CP932 path from a Japanese Windows GUI — and E3 is
+  going to ask for an `EvalFile` path). `BufRead::lines` reports it as
+  `InvalidData`, which the loop could not tell from a real I/O error, so the
+  engine exited silently with status 0. Lines are now read as bytes and
+  converted lossily, with a diagnostic.
+- **An out-of-range SFEN move number.** `PartialPosition::from_usi` saturates and
+  discards — `0` becomes 1, 65536+ becomes 65535 — while rejecting a
+  *non-numeric* field. Now validated in `split_root` instead.
+- **Two kings of one colour** (`position sfen 4k4/…/3KK4 b - 1`). The piece-count
+  bound was per *set* — two kings total — which admits two black kings and no
+  white one, a position no set can produce. The king is the one kind that never
+  changes sides, so its bound is **per colour**, and it is *at most* one rather
+  than exactly one: a 詰将棋 diagram routinely omits the attacking king, and
+  shunsai's `king_square` returns `Option` with `None` documented as legal.
+
+### Still unbounded: the length of one line
+
+`usi::run` reads with `read_until(b'\n')` and no cap, so a peer that never sends
+a newline grows the buffer until the process dies. Harmless at E0 — the peer is
+a local GUI — but **E2's CSA client takes its input from a network socket**, and
+that is the phase to bound it in. Recorded here rather than fixed now for the
+same reason as the move buffer: there is no consumer yet, and the bound wants to
+be chosen against the real longest line a CSA server sends, not guessed.
+
+## What step 1 delivered
+
+`rinsai` starts, holds a USI conversation, and plays legal games. Verified
+against the local material-evaluation YaneuraOu (`../benchmarks`, `NodesLimit
+10000`): 22 plies to a resignation, no illegal move, no protocol stall, no
+diagnostics. It is extremely weak on purpose — there is no search.
+
+- `crates/rinsai-search` — `Game` (board + lockstep SFEN + history), `is_legal`,
+  `Score`/`Depth`, the `Searcher` seam (`SearchJob`, `Limits`, `SearchSignals`,
+  `BestMove`, `InfoSink`, `SearchDriver`), and `PlaceholderSearcher`.
+- `crates/rinsai` — the USI protocol loop, its state machine, the option table
+  and the single output sink.
+- CI: fmt, clippy `-D warnings`, tests, `cargo doc` with `-D warnings` (the doc
+  comments carry the design record and link into it; a link that stops resolving
+  is drift `cargo test` cannot see), an MSRV job on 1.88, `cargo deny check
+  advisories licenses bans sources`, and two CI guards, both described under
+  Traps below.
+
+**Deliberately not built**, so step 2 does not inherit guesses: no evaluation,
+no search, no move buffer, no transposition table, no repetition *queries* (the
+history is recorded, nothing reads it), no time management, no `bench`.
+
+## Step 2 — the first three things to do
+
+1. **Material evaluation** behind `Score`, in centipawns. The sign convention is
+   already fixed: negamax, positive = good for the side to move. Keep a naive
+   from-scratch evaluator as a permanent oracle (shunsai's habit) even after an
+   incremental one arrives.
+2. **A move buffer.** Step 1 has none, because until recursion exists there is
+   no caller. The analysis is below — do not re-derive it, and do not adopt
+   `ArrayVec` without re-reading it.
+3. **Iterative-deepening negamax** implementing `Searcher`, replacing
+   `PlaceholderSearcher` (delete `placeholder.rs`). Fill `SearchInfo`-style
+   `info` lines through the existing `InfoSink`. **The only lines in
+   `crates/rinsai` that should need to change are the two that name the
+   searcher** — `main.rs` and `dialogue` in `tests/usi_conformance.rs`. Anything
+   else changing means step 1 got the seam wrong, and that is worth recording.
+   (An earlier draft said "nothing in `crates/rinsai`", which cannot be true:
+   deleting `placeholder.rs` necessarily touches both of those call sites.)
+
+Then: `cargo run --release -- bench` is step 3, and the node counts it freezes
+depend on the convention below.
+
+## Conventions frozen in step 1
+
+Changing any of these needs a DESIGN.md §9 entry, because code already assumes
+them.
+
+- **A rationale has one home, and it is this file.** Step 1 shipped several
+  arguments copied into four or five places at once — why USI drop notation
+  needs a colour rewrite, why `shogi_core::Position::from_usi` is not used for
+  the `moves` list, why no shunsai feature may be enabled — each restated in the
+  implementation, in a test doc, in a second module, and here. One of them then
+  went stale exactly as that predicts: `parse_line`'s doc still described
+  `BufRead::lines` stripping the CRLF after the loop had moved to `read_until`,
+  because the fix updated the copy next to the code and not the copy next to the
+  parser. **So: the argument lives in PROGRESS.md or DESIGN.md §9; the code
+  carries the conclusion and, where it earns it, a pointer.** A sabotage note is
+  the deliberate exception — it has to sit on the test it describes to be worth
+  anything.
+
+- **A bare `Position` means `shunsai::Position`** — the board a search walks,
+  and the only one of the two with unmake and an incremental Zobrist key.
+  `shogi_core::Position` is a *record* (root, current position, moves played) and
+  `Game` delegates that half to it under the alias `Record`; it is never
+  imported unqualified. Its `from_usi` is not used at all, for the reason under
+  "Traps" below — **do not confuse "we cannot parse with it" with "we cannot
+  store in it"**, which is the mistake the first draft of `Game` made.
+- **Evaluation is negamax from the side to move.** Positive is good for whoever
+  is to move; a parent takes `-child`. At the root the side to move is the
+  engine, so USI's `score cp` needs no flip.
+- **Centipawns, pawn = 100.** E3's network emits its own scale, and the
+  conversion at the inference boundary is exactly where silent strength drift
+  lives.
+- **`Depth` is signed whole plies.** No fractional `ONE_PLY` scheme. Signed
+  because quiescence runs at negative depth from step 3.
+- **`MAX_PLY = 128`**, sizing the search stack, the mate band and (from step 2)
+  the move buffer together.
+- **Node counting: one node per `search`/`qsearch` entry, including the root,
+  excluding bulk-counted leaves.** Fixed now because step 3 freezes those
+  numbers as a regression test, and a convention changed afterwards invalidates
+  the whole committed set. shunsai's own HEAD commit is *"Measure the leaf
+  convention the cross-engine table had been mixing"* — the precedent is one
+  repository over.
+- **No test may name a move the engine chose.** shunsai's public documentation
+  says nothing about generation order either way, so it is an unspecified
+  implementation detail. Assert "this is legal here" by replaying the move into
+  a position the test builds itself. (An earlier draft of this file cited
+  "shunsai DESIGN.md:64" for an explicit non-guarantee; **no such statement
+  exists** — the citation was carried over from a survey and never checked.)
+
+## The shunsai constraint sheet
+
+Surveyed against `shunsai` @ `e58c16f`, `shogi_core` 0.1.5, `shogi_usi_parser`
+0.1.0. **Read this instead of re-surveying.**
+
+### What exists
+
+- The entire public surface is four `pub use` lines (`src/lib.rs:13-16`):
+  `Bitboard`, `MoveSet`/`MoveSetIter`, `Position`, and `pub use shogi_core`.
+- `Position`: `new(PartialPosition)`, `startpos()`, `piece_at`, `side_to_move`,
+  `ply` (u16, starts at 1, wrapping), `hand(Color)`, `king_square` (→ `Option`,
+  `None` is legal), `key()`, `occupied()`, `player_bb(Color)`,
+  `piece_kind_bb(PieceKind)` (**both colours** — AND with `player_bb`),
+  `do_move`, `undo_move`.
+- `generate_moves(&self, impl FnMut(MoveSet) -> ControlFlow<()>)`,
+  `legal_moves() -> Vec<Move>`, `has_legal_moves()`, `in_check()`.
+- `Bitboard` **is** the `Iterator` (`Item = Square`) and is `Copy`, so
+  `for sq in bb` works without consuming the original. Gotcha: `bb.count()` is
+  the inherent `u32` popcount, `bb.len()` is `ExactSizeIterator`'s `usize`.
+
+### What does not exist
+
+`attackers_to`, `checkers`, `pinned`, `gives_check`, `do_null_move`, SEE, staged
+generation, any public attack table, `is_legal`, SFEN in or out, and any game
+history. All of the first group are scheduled for **E1** and each arrives as a
+shunsai release (DESIGN.md §6). **E0 needs none of them** — that is the layering
+test, and step 1 confirmed it.
+
+### Traps
+
+- **`generate_moves` takes `&self`**, so nothing can `do_move` inside the
+  callback. Anything recursive must collect first.
+- **`MoveSet::{promotions, non_promotions}` overlap** where promotion is
+  optional. A square in `promotions` only is a *compulsory* promotion.
+  `MoveSet::Drop.piece` carries the colour, which is what makes `is_legal`
+  reject a wrong-colour drop.
+- **`do_move` validates nothing** — its documented `expect`s are reachable from
+  a bad move. `Game::push_move` gates every move with `is_legal`, which is what
+  keeps them unreachable from anything a GUI or server can send.
+- **`Position::clone()` deep-copies the undo stack.** `Game`'s `Clone` rebuilds
+  from the lockstep `PartialPosition` instead — cheaper, gives the search an
+  empty stack, and cross-checks the incremental key for free.
+- **USI drop notation carries no colour.** `shogi_usi_parser`'s `Move::from_usi`
+  hard-codes every drop to Black (`mv.rs:5-7`); the colour is rewritten from the
+  side to move in `Game::push_usi_move`.
+- **`shogi_core::Position::from_usi` must not be used for the `moves` list** —
+  but the reason is narrower than "it never errors", which is false: a
+  *malformed* token does produce `Err`. What it does instead is (a) **silently
+  drop** a well-formed move that cannot be made — nothing on the from square,
+  wrong side to move — and report success, and (b) **apply** a move that is
+  structurally fine but illegal, 二歩 and moving into check included, because
+  `make_move` documents that it never checks legality. Measured, not read:
+  `crates/rinsai-search/tests/shogi_core_from_usi.rs`, which fails if
+  `shogi_core` ever changes so the decision gets revisited. Its **SFEN prefix**
+  half (`PartialPosition::from_usi`) is sound and *is* used.
+- **Never enable a shunsai feature.** `slider-naive` wins its backend priority
+  order and is 5–8× slower; `bench-internals` is documented "never enable as a
+  dependency". CI checks the **resolved graph**
+  (`cargo tree --locked -e features -i shunsai`, fail on anything but
+  `default`), which is also what makes `--all-features` safe to run. It does
+  *not* grep manifests: that catches only a `[features]` forward and misses
+  `features = ["slider-naive"]` on the dependency line, which is the likelier
+  mistake and enables the backend just as effectively.
+- **`shogi_core` must appear exactly once in `Cargo.lock`**, or `Move` and
+  `Square` silently become two incompatible types. rinsai's requirement has to
+  stay compatible with shunsai's; CI asserts the count.
+- **Effective MSRV is 1.88** (a let-chain at `movegen.rs:589`) and shunsai does
+  not declare it. rinsai's `msrv` CI job is the only check on it anywhere.
+- Max legal moves in any shogi position is **593**.
+
+### Local prototyping against a shunsai branch
+
+While the dependency is a git rev, the local override is keyed on the git URL,
+not on `crates-io`:
+
+```toml
+[patch."https://github.com/sugyan/shunsai"]
+shunsai = { path = "../shunsai" }
+```
+
+Note that a git worktree under `.claude/worktrees/` is two levels deeper, so
+`../shunsai` does not resolve from one — use an absolute path there.
+
+## Decisions recorded but deliberately not built
+
+CLAUDE.md forbids building for a consumer that does not exist yet, and requires
+recording the condition instead. These are those records.
+
+### …and the one exception, stated so the rule stays honest
+
+`score.rs` is in the tree with no caller at all: nothing constructs a [`Score`]
+outside its own tests. By the rule above it should have waited for step 2, and
+the move buffer — which *did* wait — is the same shape of thing.
+
+The exception is deliberate and narrow: **a type that exists to freeze a
+convention is not speculative building, because the convention is what the next
+step is about to depend on.** Negamax sign, centipawn scale, the mate band and
+`MAX_PLY` are decisions step 2 would otherwise make implicitly and by accident,
+and the cost of getting one wrong is a whole class of sign bug that SPRT reads
+as "that patch was bad". The move buffer has no such property — it is an
+allocation strategy, and choosing it without the first real caller means
+choosing it blind.
+
+The test for whether this exception is being abused: if a step-1 type has an
+API surface that no step-2 caller ends up using, it was built too early.
+`clamp_to_eval`, `Score::NONE` and the arithmetic impls are the ones to look at
+at step 2 — if the search does not reach for them, delete them then.
+
+### The move buffer — decide at step 2, with the first real caller
+
+A **shared, ply-threaded `Vec<Move>`**, reserved once at
+`MAX_LEGAL_MOVES * MAX_PLY` (593 × 3 B × 128 ≈ **222 KiB per thread**, one
+allocation), sliced per ply: generation appends, the caller records the base and
+truncates back to it on the way out. This is shunsai's own `perft_materialize`
+shape (`examples/perft.rs:71`).
+
+Why not the alternatives:
+
+- **`ArrayVec<Move, 593>` per ply on the stack** — same 1 779 B but *per node*.
+  `Move` has no `Default`, so an `unsafe`-free version needs a dummy fill: a
+  1 779-byte memset per node, which at 10 M nodes/s is ~17 GB/s of pure memset.
+  Avoiding it means `MaybeUninit`, and the workspace denies `unsafe_code`.
+- **`Vec<Move>` per ply** — one malloc/free per node.
+- **A ply-indexed array inside the search stack** — attractive, and it is where
+  E3's accumulator stack goes, but it makes the move list borrowed while
+  recursing on `&mut stack`. Keeping the buffer a separate `&mut` argument means
+  the two never alias.
+
+At E1 the element becomes scored — either a parallel score array indexed
+identically, or a `ScoredMove`. Having a domain type rather than `ArrayVec` is
+what makes that change local.
+
+### `[patch.crates-io]` for an unpublished crate — checked, and rejected anyway
+
+It **does** work: cargo's own testsuite covers it
+(`tests/testsuite/patch.rs::nonexistent`), and the Cargo book says sources can
+be patched with versions of crates that do not exist. Rejected on three grounds:
+`shunsai = "0.1"` in the manifest would assert something false; `[patch]` is
+honoured only at the workspace root, so `rinsai-search/Cargo.toml` would stop
+saying where shunsai comes from; and a patch would keep silently overriding the
+real crate once it is published, so the switch we are trying not to forget would
+never go red. Recorded so it is not re-opened.
+
+### A `quit` watchdog — not yet
+
+`shutdown` now raises `stop` before joining, so a search that respects the flag
+cannot hang it, and a search that *panics* is caught and answered. What is still
+unbounded is a step-2 search that ignores `stop` — an infinite loop with no poll.
+When a real search lands, `shutdown` should gain a **bounded** wait rather than a
+`process::exit` watchdog: an unconditional exit would make a hung in-process
+conformance test *pass*.
+
+### Threads, not async — and no `tokio`
+
+Asked and answered rather than assumed. The concurrency here is two threads: one
+blocked on stdin, one running a search flat out. Async runtimes exist to wait on
+many I/O sources cheaply, and this has exactly two (stdin, stdout) and one
+long-running **CPU-bound** task — which under `tokio` would have to go to
+`spawn_blocking`, i.e. back to a thread, having gained nothing but a dependency.
+
+It gets less appealing with each phase, not more. E2's Lazy SMP is N OS threads
+each searching at full tilt over a shared transposition table: the shape async
+is specifically not for. E2's CSA client is **one** TCP connection, which a
+blocking socket on its own thread handles with less machinery. E3's self-play
+drives the search library in-process with no protocol at all. And `tokio` is a
+large dependency in a project where every one of them is provenance-scan surface
+(CLAUDE.md §7) — the whole tree is three third-party crates today.
+
+The condition that would reopen it: something that has to wait on *many*
+independent I/O sources at once inside the engine process. Nothing on the E0–E6
+roadmap does. (The match harness at step 7 runs many engine processes, but that
+is Ayane, in Python.)
+
+### `usi.rs`, not `usi/mod.rs`
+
+Modules with children are `foo.rs` beside `foo/`, not `foo/mod.rs`. This is
+shunsai's layout too (`src/sliders.rs` beside `src/sliders/`), so it is the
+family convention rather than a preference — and it keeps editor tabs and greps
+distinguishable, which is the reason the ecosystem moved.
+
+### What a caught panic leaves behind
+
+The worker catches a panic from `Searcher::search` and answers `resign`, which
+keeps the engine playing rather than silently dead. The residual risk is named
+rather than solved: a searcher that panicked may have left its own state
+inconsistent — from step 3 that is a transposition table. `usinewgame` clears it,
+and one bad game beats a dead engine, but if step 3 finds a way for a corrupt TT
+to survive into the next game, this is the place to revisit.
+
+### Two branches with no test, named rather than left to be discovered
+
+- **`Engine::go`'s fallback for a gone worker.** `submit` returns `false` and the
+  protocol layer answers `bestmove resign` itself, because it has already taken
+  the `go` and owes exactly one answer. `SearchDriver` has a unit test that
+  `submit` reports the failure; the *protocol* half has none, and with the outer
+  `catch_unwind` now keeping the worker alive through any panic in the loop
+  body, there is no longer a way to reach it from a dialogue. It is defensive
+  code guarding an invariant, kept for that reason and untested for the same one.
+- **`Game::clone`'s Zobrist cross-check is `debug_assert`.** It runs under
+  `cargo test` and in a debug build, and is compiled out of the release binary
+  that plays. The lockstep record is therefore a property the *suite* checks,
+  not one a live game does. Step 3 is where to reconsider: a key mismatch with a
+  transposition table in play has somewhere much worse to go.
+
+## Where the sparring opposition is
+
+GPL binaries live only in the local-only `../benchmarks` repository and are only
+ever *run* as separate processes (CLAUDE.md §7, run-vs-link). What is built and
+runnable there today:
+
+| Engine | Path | Note |
+|---|---|---|
+| YaneuraOu | `YaneuraOu/source/YaneuraOu-by-gcc` | **MaterialLv1** — no NNUE, but it honours `NodesLimit`, which is what an E0 ladder needs |
+| Apery | `apery_rust/target/release/apery` | also material-only (no eval files present) |
+| Fairy-Stockfish | `Fairy-Stockfish/src/stockfish` | USI dialect |
+
+**Not present anywhere**: Lesserkai, 技巧2, shogi-server, Ayane, and any
+floodgate CSA archive. Step 6 has to download the game records; step 7 has to
+fetch Ayane (Apache-2.0) and vendor it.

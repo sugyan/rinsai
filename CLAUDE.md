@@ -9,6 +9,7 @@ This file defines project rules that every implementation session (Claude Code) 
 - **Route**: **NNUE + αβ first**; DL/MCTS is a conditional later option, not a rejected one. The conditions are written down in DESIGN.md E6 — do not start DL work without checking them.
 - **Scope**: search, evaluation, NNUE inference and training, USI/CSA, time management, repetition (千日手), declaration (入玉宣言), self-play, the match harness. **Move generation is not in scope** — it belongs to shunsai. Neither is SFEN parsing (`shogi_usi_parser`) or mate solving (`tsumeshogi-solver`).
 - **Phases**: staged **E0–E6** (numbered so as not to collide with shunsai's M0–M7). See DESIGN.md §5. Know which phase a piece of work belongs to before starting it.
+- **Read [PROGRESS.md](./PROGRESS.md) first.** It is the ledger: which sub-step is next, the conventions already frozen, the surveyed shunsai API and its traps, and the decisions that were deliberately *recorded rather than built*. Update it at the end of every step — DESIGN.md is the plan, CLAUDE.md is the rules, PROGRESS.md is the state.
 
 ## ⚠️ Top rule: licensing (stay permissive, no GPL reuse)
 
@@ -56,7 +57,7 @@ Nothing is adopted on argument. `patch → bench → fixed-node paired games →
 
 ## Depending on shunsai
 
-- rinsai depends on a **released version** (`shunsai = "0.1"`), not a git pin.
+- rinsai depends on a **released version** (`shunsai = "0.1"`), not a git pin. ⚠️ **Not true during E0**: shunsai v0.1.0 is not on crates.io yet, so the workspace pins a commit. Knowing, temporary, and tracked — `git grep 'TODO(shunsai-0.1-release)'`, PROGRESS.md's E0 exit criteria, DESIGN.md §2. **No SPRT number may be attributed to a git rev that is not a release.**
 - To add an API: prototype on a shunsai branch → **measure it on shunsai's own bench** → adopt → **release shunsai** → raise the requirement here. Never work around a missing API with a slow local reimplementation without saying so.
 - Several planned additions unlock a re-measurement that shunsai's decision log deliberately parked for this consumer — see DESIGN.md §6. When adding one, say which re-measurement it unlocks.
 - **E0 requires no shunsai change at all**, deliberately: it is the layering's field test.
