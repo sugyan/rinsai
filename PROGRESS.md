@@ -123,24 +123,45 @@ factor of two when the branch was reviewed.
 step 3 on.** The node counts are deterministic: every run reproduces all three to
 the digit, which is why they are what `bench` freezes as a regression test. The
 times are one machine on one day — settled, the three rows sit at 22–23 ms,
-38–41 ms and 444–454 ms — so a time that differs from this table is not by itself
-a result. That is the whole reason a quiet machine is a precondition for the
-SPRT loop (§8): noise cannot move a node count and can move a time far enough to
-invent an improvement. The node rate these imply is used once, under "the poll
-interval is 1024 nodes" below.
+38–41 ms and 444–469 ms across two sessions — so a time that differs from this
+table is not by itself a result. Note that the spread is not proportional: the
+short rows hold to about ±2% and the long one to about ±3%, so a threshold read
+off the short rows would be too tight for the long one. That is the whole reason
+a quiet machine is a precondition for the SPRT loop (§8): noise cannot move a
+node count and can move a time far enough to invent an improvement. The node
+rate these imply is used once, under "the poll interval is 1024 nodes" below.
 
-⚠️ **Discard the first run after a build.** It costs about 20–25 ms more than the
-settled figure, and that is an *absolute* amount rather than a proportional one,
-so it is +87% on the 23 ms row and +5% on the 445 ms one. Measured, and measured
-in the way that separates it from the explanation it looks like: run the three
-rows in order after a rebuild and the first one is slow; **run them in the
-reverse order and the penalty moves to whichever row now goes first**, not to
-whichever row is shortest. So it is paid once per *build* — a freshly written
-binary faulting into the page cache, the CPU coming up to clock — and not once
-per process, since the second and third processes of the same batch pay nothing.
-The reason to write it down rather than shrug: the E0 measurements that matter
-are tens of milliseconds long, so this one effect is larger than most of what
-step 5's time-management work will be looking for.
+⚠️ **Exec the binary once after a build, before measuring anything.** The first
+run of a freshly linked binary costs about 20–25 ms more than the settled
+figure, and that is an *absolute* amount rather than a proportional one, so it
+is +87% on the 23 ms row and +5% on the 445 ms one.
+
+Two experiments pin it down, and each rules out an explanation the numbers
+otherwise fit:
+
+- **Reverse the order of the three rows after a rebuild** and the penalty moves
+  to whichever row now goes first — not to whichever row is shortest. So it is
+  not "short measurements are noisy".
+- **Run `rinsai --version` once after the build**, then measure. The penalty
+  disappears: 40 / 33 / 38 ms without it against 23 / 23 / 24 ms with it, three
+  alternating pairs. A process that prints one line and exits cannot warm a CPU
+  up or warm the search up, so it is neither of those either — and the earlier
+  wording here said "the CPU coming up to clock", which this is the experiment
+  that removes.
+
+What is left is the first *execution* of a newly written binary image: paged in
+from disk, and — **a candidate, not a finding, because it has not been
+instrumented** — on macOS the first-exec code-signature validation of a
+just-linked binary, which the kernel caches per file. Either way it is paid once
+per build rather than once per process, which is why the second and third
+processes of a batch pay nothing.
+
+The rule is written as "exec it once" rather than "discard the first
+measurement" because a throwaway `--version` costs nothing and can go in a
+script, where discarding costs a whole measurement. The reason to write it down
+at all rather than shrug: the E0 measurements that matter are tens of
+milliseconds long, so this one effect is larger than most of what step 5's
+time-management work will be looking for.
 
 **Expect the scores to alternate by depth parity, and do not go looking for the
 bug.** From the initial position, depths 3 and up report +215 at odd depths and
