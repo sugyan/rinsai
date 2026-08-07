@@ -4,7 +4,7 @@
 
 `rinsai` is a [shogi](https://en.wikipedia.org/wiki/Shogi) engine aiming at strong results on [floodgate](https://wdoor.c.u-tokyo.ac.jp/) and in the [世界コンピュータ将棋選手権](https://www.computer-shogi.org/) (World Computer Shogi Championship). It is built on [`shunsai`](https://github.com/sugyan/shunsai) for legal move generation and position management.
 
-> ⚠️ **Status: very early.** rinsai speaks USI and plays legal games, but there is **no search yet** — it answers with a legal move, so it is as weak as an engine can be. The plan is in [DESIGN.md](./DESIGN.md) (route, repository structure, the staged roadmap E0–E6) and the current state is in [PROGRESS.md](./PROGRESS.md). E0 is under way: a USI shell with iterative-deepening αβ, a transposition table, quiescence search, material evaluation and repetition detection, in seven steps of which the first is done.
+> ⚠️ **Status: very early.** rinsai speaks USI and searches: iterative-deepening negamax αβ over a material evaluation. There is **no transposition table, no quiescence search, no repetition detection and no time allocation yet**, so it is horizon-effect-prone by construction and hangs pieces. It plays legal games; that is not a strength claim, and E0 has no instrument for strength — the SPRT harness is step 7. The plan is in [DESIGN.md](./DESIGN.md) (route, repository structure, the staged roadmap E0–E6) and the current state is in [PROGRESS.md](./PROGRESS.md). E0 is a USI shell with iterative-deepening αβ, a transposition table, quiescence search, material evaluation and repetition detection, in seven steps of which two are done.
 
 ## Concept
 

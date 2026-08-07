@@ -5,11 +5,92 @@ use core::ops::ControlFlow;
 use shogi_core::Move;
 use shunsai::{MoveSet, Position};
 
+use crate::score::MAX_PLY;
+
 /// The most legal moves any shogi position has.
 ///
 /// It is the size a move buffer has to be, and shunsai's own benches use the
 /// same number (`benches/suite/common.rs`).
 pub const MAX_LEGAL_MOVES: usize = 593;
+
+/// One move list, shared by every ply of one search.
+///
+/// [`Position::generate_moves`] takes `&self`, so nothing can play a move from
+/// inside its callback: anything recursive has to collect first, and this is
+/// where the collection goes. The shape — one allocation of
+/// `MAX_LEGAL_MOVES * MAX_PLY`, sliced per ply, generation appending and the
+/// caller truncating back on the way out — is shunsai's own
+/// `perft_materialize` (`examples/perft.rs`), and the alternatives it was
+/// chosen over are argued in PROGRESS.md.
+///
+/// **The moves come out by value, one at a time, and that is load-bearing.**
+/// A `&[Move]` handed back here would borrow the buffer for as long as the
+/// caller iterates, and the caller wants to recurse through `&mut self` in the
+/// middle of that loop. Indexing copies a `Move` — small and [`Copy`] — and
+/// ends the borrow on the same line.
+///
+/// E1 makes the element scored. That lands as a parallel array filled by
+/// [`Self::generate`] plus a selection step, and [`Self::get`] keeps its
+/// signature, so the search's loop does not change shape.
+#[derive(Debug)]
+pub(crate) struct MoveBuf {
+    moves: Vec<Move>,
+}
+
+impl MoveBuf {
+    /// Reserves the whole search's worth up front — one allocation for the
+    /// life of the searcher, and none on any node.
+    pub(crate) fn new() -> Self {
+        Self {
+            moves: Vec::with_capacity(MAX_LEGAL_MOVES * MAX_PLY),
+        }
+    }
+
+    /// Appends every legal move in `position`, and returns the index the
+    /// caller must [`truncate`](Self::truncate) back to.
+    pub(crate) fn generate(&mut self, position: &Position) -> usize {
+        let base = self.moves.len();
+        let moves = &mut self.moves;
+        let _ = position.generate_moves(|set| {
+            moves.extend(set);
+            ControlFlow::Continue(())
+        });
+        base
+    }
+
+    /// One past the last move generated.
+    pub(crate) fn len(&self) -> usize {
+        self.moves.len()
+    }
+
+    /// The move at `index`, by value.
+    pub(crate) fn get(&self, index: usize) -> Move {
+        self.moves[index]
+    }
+
+    /// Drops everything generated at or after `base`, ending a ply.
+    pub(crate) fn truncate(&mut self, base: usize) {
+        self.moves.truncate(base);
+    }
+
+    /// Empties the buffer.
+    ///
+    /// Not the same as `truncate(0)` in intent: this is what a *new* search
+    /// calls, because a panic caught by `search::worker` unwinds past every
+    /// `truncate` and leaves the searcher — which the worker keeps alive —
+    /// holding a previous search's moves.
+    pub(crate) fn clear(&mut self) {
+        self.moves.clear();
+    }
+}
+
+impl Default for MoveBuf {
+    /// Reserving, like [`MoveBuf::new`]. A default that did not reserve would
+    /// silently reintroduce the per-node allocation the type exists to avoid.
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Whether `mv` is legal in `position`, without allocating.
 ///
@@ -180,6 +261,80 @@ mod tests {
                 promote: false
             }
         ));
+    }
+
+    /// The moves in `buf[range]`, in generation order.
+    fn slice(buf: &MoveBuf, range: core::ops::Range<usize>) -> Vec<Move> {
+        range.map(|i| buf.get(i)).collect()
+    }
+
+    /// Set equality. Generation *order* is an unspecified implementation
+    /// detail, so nothing here may compare two sequences that came out of
+    /// different calls.
+    fn same_moves(left: &[Move], right: &[Move]) {
+        assert_eq!(left.len(), right.len(), "different numbers of moves");
+        for mv in left {
+            assert!(right.contains(mv), "{mv:?} is missing from the other side");
+        }
+    }
+
+    #[test]
+    fn the_buffer_holds_exactly_the_legal_moves() {
+        for sfen in [
+            "sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
+            // In check: generation is restricted to evasions.
+            "sfen 4k4/9/4+R4/9/9/9/9/9/4K4 w - 1",
+        ] {
+            let board = position(sfen);
+            let mut buf = MoveBuf::new();
+            let base = buf.generate(&board);
+            same_moves(&slice(&buf, base..buf.len()), &board.legal_moves());
+        }
+    }
+
+    /// A ply generating into the buffer must leave the ply above it alone, and
+    /// truncating must give that ply back exactly what it had.
+    ///
+    /// This is the property that lets one allocation serve the whole search.
+    /// Note what it does *not* check: that the search remembers to truncate at
+    /// all. Forgetting is a leak rather than a wrong answer — the base is read
+    /// before each generation, so every ply still sees only its own moves — so
+    /// it needs a test on the search itself, and has one
+    /// (`negamax::tests::the_move_buffer_comes_back_empty`).
+    #[test]
+    fn a_ply_does_not_disturb_the_ply_above_it() {
+        let mut buf = MoveBuf::new();
+        let mut board = Position::startpos();
+
+        let root_base = buf.generate(&board);
+        assert_eq!(root_base, 0);
+        let root_end = buf.len();
+        let root = slice(&buf, root_base..root_end);
+        assert!(!root.is_empty(), "the initial position has legal moves");
+
+        board.do_move(root[0]);
+        let child_base = buf.generate(&board);
+        assert_eq!(
+            child_base, root_end,
+            "the child started on top of the parent"
+        );
+        same_moves(&slice(&buf, child_base..buf.len()), &board.legal_moves());
+        assert_eq!(slice(&buf, root_base..root_end), root, "the parent moved");
+
+        buf.truncate(child_base);
+        assert_eq!(buf.len(), root_end);
+        assert_eq!(slice(&buf, root_base..root_end), root);
+    }
+
+    /// One allocation, sized for the deepest search, taken before the search
+    /// starts. Measured in elements: `Move`'s size is not a guarantee Rust
+    /// makes, so a byte figure here would be pinning something nobody promised.
+    #[test]
+    fn the_buffer_reserves_a_whole_search_up_front() {
+        let buf = MoveBuf::new();
+        assert!(buf.moves.capacity() >= MAX_LEGAL_MOVES * MAX_PLY);
+        assert_eq!(MoveBuf::default().moves.capacity(), buf.moves.capacity());
     }
 
     /// Sabotage: drop the colour comparison in the drop arm and this passes a

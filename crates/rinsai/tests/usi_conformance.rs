@@ -12,7 +12,7 @@
 //!    assertion rather than a timing one. Note what these do *not* cover: that
 //!    the searcher **honours** `infinite` — `CapturingSearcher` blocks on its
 //!    own flag and never reads `limits` — which is tested where it lives, in
-//!    `rinsai-search`'s `placeholder` tests.
+//!    `rinsai-search`'s `negamax` tests.
 //!
 //! Note what is *never* asserted: which move the engine chose. shunsai's public
 //! documentation says nothing about generation order, so it is an unspecified
@@ -23,7 +23,7 @@
 use std::io::{Cursor, Write};
 use std::sync::{Arc, Mutex};
 
-use rinsai_search::{BestMove, Game, InfoSink, Limits, PlaceholderSearcher, SearchJob, Searcher};
+use rinsai_search::{BestMove, Game, InfoSink, Limits, NegamaxSearcher, SearchJob, Searcher};
 
 // ---------------------------------------------------------------- scaffolding
 
@@ -85,9 +85,9 @@ fn drive<S: Searcher + 'static>(searcher: S, script: &str) -> Vec<String> {
         .collect()
 }
 
-/// Runs a script against the real E0 step 1 engine.
+/// Runs a script against the real engine.
 fn dialogue(script: &str) -> Vec<String> {
-    drive(PlaceholderSearcher, script)
+    drive(NegamaxSearcher::new(), script)
 }
 
 /// Runs a script against a recording searcher, returning the transcript and
@@ -102,6 +102,14 @@ fn dialogue_capturing(script: &str, block: bool) -> (Vec<String>, Recorded) {
         script,
     );
     (lines, recorded)
+}
+
+/// The moves after ` pv ` in an `info` line, as USI tokens.
+fn pv_of(line: &str) -> Vec<&str> {
+    line.split(" pv ")
+        .nth(1)
+        .map(|tail| tail.split_whitespace().collect())
+        .unwrap_or_default()
 }
 
 fn bestmoves(lines: &[String]) -> Vec<&str> {
@@ -402,6 +410,81 @@ fn crlf_line_endings_work() {
     assert!(lines.contains(&"usiok".to_owned()), "{lines:?}");
     assert!(lines.contains(&"readyok".to_owned()), "{lines:?}");
     assert_eq!(bestmoves(&lines).len(), 1);
+}
+
+// ------------------------------------------------------------ search progress
+
+/// What goes on the wire has to be a well-formed `info` line, in the order USI
+/// readers expect, with a principal variation the protocol layer could replay.
+///
+/// **Depth is not available here, and that is a property of this harness rather
+/// than an oversight.** `drive` hands `usi::run` the whole script at once, so
+/// `quit` is read microseconds after `go` and `shutdown` stops the search
+/// before it has deepened — every dialogue in this file, `go movetime 1`
+/// included, is really answered from the depth-1 iteration. Anything that needs
+/// a search of a stated size therefore lives in `rinsai-search`'s own tests
+/// (`negamax::tests::the_reported_pv_is_playable`) or over real pipes
+/// (`usi_process::a_scripted_game_over_real_pipes`).
+#[test]
+fn the_info_line_is_well_formed_and_its_pv_is_playable() {
+    let args = "startpos moves 7g7f 3c3d";
+    let lines = dialogue(&format!("position {args}\ngo depth 4\nquit\n"));
+    let info = lines
+        .iter()
+        .rfind(|l| l.starts_with("info depth "))
+        .unwrap_or_else(|| panic!("no info line: {lines:?}"));
+
+    let mut tokens = info.split_whitespace();
+    assert_eq!(tokens.next(), Some("info"));
+    for name in ["depth", "time", "nodes", "nps"] {
+        assert_eq!(tokens.next(), Some(name), "{info}");
+        assert!(
+            tokens.next().is_some_and(|v| v.parse::<u64>().is_ok()),
+            "`{name}` has no number in {info}"
+        );
+    }
+    assert_eq!(tokens.next(), Some("score"), "{info}");
+    assert!(matches!(tokens.next(), Some("cp" | "mate")), "{info}");
+
+    let pv = pv_of(info);
+    assert!(!pv.is_empty(), "{info}");
+    let mut game = Game::from_usi_position(args).expect("the fixture parses");
+    for token in pv {
+        game.push_usi_move(token)
+            .unwrap_or_else(|e| panic!("the pv in `{info}` is not playable: {e}"));
+    }
+}
+
+/// A GUI expects to see the engine thinking, not just the answer.
+///
+/// Restricted to a position with legal moves, deliberately: a checkmated root
+/// answers `bestmove resign` with no `info` at all, because there was no
+/// iteration to report — see `a_checkmated_root_answers_without_pretending_to_search`.
+#[test]
+fn a_search_reports_progress_before_it_moves() {
+    let lines = dialogue("position startpos\ngo depth 2\nquit\n");
+    let first_info = lines
+        .iter()
+        .position(|l| l.starts_with("info depth "))
+        .expect("an info line");
+    let bestmove = lines
+        .iter()
+        .position(|l| l.starts_with("bestmove"))
+        .expect("a bestmove");
+    assert!(first_info < bestmove, "{lines:?}");
+}
+
+/// The converse, and the reason the test above is scoped: with no legal move
+/// there is nothing to report, and inventing an `info depth 1` for it would be
+/// the engine claiming to have searched.
+#[test]
+fn a_checkmated_root_answers_without_pretending_to_search() {
+    let lines = dialogue("position sfen 4k4/4G4/4G4/9/9/9/9/9/4K4 w - 1\ngo depth 4\nquit\n");
+    assert_eq!(bestmoves(&lines), vec!["bestmove resign"]);
+    assert!(
+        !lines.iter().any(|l| l.starts_with("info depth ")),
+        "{lines:?}"
+    );
 }
 
 /// The invariant, checked over every dialogue in this file at once: one
