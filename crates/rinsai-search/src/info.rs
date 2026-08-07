@@ -52,6 +52,12 @@ impl fmt::Display for SearchInfo<'_> {
         // next move. Nothing reaches this with either today (the search returns
         // only real scores), and a wrong `mate` on the wire is the kind of thing
         // a GUI believes.
+        //
+        // An assertion inside a `Display` impl is unusual enough to say why it
+        // is here: it makes a formatter that can panic. It earns the place
+        // because it is `debug_assert`, so the engine that plays does not carry
+        // it, and because the condition is a genuine bug rather than a caller's
+        // bad input — there is no sentinel a caller is entitled to print.
         debug_assert!(
             !matches!(self.score, Score::INFINITE | Score::NONE),
             "a sentinel reached the wire: {:?}",

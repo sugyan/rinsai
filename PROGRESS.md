@@ -250,6 +250,9 @@ them.
   not, and a byoyomi overrun is an immediate loss. The margin that covers this
   is named in step 5's list above and stays there; **until step 5, do not enter
   rinsai anywhere the clock is enforced across a network — floodgate included.**
+  That route does not open until E2 gives it a CSA client, so this is written
+  forward rather than describing anything reachable today; it is here because
+  here is where someone about to open it would be reading.
 
 - **`DEFAULT_DEPTH = 4`, and it must stay even.** It answers "no budget of any
   kind was named" and only that — applying it as a ceiling over a stated budget
@@ -265,6 +268,19 @@ them.
   20–30 M nodes/s at this step, because most nodes are depth-zero leaves that
   only evaluate, so 1024 nodes is about 40 µs. Expect that to grow as nodes get
   more expensive; step 5's SPRT is where the number stops being inherited.
+
+  ⚠️ **`self.nodes` accumulates across iterations and must not be reset per
+  iteration**, or the poll starves in a sparse position. Measured on two lone
+  kings (`4k4/9/9/9/9/9/9/9/4K4 b - 1`, about five legal moves a side): the
+  nodes spent *within* each iteration for depths 1–6 are 6, 15, 53, 120, 386,
+  851 — every one under the interval — against cumulative 6, 21, 74, 194, 580,
+  1 431. Reset per iteration and the poll does not fire once through depth 6, so
+  `stop` and any deadline go unnoticed for that whole stretch; accumulating, it
+  first fires partway through depth 6. This is **not** what makes depth 1
+  complete — that is the ≤ 594-node bound below, which stands on its own, since
+  `self.nodes` is 0 when depth 1 starts either way. Two separate properties of
+  one counter, and welding them together with a "because" is a mistake this file
+  made once already (DESIGN.md §9, 2026-08-07).
 
 - **Depth 1 always completes.** The poll only fires on a multiple of 1024 and a
   depth-1 iteration is `1 + N ≤ 594` nodes, so every `go` emits at least one
