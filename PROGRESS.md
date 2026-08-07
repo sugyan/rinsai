@@ -120,15 +120,27 @@ factor of two when the branch was reviewed.
 | drop-heavy middlegame | 5 | 13 888 371 | 445 ms |
 
 **The two columns are not the same kind of fact, and the difference matters from
-step 3 on.** The node counts are deterministic: three runs reproduce all three
-to the digit, which is why they are what `bench` freezes as a regression test.
-The times are one machine on one day — the same three rows spread 22–30 ms,
-39–46 ms and 442–447 ms across four runs, the first of each batch being the
-slowest — so a time that differs from this table is not a result. That is the
-whole reason a quiet machine is a precondition for the SPRT loop (§8): a
-noisy run does not change the node counts at all, and changes the times enough
-to invent an improvement. The node rate these imply is used once, under "the
-poll interval is 1024 nodes" below.
+step 3 on.** The node counts are deterministic: every run reproduces all three to
+the digit, which is why they are what `bench` freezes as a regression test. The
+times are one machine on one day — settled, the three rows sit at 22–23 ms,
+38–41 ms and 444–454 ms — so a time that differs from this table is not by itself
+a result. That is the whole reason a quiet machine is a precondition for the
+SPRT loop (§8): noise cannot move a node count and can move a time far enough to
+invent an improvement. The node rate these imply is used once, under "the poll
+interval is 1024 nodes" below.
+
+⚠️ **Discard the first run after a build.** It costs about 20–25 ms more than the
+settled figure, and that is an *absolute* amount rather than a proportional one,
+so it is +87% on the 23 ms row and +5% on the 445 ms one. Measured, and measured
+in the way that separates it from the explanation it looks like: run the three
+rows in order after a rebuild and the first one is slow; **run them in the
+reverse order and the penalty moves to whichever row now goes first**, not to
+whichever row is shortest. So it is paid once per *build* — a freshly written
+binary faulting into the page cache, the CPU coming up to clock — and not once
+per process, since the second and third processes of the same batch pay nothing.
+The reason to write it down rather than shrug: the E0 measurements that matter
+are tens of milliseconds long, so this one effect is larger than most of what
+step 5's time-management work will be looking for.
 
 **Expect the scores to alternate by depth parity, and do not go looking for the
 bug.** From the initial position, depths 3 and up report +215 at odd depths and
