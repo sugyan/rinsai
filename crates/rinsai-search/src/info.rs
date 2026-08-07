@@ -16,14 +16,16 @@ use crate::score::{Depth, Score};
 
 /// One iteration's worth of progress.
 ///
-/// The fields are the ones a search at E0 step 2 can honestly fill.
-/// **Deliberately absent**: `seldepth`, which without quiescence or extensions
-/// would always equal `depth` and so would be a constant dressed as data
-/// (step 3 gives it a meaning); `hashfull`, which needs the transposition table
-/// (step 3); and `multipv` / `currmove`, which have no consumer at all.
+/// The fields are the ones a search at E0 step 3a can honestly fill.
+/// **Deliberately absent**: `hashfull`, which needs the transposition table
+/// (step 3b), and `multipv` / `currmove`, which have no consumer at all.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SearchInfo<'a> {
     pub(crate) depth: Depth,
+    /// The deepest ply this *iteration* reached, quiescence included. It became
+    /// a number worth printing when quiescence arrived; before that it could
+    /// only ever have equalled `depth`.
+    pub(crate) seldepth: usize,
     pub(crate) score: Score,
     pub(crate) nodes: u64,
     pub(crate) elapsed: Duration,
@@ -34,10 +36,15 @@ pub(crate) struct SearchInfo<'a> {
 
 impl fmt::Display for SearchInfo<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `seldepth` sits immediately after `depth`, the slot a GUI expects it
+        // in, and `hashfull` joins before `score` at step 3b. Every field is
+        // printed unconditionally, including when it is uninteresting: a token
+        // that comes and goes makes the line's shape depend on the position.
         write!(
             f,
-            "info depth {} time {} nodes {} nps {}",
+            "info depth {} seldepth {} time {} nodes {} nps {}",
             self.depth,
+            self.seldepth,
             self.elapsed.as_millis(),
             self.nodes,
             self.nps(),
@@ -121,6 +128,7 @@ mod tests {
     fn info(score: Score, pv: &[Move]) -> String {
         SearchInfo {
             depth: 7,
+            seldepth: 11,
             score,
             nodes: 123_456,
             elapsed: Duration::from_millis(200),
@@ -133,8 +141,25 @@ mod tests {
     fn an_info_line_reads_as_usi() {
         assert_eq!(
             info(Score::cp(-42), &pv()),
-            "info depth 7 time 200 nodes 123456 nps 617280 score cp -42 pv 7g7f S*5b"
+            "info depth 7 seldepth 11 time 200 nodes 123456 nps 617280 score cp -42 pv 7g7f S*5b"
         );
+    }
+
+    /// Sabotage: make the `seldepth` token conditional on it exceeding `depth`
+    /// and this fires. A GUI parses the line positionally; a token that appears
+    /// only in tactical positions makes the shape depend on the board.
+    #[test]
+    fn seldepth_is_printed_even_when_it_equals_depth() {
+        let line = SearchInfo {
+            depth: 4,
+            seldepth: 4,
+            score: Score::ZERO,
+            nodes: 1,
+            elapsed: Duration::from_millis(1),
+            pv: &[],
+        }
+        .to_string();
+        assert!(line.starts_with("info depth 4 seldepth 4 time "), "{line}");
     }
 
     #[test]
@@ -147,6 +172,9 @@ mod tests {
     fn an_empty_pv_omits_the_pv_token() {
         let line = info(Score::ZERO, &[]);
         assert!(line.ends_with(" score cp 0"), "{line}");
+        // A substring check, and it stays sound only while no other token
+        // contains "pv" — re-checked when `seldepth` joined the line, and to be
+        // re-checked again when `hashfull` does at step 3b.
         assert!(!line.contains("pv"), "{line}");
     }
 
@@ -156,12 +184,16 @@ mod tests {
     fn no_elapsed_time_does_not_divide_by_zero() {
         let line = SearchInfo {
             depth: 1,
+            seldepth: 1,
             score: Score::ZERO,
             nodes: 31,
             elapsed: Duration::ZERO,
             pv: &[],
         }
         .to_string();
-        assert_eq!(line, "info depth 1 time 0 nodes 31 nps 0 score cp 0");
+        assert_eq!(
+            line,
+            "info depth 1 seldepth 1 time 0 nodes 31 nps 0 score cp 0"
+        );
     }
 }

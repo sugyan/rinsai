@@ -1,15 +1,16 @@
 //! Iterative-deepening negamax with alpha-beta pruning.
 //!
-//! E0 step 2's search, and deliberately the plainest one that plays: no
-//! transposition table and no quiescence (step 3), no move ordering at all
-//! (step 3's transposition move, then E1's), no time *allocation* (step 5).
-//! It will hang pieces — evaluating material at a fixed depth with no
-//! quiescence is the horizon effect by construction, which DESIGN.md names as
-//! the reason the two belong together. That is expected for one step; the
-//! answer is step 3, not a patch here.
+//! E0 step 3a's search: iterative deepening, alpha-beta, and a quiescence
+//! search that resolves captures so that no evaluation is ever taken in the
+//! middle of an exchange. Still absent, each with the step that owns it: the
+//! transposition table and its move ordering (step 3b), the interior-node
+//! ordering heuristics (E1), time *allocation* from the clock (step 5).
 //!
-//! The two structural decisions worth knowing before reading:
+//! The three structural decisions worth knowing before reading:
 //!
+//! * [`NegamaxSearcher::child`] is the only place a child is searched and the
+//!   only place a score is negated. It dispatches between the interior node and
+//!   quiescence, which is what keeps the node-counting convention exact.
 //! * The recursion carries a [`Window`] rather than a loose `(alpha, beta)`
 //!   pair, so the child call is `-self.negamax(board, -window, …)` and the
 //!   classic `-search(-beta, -alpha)` transposition cannot be mistyped.
@@ -31,11 +32,12 @@ use crate::search::{BestMove, InfoSink, Limits, SearchJob, SearchSignals, Search
 
 /// How deep a `go` that named no budget at all searches.
 ///
-/// **It has to be even.** The root is the engine's own move, so an odd depth
-/// ends the line on a capture of ours that the opponent never answers — the
-/// search then values grabbing material it cannot keep. An even depth ends
-/// after the reply, which is the pessimistic side to be on while there is no
-/// quiescence search to settle the exchange properly.
+/// It no longer has to be even. Until step 3a it did: an odd depth ended the
+/// line on a capture of ours that the opponent never answered, so the search
+/// valued material it could not keep — which is exactly what quiescence
+/// removes. The parity rule went with its reason (DESIGN.md §9); the value
+/// stays at four, because raising it is a behaviour change and E0 has no
+/// instrument to justify one.
 ///
 /// Four rather than six because there is no interior move ordering yet, so the
 /// tree is close to a full minimax and each further pair of plies costs an order
@@ -48,17 +50,49 @@ const DEFAULT_DEPTH: Depth = 4;
 /// How often the search asks whether it is out of budget.
 ///
 /// The conventional starting point, and untuned. It is far inside any USI
-/// deadline at this step's node rate, because most nodes are depth-zero leaves
-/// that only evaluate (the rate itself is in PROGRESS.md). Expect the interval
-/// to buy less latency as a node gets more expensive — quiescence at step 3,
+/// deadline at this step's node rate (the rate itself is in PROGRESS.md).
+/// Expect the interval to buy less latency as a node gets more expensive —
 /// ordering work at E1 — and expect step 5's time-management SPRT to be where
 /// the number is chosen rather than inherited.
+///
+/// ⚠️ The test against it is an **exact** multiple, so every increment has to
+/// be seen by something that polls or the counter can step clean over one. That
+/// is why [`NegamaxSearcher::qsearch`] polls as well.
 const POLL_INTERVAL_NODES: u64 = 1024;
 
-/// The deepest iteration any search will start. One below [`MAX_PLY`] so that
-/// a line reaching the last iteration's nominal depth still has a ply to sit
-/// at.
+/// The deepest iteration any search will start.
+///
+/// One below [`MAX_PLY`] so that a line reaching the last iteration's nominal
+/// depth still has a ply to sit at. Quiescence then runs *past* that depth, and
+/// what stops it is the `ply >= MAX_PLY` guard both searches share — the spare
+/// ply here is not what bounds it.
 const MAX_DEPTH: Depth = MAX_PLY as Depth - 1;
+
+/// How many **checked** plies one quiescence line may spend before it gives up
+/// and evaluates where it stands.
+///
+/// It counts checks and not plies, and that distinction was measured rather
+/// than reasoned — the numbers are in PROGRESS.md. The two kinds of quiescence
+/// ply are not alike:
+///
+/// * A **capture** chain is self-limiting. Every capture takes a piece off the
+///   board and into a hand, and quiescence plays no drops, so occupancy
+///   strictly decreases and no shogi position affords more than about forty in
+///   a row. Capping this is not merely unnecessary, it is harmful: a cap low
+///   enough to matter cuts exchanges off in the middle, which is the horizon
+///   effect quiescence exists to remove, reintroduced two plies further down.
+/// * A **check-evasion** chain has no such argument. An evasion may give check
+///   back and the reply may check again — 連続王手, whose rule does not arrive
+///   until step 4 — and an evasion need not be a capture, so nothing decreases.
+///   Worse, an evasion list is *every* legal move, drops included: a node an
+///   order of magnitude wider than a capture node. Left uncounted, these chains
+///   run to any depth they are allowed and dominate the whole search.
+///
+/// So only the checked plies are counted. Evaluating a position that is still
+/// in check is a known lie, in the same family as step 2's depth-zero one; it
+/// is now bounded by how many times a line may be checked rather than by how
+/// long the line is, and E1's check extension is what replaces it.
+const QS_MAX_CHECK_PLIES: Depth = 2;
 
 /// An alpha-beta window, negated as a unit.
 #[derive(Clone, Copy, Debug)]
@@ -145,6 +179,32 @@ impl<'a> Budget<'a> {
         }
     }
 
+    /// The same budget with the clock and the node limit suspended.
+    ///
+    /// The first deepening iteration runs against this, and that is what keeps
+    /// "the search answers with a move it actually searched" true now that
+    /// quiescence exists. Until step 3a the guarantee was arithmetic — a
+    /// depth-1 iteration was `1 + N ≤ 594` nodes and the poll only fires on an
+    /// exact multiple of 1024, so it could not fire. With quiescence a depth-1
+    /// iteration runs to tens of thousands of nodes in a tactical position, and
+    /// a poll landing inside the first root move's subtree leaves
+    /// [`NegamaxSearcher::negamax_root`] returning `None` and the answer sitting
+    /// at the unsearched seed — a move in shunsai's unspecified generation
+    /// order. PROGRESS.md carries the argument.
+    ///
+    /// ⚠️ **`signals.stopped()` stays live**, which is the whole reason this is
+    /// a second budget rather than a flag that skips the poll: `stop` means
+    /// quit, and [`Self::expired`] is where it is read. Skipping the poll would
+    /// suspend `stop` along with the clock.
+    fn without_limits(&self) -> Self {
+        Self {
+            signals: self.signals,
+            deadline: None,
+            node_limit: None,
+            max_depth: self.max_depth,
+        }
+    }
+
     fn expired(&self, nodes: u64) -> bool {
         self.signals.stopped()
             || self.node_limit.is_some_and(|limit| nodes >= limit)
@@ -157,9 +217,9 @@ impl<'a> Budget<'a> {
 /// The searcher.
 ///
 /// Everything that has to survive between searches lives here, because the
-/// driver's worker thread owns one for its whole life. At step 2 that is only
-/// the allocations; step 3's transposition table and E1's history tables join
-/// them.
+/// driver's worker thread owns one for its whole life. At step 3a that is still
+/// only the allocations; step 3b's transposition table and E1's history tables
+/// join them.
 #[derive(Debug)]
 pub struct NegamaxSearcher {
     /// The root's moves, kept out of [`Self::buf`] on purpose: they persist
@@ -178,6 +238,14 @@ pub struct NegamaxSearcher {
     /// which point it is a `Vec` with extra steps.
     pv: Vec<Vec<Move>>,
     nodes: u64,
+    /// The deepest ply reached, quiescence included.
+    ///
+    /// Reset **per iteration**, unlike [`Self::nodes`], which accumulates across
+    /// them. The asymmetry is deliberate: USI prints `seldepth` beside `depth`
+    /// and it means the selective depth *of that iteration*, while `nodes`
+    /// accumulates because resetting it starves the poll in a sparse position.
+    /// PROGRESS.md carries both arguments.
+    seldepth: usize,
     /// Sticky. Once the budget is spent every frame returns at once without
     /// polling again, so an abandoned subtree cannot spend time on its way out.
     stopped: bool,
@@ -191,6 +259,7 @@ impl NegamaxSearcher {
             buf: MoveBuf::new(),
             pv: (0..=MAX_PLY).map(|_| Vec::with_capacity(MAX_PLY)).collect(),
             nodes: 0,
+            seldepth: 0,
             stopped: false,
         }
     }
@@ -234,7 +303,7 @@ impl NegamaxSearcher {
         for i in 0..self.root_moves.len() {
             let mv = self.root_moves[i];
             board.do_move(mv);
-            let score = -self.negamax(board, -window, depth - 1, 1, budget);
+            let score = self.child(board, window, depth - 1, 1, budget);
             board.undo_move(mv);
 
             // An abandoned subtree returns a placeholder, not a score. Discard
@@ -257,6 +326,47 @@ impl NegamaxSearcher {
         improved.then_some(best)
     }
 
+    /// Searches one child and negates, dispatching between the interior node
+    /// and quiescence.
+    ///
+    /// The dispatch lives at the call site rather than at the top of
+    /// [`Self::negamax`] for the counting convention's sake: one node per entry
+    /// means each of the two must own its increment, and a `negamax` that
+    /// turned round and called `qsearch` would count the node twice. The
+    /// negation lives here for the same reason [`Window`] negates as a unit —
+    /// one place where `-search(-beta, -alpha)` can be got wrong.
+    /// ⚠️ It also checks that a child gives the move buffer back exactly as it
+    /// found it, and that check is here because nothing else can see it.
+    /// Forgetting a `truncate` is a leak rather than a wrong answer — every ply
+    /// reads its own base, so the search still plays correctly — and the parent
+    /// frame's own `truncate` then hides the evidence before any test can
+    /// reach it. `the_move_buffer_comes_back_empty` passes with quiescence's
+    /// `truncate` deleted outright; the mutation was made and it stayed green,
+    /// which is why the invariant is asserted at the boundary instead.
+    #[inline]
+    fn child(
+        &mut self,
+        board: &mut Position,
+        window: Window,
+        depth: Depth,
+        ply: usize,
+        budget: &Budget<'_>,
+    ) -> Score {
+        let given = self.buf.len();
+        let score = if depth > 0 && ply < MAX_PLY {
+            -self.negamax(board, -window, depth, ply, budget)
+        } else {
+            -self.qsearch(board, -window, 0, ply, budget)
+        };
+        debug_assert_eq!(
+            self.buf.len(),
+            given,
+            "a child left {} moves in the buffer",
+            self.buf.len() - given
+        );
+        score
+    }
+
     /// An interior node.
     ///
     /// Not called `search`: [`Searcher::search`] is the trait method on this
@@ -272,9 +382,14 @@ impl NegamaxSearcher {
     ) -> Score {
         // First statement, above every early return: the frozen convention is
         // one node per entry, including the root and including a node that
-        // turns straight round. Step 3's `bench` freezes these counts.
+        // turns straight round. Step 3b's `bench` freezes these counts.
         self.nodes += 1;
         self.pv[ply].clear();
+        self.seldepth = self.seldepth.max(ply);
+
+        // `child` dispatches everything else to `qsearch`, so arriving here at
+        // all means there is a ply to sit at and a depth left to spend.
+        debug_assert!(depth > 0 && ply < MAX_PLY);
 
         if self.stopped {
             return Score::ZERO;
@@ -282,14 +397,6 @@ impl NegamaxSearcher {
         if self.nodes.is_multiple_of(POLL_INTERVAL_NODES) && budget.expired(self.nodes) {
             self.stopped = true;
             return Score::ZERO;
-        }
-
-        // Step 3 replaces this with a call into quiescence search. Note what it
-        // costs until then: a node that is *checkmated* at depth zero reports
-        // its material balance, because finding that out means generating
-        // moves and that is the leaf cost this branch exists to avoid.
-        if depth <= 0 || ply >= MAX_PLY {
-            return eval::evaluate(board);
         }
 
         let base = self.buf.generate(board);
@@ -305,9 +412,138 @@ impl NegamaxSearcher {
         for i in base..self.buf.len() {
             let mv = self.buf.get(i);
             board.do_move(mv);
-            let score = -self.negamax(board, -window, depth - 1, ply + 1, budget);
+            let score = self.child(board, window, depth - 1, ply + 1, budget);
             // Before every `break` below, without exception: the board has to
             // be whole again for the caller.
+            board.undo_move(mv);
+
+            if self.stopped {
+                break;
+            }
+            if score > best {
+                best = score;
+                if score > window.alpha {
+                    window.alpha = score;
+                    self.update_pv(ply, mv);
+                    if window.alpha >= window.beta {
+                        break;
+                    }
+                }
+            }
+        }
+        self.buf.truncate(base);
+        best
+    }
+
+    /// Plays the exchanges out, so that no evaluation is ever taken in the
+    /// middle of one.
+    ///
+    /// Without this a fixed-depth material search believes whatever the last
+    /// ply happened to leave on the board — the horizon effect, and the reason
+    /// DESIGN.md puts quiescence in E0 rather than E1. PROGRESS.md carries the
+    /// fingerprint it removes.
+    ///
+    /// **It searches captures, and nothing else.** Deliberately absent, each
+    /// with the step that owns it: non-capture promotions (E1, beside SEE —
+    /// と金作り is a large material event this is blind to, and the argument is
+    /// in PROGRESS.md); checks (E1 item 7, and they need `gives_check`, which
+    /// shunsai does not have); SEE (E1 item 8, needs `attackers_to`); delta
+    /// pruning (E1 item 9). What this produces is deliberately an *unordered,
+    /// unpruned* baseline for each of those to be measured against.
+    ///
+    /// The one imprecision kept: a node not in check whose stand-pat already
+    /// beats β returns without generating, so a position that is mate *without*
+    /// check — legal in shogi, and vanishingly rare — reports material instead.
+    /// That is step 2's depth-zero imprecision narrowed, not removed.
+    fn qsearch(
+        &mut self,
+        board: &mut Position,
+        mut window: Window,
+        depth: Depth,
+        ply: usize,
+        budget: &Budget<'_>,
+    ) -> Score {
+        // The same convention as `negamax`, in the same position in the
+        // function: one node per entry, counted before anything can return.
+        self.nodes += 1;
+        self.pv[ply].clear();
+        self.seldepth = self.seldepth.max(ply);
+
+        if self.stopped {
+            return Score::ZERO;
+        }
+        // ⚠️ Quiescence polls, and that is load-bearing rather than tidy — see
+        // `POLL_INTERVAL_NODES`. Counting nodes here without polling would let
+        // the values seen at `negamax` entries skip a multiple of the interval
+        // entirely, and `stop`, the deadline and the node limit would then be
+        // missed unpredictably rather than reliably.
+        if self.nodes.is_multiple_of(POLL_INTERVAL_NODES) && budget.expired(self.nodes) {
+            self.stopped = true;
+            return Score::ZERO;
+        }
+
+        // The same ply bound as `negamax`'s, not one short of it: `pv` has
+        // `MAX_PLY + 1` rows and both searches index it with the same counter,
+        // so they have to agree about where the stack ends. It is a backstop
+        // rather than the working bound — a capture chain runs out of material
+        // long before it, and a checked chain runs out of `QS_MAX_CHECK_PLIES`.
+        if ply >= MAX_PLY {
+            return eval::evaluate(board);
+        }
+
+        let in_check = board.in_check();
+        if in_check && depth <= -QS_MAX_CHECK_PLIES {
+            return eval::evaluate(board);
+        }
+
+        let base;
+        let mut best;
+        if in_check {
+            // No stand-pat while in check: declining a check is not a legal
+            // option, so a score that assumes we could is a claim about a
+            // position that does not exist rather than a bound on this one.
+            // Generation is shunsai's full legal walk, which restricts itself
+            // to evasions here — so an empty list means mate, exactly as it
+            // does at an interior node.
+            base = self.buf.generate(board);
+            if self.buf.len() == base {
+                self.buf.truncate(base);
+                return Score::mated_in(ply);
+            }
+            best = -Score::INFINITE;
+        } else {
+            // Standing pat is the claim that we need not capture at all. It
+            // holds because a quiet position's value is its evaluation, and
+            // because there is always some quiet move to make instead — shogi
+            // has no stalemate.
+            let stand_pat = eval::evaluate(board);
+            if stand_pat >= window.beta {
+                return stand_pat;
+            }
+            if stand_pat > window.alpha {
+                window.alpha = stand_pat;
+            }
+            best = stand_pat;
+            base = self.buf.generate_captures(board);
+        }
+
+        for i in base..self.buf.len() {
+            let mv = self.buf.get(i);
+            board.do_move(mv);
+            // `depth` counts checked plies only, so it moves only when this node
+            // was one. A capture chain therefore never runs the counter down and
+            // is left to terminate on material, which it does.
+            let given = self.buf.len();
+            let score = -self.qsearch(
+                board,
+                -window,
+                depth - Depth::from(in_check),
+                ply + 1,
+                budget,
+            );
+            // The same boundary check as `child`'s, for the same reason: this is
+            // the only place a quiescence child's leak is still visible.
+            debug_assert_eq!(self.buf.len(), given, "a quiescence child leaked moves");
             board.undo_move(mv);
 
             if self.stopped {
@@ -368,6 +604,7 @@ impl Searcher for NegamaxSearcher {
         let mut board = job.game.search_board();
 
         self.nodes = 0;
+        self.seldepth = 0;
         self.stopped = false;
         // Not redundant with the per-ply truncation: a panic caught by
         // `search::worker` unwinds past every one of those, and the worker
@@ -393,8 +630,22 @@ impl Searcher for NegamaxSearcher {
         // nothing may depend on it.
         let mut best = self.root_moves[0];
 
+        // What the first iteration runs against instead, so that the answer is
+        // always a move the search actually looked at rather than the seed. See
+        // `Budget::without_limits` — `stop` still gets through it, so this
+        // cannot delay a shutdown.
+        let first = budget.without_limits();
+
         for depth in 1..=budget.max_depth {
-            let Some(score) = self.negamax_root(&mut board, Window::open(), depth, &budget) else {
+            // `seldepth` is the selective depth *of this iteration*, so it
+            // starts again here, and it is measured rather than seeded.
+            // `self.nodes` deliberately does not reset — see the field's doc.
+            self.seldepth = 0;
+
+            let iteration_budget = if depth == 1 { &first } else { &budget };
+            let Some(score) =
+                self.negamax_root(&mut board, Window::open(), depth, iteration_budget)
+            else {
                 break;
             };
             // Taking the answer from a *partial* iteration is deliberate and is
@@ -410,6 +661,7 @@ impl Searcher for NegamaxSearcher {
             out.info(
                 &SearchInfo {
                     depth,
+                    seldepth: self.seldepth,
                     score,
                     nodes: self.nodes,
                     elapsed: started.elapsed(),
@@ -650,17 +902,51 @@ mod tests {
         );
     }
 
+    /// Whether any root move hands the opponent a capture.
+    ///
+    /// The equation below holds only where the answer is no, and it is asserted
+    /// rather than assumed: "no capture is reachable here" is a fact about a
+    /// diagram, and a fixture that quietly acquired one would leave the equation
+    /// looking like a passing test of a convention it had stopped measuring.
+    fn a_capture_is_reachable_in_one_ply(args: &str) -> bool {
+        let mut board = game(args).search_board();
+        board.legal_moves().into_iter().any(|mv| {
+            board.do_move(mv);
+            let reachable = board
+                .legal_moves()
+                .into_iter()
+                .any(|reply| board.piece_at(reply.to()).is_some());
+            board.undo_move(mv);
+            reachable
+        })
+    }
+
     /// The frozen node-counting convention, written as an equation: one node
     /// for the root plus one for each move it tries.
     ///
-    /// Sabotage: move `self.nodes += 1` below the `depth <= 0` return in
-    /// `negamax` and this drops to 1.
+    /// Both fixtures are capture-free one ply in, so every child is a
+    /// quiescence node that stands pat immediately and the equation is still
+    /// exactly `1 + N`. The initial position keeps its place here for a reason
+    /// worth recording, because it is not obvious and was got wrong while this
+    /// step was being planned: `7g7f` opens *Black's* bishop diagonal, not
+    /// White's — White's own pawn on 3c blocks the bishop on 2b, so `2b8h+` is
+    /// not available and no root move offers a capture at all.
+    ///
+    /// Sabotage: move `self.nodes += 1` below the stand-pat return in `qsearch`
+    /// and this drops to 1.
     #[test]
     fn the_root_and_every_leaf_count_as_one_node() {
         for args in [
             "startpos",
-            "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
+            // Two lone kings — the sparse position PROGRESS.md measured poll
+            // starvation on, and the one fixture whose capture-free-ness is
+            // structural rather than incidental.
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b - 1",
         ] {
+            assert!(
+                !a_capture_is_reachable_in_one_ply(args),
+                "the fixture stopped being capture-free, so this no longer measures the convention: {args}"
+            );
             let expected = 1 + game(args).position().legal_moves().len() as i64;
             let (_, lines) = run(args, depth(1));
             assert_eq!(lines.len(), 1, "{args}");
@@ -668,20 +954,229 @@ mod tests {
         }
     }
 
+    /// The counterpart: where captures *are* reachable the equation has to
+    /// break upward, because quiescence went and looked.
+    ///
+    /// Sabotage: make `generate_captures` return nothing, or have `child`
+    /// evaluate instead of dispatching to `qsearch`, and this falls back to
+    /// exactly `1 + N`.
+    #[test]
+    fn quiescence_resolves_captures_the_horizon_would_have_hidden() {
+        let args = "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
+        assert!(a_capture_is_reachable_in_one_ply(args));
+        let flat = 1 + game(args).position().legal_moves().len() as i64;
+        let (_, lines) = run(args, depth(1));
+        assert!(
+            field(&lines[0], "nodes") > flat,
+            "quiescence searched nothing: {}",
+            lines[0]
+        );
+    }
+
+    /// **The step's headline claim, as a falsifiable prediction.**
+    ///
+    /// PROGRESS.md recorded the horizon effect as a fingerprint: from the
+    /// initial position the search reports one pawn's board value plus one
+    /// pawn's hand value — 215 — at odd depths and 0 at even ones, because an
+    /// odd depth ends just after the engine takes a pawn and the recapture is
+    /// past its horizon. The initial position is symmetric, so a score of that
+    /// magnitude is the effect and nothing else.
+    ///
+    /// Written against the recorded number rather than as "the scores are
+    /// small", so that a search which broke in some new way and reported ±90
+    /// cannot pass this by being differently wrong.
+    ///
+    /// Sabotage: evaluate in `child` instead of dispatching to `qsearch`, and
+    /// 215 comes straight back at every odd depth.
+    #[test]
+    fn the_horizon_effect_fingerprint_is_gone() {
+        // 215 = a pawn on the board plus a pawn in hand, the two values the
+        // fingerprint was made of.
+        const FINGERPRINT: i64 = 215;
+        for d in 1..=6 {
+            let (_, lines) = run("startpos", depth(d));
+            let last = lines.last().expect("an iteration finished");
+            assert!(
+                field(last, "cp").abs() < FINGERPRINT,
+                "depth {d} still reports the horizon effect: {last}"
+            );
+        }
+    }
+
+    /// Declining a check is not a legal option, so a quiescence node in check
+    /// has to generate — and finding nothing means mate, not material.
+    ///
+    /// Sabotage: stand pat unconditionally (drop the `in_check` branch) and the
+    /// mate one ply away is reported as a material balance. It is the single
+    /// worst thing a quiescence search can get wrong.
+    #[test]
+    fn quiescence_does_not_stand_pat_in_check() {
+        // 頭金 again, but searched at depth 1 so that the mate has to be found
+        // *inside* a quiescence node rather than at an interior one.
+        let (_, lines) = run("sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1", depth(1));
+        let last = lines.last().expect("an iteration finished");
+        assert_eq!(field(last, "mate"), 1, "{last}");
+    }
+
+    /// A quiet node with no captures stands pat. It must never report mate: it
+    /// did not generate every move, so it does not know.
+    ///
+    /// Sabotage: return `Score::mated_in(ply)` when the *capture* list is empty
+    /// rather than only when the evasion list is, and the engine announces mate
+    /// in every quiet position it reaches — a mate it invented.
+    #[test]
+    fn quiescence_only_claims_mate_when_it_generated_every_move() {
+        for d in 1..=4 {
+            let (_, lines) = run("sfen 4k4/9/9/9/9/9/9/9/4K4 b - 1", depth(d));
+            let last = lines.last().expect("an iteration finished");
+            assert!(
+                !last.contains(" score mate "),
+                "quiescence invented a mate at depth {d}: {last}"
+            );
+        }
+    }
+
+    /// `seldepth` is the deepest ply an iteration reached. Where captures exist
+    /// it must exceed the nominal depth, and where none do it must equal it —
+    /// which is what makes it data rather than a copy of `depth`.
+    ///
+    /// Sabotage: feed `seldepth` from `depth`, or never update it in `qsearch`,
+    /// and the tactical half fails.
+    #[test]
+    fn seldepth_reaches_past_the_nominal_depth_where_captures_exist() {
+        let (_, quiet) = run("sfen 4k4/9/9/9/9/9/9/9/4K4 b - 1", depth(3));
+        let last = quiet.last().expect("an iteration finished");
+        assert_eq!(field(last, "seldepth"), field(last, "depth"), "{last}");
+
+        let (_, tactical) = run(
+            "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
+            depth(3),
+        );
+        let last = tactical.last().expect("an iteration finished");
+        assert!(
+            field(last, "seldepth") > field(last, "depth"),
+            "quiescence never went past the nominal depth: {last}"
+        );
+    }
+
+    /// The explosion tripwire. Quiescence with no ordering, no SEE and no delta
+    /// pruning is the widest it will ever be, and the drop-heavy fixture is
+    /// where that shows first.
+    ///
+    /// The ceiling is measured rather than reasoned — the figure it was set
+    /// from is in PROGRESS.md — and it is loose on purpose: it exists to catch
+    /// an unbounded recursion, not to pin a number every future search patch
+    /// would have to come back and update.
+    #[test]
+    fn quiescence_is_bounded_on_the_drop_heavy_fixture() {
+        let (_, lines) = run(
+            "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
+            depth(4),
+        );
+        let last = lines.last().expect("an iteration finished");
+        assert!(
+            field(last, "nodes") < 20_000_000,
+            "quiescence ran away: {last}"
+        );
+    }
+
+    /// The first iteration is never abandoned, so the answer is always a move
+    /// the search actually looked at.
+    ///
+    /// Until quiescence this was arithmetic — a depth-1 iteration was at most
+    /// `1 + 593` nodes and the poll only fires on an exact multiple of 1024, so
+    /// it could not fire. Quiescence removed the bound, not the behaviour:
+    /// depth 1 still costs only a few hundred nodes in most positions, and it
+    /// took a search over the drop-heavy fixture's descendants to find one where
+    /// it does not. **The fixture below costs about forty-nine thousand nodes at
+    /// depth 1**, which is what makes this test able to fail at all; the
+    /// positions tried first cost 31 to 634 and could not.
+    ///
+    /// `movetime 0` is the sharpest form of the question: the deadline has
+    /// already passed when the search starts.
+    ///
+    /// Sabotage, verified on this fixture and on no other: pass `budget` rather
+    /// than `first` to the depth-1 iteration and it fails on both counts at once
+    /// — no `info` line is emitted at all, and the answer becomes whatever
+    /// shunsai happened to generate first.
+    #[test]
+    fn the_first_iteration_is_never_abandoned() {
+        // Two plies on from the drop-heavy fixture, found by searching its
+        // descendants for the most expensive depth-1 iteration.
+        let args = "sfen l6nl/6+Pgk/2np1S3/p1p1p2Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn4p 3";
+        let (best, lines) = run(
+            args,
+            Limits {
+                movetime: Some(Duration::ZERO),
+                ..Limits::default()
+            },
+        );
+        let first = lines.first().expect("depth 1 emitted no info line");
+        assert_eq!(field(first, "depth"), 1, "{first}");
+        let pv = pv_of(first);
+        assert!(!pv.is_empty(), "{first}");
+        match best {
+            BestMove::Play { mv, .. } => assert_eq!(mv.to_usi_owned(), pv[0]),
+            BestMove::Resign => panic!("a position with legal moves resigned"),
+        }
+    }
+
+    /// A node limit has to be honoured on a tactical position too, where the
+    /// unclocked first iteration is itself expensive.
+    ///
+    /// The bound is built from a *measured* depth-1 cost, because the first
+    /// iteration runs unclocked by design: nothing can stop before it finishes,
+    /// so the limit can only bite after that. That interaction — an
+    /// unstoppable iteration in front of a node limit — is what this covers and
+    /// what the startpos-based `a_deep_search_still_answers_a_node_limit` does
+    /// not, since depth 1 costs 31 nodes there.
+    ///
+    /// ⚠️ **It is not the test that catches the poll being dropped from
+    /// `qsearch`.** That mutation was made, and the one that went red was
+    /// `a_deep_search_still_answers_a_node_limit`, whose bound is far tighter.
+    /// The note said otherwise until the mutation was actually run.
+    #[test]
+    fn a_node_limit_is_honoured_inside_a_quiescence_subtree() {
+        let args = "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
+        let (_, first) = run(args, depth(1));
+        let unclocked = field(&first[0], "nodes");
+
+        let (_, lines) = run(
+            args,
+            Limits {
+                depth: Some(64),
+                nodes: Some(20_000),
+                ..Limits::default()
+            },
+        );
+        let nodes = field(lines.last().expect("an iteration finished"), "nodes");
+        assert!(
+            nodes < unclocked + 20_000 + 4 * i64::try_from(POLL_INTERVAL_NODES).expect("fits"),
+            "the node limit went unnoticed inside quiescence: {nodes}"
+        );
+    }
+
     /// 頭金: a gold dropped on 5b, protected by the gold on 5c, with every
     /// flight square from 5a covered.
     ///
-    /// Note the depth. A mate one ply away is invisible at depth 1, because a
-    /// depth-zero node reports material without generating moves — the cost
-    /// named in `negamax`, and step 3's quiescence search is what removes it.
+    /// The depth is no longer what makes this work, and the change is worth
+    /// recording rather than quietly editing. Until step 3a a mate one ply away
+    /// was invisible at depth 1, because a depth-zero node reported material
+    /// without generating moves; the fixture ran at depth 4 for that reason.
+    /// Quiescence removed it — the mate is now found in the depth-1 iteration,
+    /// which `quiescence_does_not_stand_pat_in_check` asserts directly — so the
+    /// deepening loop breaks straight after the first iteration and this is a
+    /// one-iteration test. The depth is kept because it costs nothing and
+    /// because the assertion is about the answer, not the route.
     ///
-    /// Sabotage, both verified: score a mated node `Score::mated_in(0)` instead
-    /// of `mated_in(ply)` and the announced distance is wrong; drop the
-    /// `pv[ply].clear()` at node entry and a stale line from an earlier subtree
-    /// hangs off the mate. The second is the surprising one — the leaf plies
-    /// are the only ones that never fill their own line, so a missing clear is
-    /// invisible until an iteration is deep enough for a ply to be interior in
-    /// one pass and a leaf in the next.
+    /// Sabotage, both re-verified after quiescence landed: score a mated node
+    /// `Score::mated_in(0)` instead of `mated_in(ply)` and the announced
+    /// distance is wrong; drop the `pv[ply].clear()` at node entry and a stale
+    /// line from an earlier subtree hangs off the mate. The *reason* the second
+    /// one fires has changed with the search — it used to need an iteration
+    /// deep enough for a ply to be interior in one pass and a leaf in the next,
+    /// and it now fires at depth 1 because the quiescence leaf never fills its
+    /// own line either.
     #[test]
     fn finds_the_mate_in_one() {
         let (_, lines) = run("sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1", depth(4));
@@ -698,18 +1193,27 @@ mod tests {
     /// a ply-threaded principal variation, and one that looks entirely
     /// plausible in a GUI until somebody replays it.
     ///
-    /// **The depth is load-bearing, and was measured rather than guessed.**
-    /// Reversing `update_pv` and running this at depth 3 leaves it green: a
+    /// **The depth stopped being load-bearing at step 3a, and the measurement
+    /// behind it has been re-run rather than inherited.** Step 2 measured that
+    /// reversing `update_pv` and running this at depth 3 left it green — a
     /// three-move line read backwards still happened to replay on every fixture
-    /// tried. A line has to be long enough for its own order to matter. That is
-    /// also why this test is here rather than in the USI conformance suite,
-    /// where `quit` arrives with the rest of the script and no dialogue ever
-    /// gets past depth 1.
+    /// tried — and chose depth 5 for that reason. Re-measured with quiescence in
+    /// place, **depth 3 now fails too**: quiescence lengthens the reported line
+    /// well past the nominal depth, so it is long enough for its own order to
+    /// matter much sooner. Depth 5 is kept because it costs nothing and searches
+    /// more, not because 3 would no longer do.
+    ///
+    /// The test is still here rather than in the USI conformance suite, and that
+    /// part is unchanged: `quit` arrives with the rest of the script there and
+    /// no dialogue ever gets past depth 1.
     ///
     /// Sabotage: append the child line before the move in `update_pv` and this
-    /// fails. Dropping the `pv[ply].clear()` at node entry does **not** show up
-    /// here — that one is caught by `finds_the_mate_in_one`, and finding out
-    /// which of the two tests actually notices took making both mutations.
+    /// fails. Dropping the `pv[ply].clear()` at node entry **now fails here
+    /// too**, and it did not before quiescence — the note used to say so and to
+    /// point at `finds_the_mate_in_one` as the only test that noticed. Both
+    /// mutations were re-run after quiescence landed; three tests catch the
+    /// second one now, because a quiescence leaf leaves a line behind at plies
+    /// that used to be evaluated without ever being entered.
     ///
     /// **The replay is the part with teeth; the head comparison at the end is
     /// nearly free.** `best` is `self.pv[0][0]` and the printed line is
@@ -963,12 +1467,15 @@ mod tests {
         );
     }
 
-    /// `go` with only a clock on it falls back to a fixed depth, and that depth
-    /// is even — an odd one would end every unclocked line on an unanswered
-    /// capture.
+    /// `go` with only a clock on it falls back to a fixed depth.
+    ///
+    /// It used to also assert that the depth was *even*, because an odd one
+    /// ended every unclocked line on an unanswered capture. Quiescence is what
+    /// made that true and quiescence is what removed it, so the assertion went
+    /// with its reason (DESIGN.md §9) rather than being left to pin a rule
+    /// nobody could still justify.
     #[test]
-    fn an_unclocked_go_falls_back_to_an_even_default_depth() {
-        assert_eq!(DEFAULT_DEPTH % 2, 0);
+    fn an_unclocked_go_falls_back_to_the_default_depth() {
         let limits = Limits {
             btime: Some(Duration::from_secs(300)),
             wtime: Some(Duration::from_secs(300)),

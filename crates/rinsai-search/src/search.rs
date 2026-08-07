@@ -47,9 +47,10 @@ pub struct Limits {
 /// Atomics rather than a channel. The load-bearing reason is E2: one `Arc`
 /// broadcasts to every Lazy SMP thread, where a channel would need one per
 /// thread. A relaxed load of a rarely-written bool should also be cheaper than
-/// `try_recv` on the polling path — **unmeasured, and there is no polling path
-/// yet**; the interval (1024 nodes is the usual starting point) is step 2's to
-/// choose and step 5's to measure against the time-management SPRT.
+/// `try_recv` on the polling path — **still unmeasured**, though the polling
+/// path itself has existed since step 2 and now runs at every quiescence node
+/// as well. The interval is chosen in `negamax.rs` and is step 5's to measure
+/// against the time-management SPRT.
 ///
 /// A **fresh set is created per `go`**, so a `stop` that arrives late cannot
 /// abort the *next* search — the classic bug in globally-flagged engines.
@@ -166,7 +167,7 @@ impl InfoSink for SilentSink {
 /// A trait rather than a concrete type because it is the seam the conformance
 /// tests inject through: a recording implementation turns "did `go infinite`
 /// reach the search?" into a value assertion instead of a sleep. Anything that
-/// must survive between searches — the transposition table from step 3, the
+/// must survive between searches — the transposition table from step 3b, the
 /// history tables from E1, E3's accumulator stack — lives in the implementor,
 /// which the worker thread owns for its whole life.
 pub trait Searcher: Send {
@@ -325,7 +326,7 @@ fn worker<S: Searcher>(
         // The outer catch is what keeps the *worker* alive. The inner one below
         // keeps the *job* answered. They are different guarantees and both are
         // needed: a panic anywhere in this loop body — `new_game` clearing a
-        // transposition table at step 3, or the emit closure writing to a
+        // transposition table at step 3b, or the emit closure writing to a
         // broken stdout — would otherwise end the thread with the loop, after
         // which every later job is sent into a closed channel and the engine
         // answers the handshake forever while never moving again.
@@ -344,7 +345,7 @@ fn worker<S: Searcher>(
                     //
                     // `AssertUnwindSafe` is needed for the `&mut S`, and is not
                     // `unsafe`. The residual risk is real and worth naming: a
-                    // searcher that panics may have left its own state (from step 3,
+                    // searcher that panics may have left its own state (from step 3b,
                     // a transposition table) inconsistent. `usinewgame` clears it,
                     // and one bad game beats a dead engine.
                     let best = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -513,7 +514,7 @@ mod tests {
         );
     }
 
-    /// A panic *outside* the searcher — here in `new_game`, at step 3 a
+    /// A panic *outside* the searcher — here in `new_game`, at step 3b a
     /// transposition table being cleared — must not take the worker with it.
     ///
     /// The inner `catch_unwind` only covers `search`. Without the outer one the

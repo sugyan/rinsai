@@ -344,7 +344,7 @@ impl HistoryEntry {
 /// is the right trade — it is on the path of every `go`, and a release build
 /// has no business paying for it — but it means the guarantee is "the test
 /// suite would have caught a drift", not "a live game will". Making it
-/// unconditional is a decision for step 3, where the transposition table gives
+/// unconditional is a decision for step 3b, where the transposition table gives
 /// a key mismatch somewhere far worse to go.
 impl Clone for Game {
     fn clone(&self) -> Self {

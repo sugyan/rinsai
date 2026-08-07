@@ -201,7 +201,7 @@ impl<W: Write + Send + 'static> Engine<W> {
 
     fn ready(&self) {
         // The specification lets an engine take arbitrarily long here, which is
-        // where slow initialisation belongs: the transposition table at step 3,
+        // where slow initialisation belongs: the transposition table at step 3b,
         // the evaluation network at E3.
         for (name, planned) in self.options.unhonoured_changes() {
             self.out.info_string(&format!(
