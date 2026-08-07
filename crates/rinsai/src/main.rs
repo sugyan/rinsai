@@ -26,9 +26,14 @@ fn main() -> ExitCode {
     }
 
     // Step 1 shipped a placeholder here and predicted that swapping in a real
-    // search would change only the two lines that *name* the searcher — this
-    // one, and `dialogue` in tests/usi_conformance.rs. It held: step 2 deleted
-    // the placeholder and touched nothing else in this crate.
+    // search would *need* to change only the lines that name the searcher. It
+    // held: six lines across the crate, every one of them naming it or pointing
+    // at where it lives — the `use` and the call below, and in
+    // tests/usi_conformance.rs the `use`, `dialogue`, its doc line and the
+    // module doc's pointer. Nothing else was forced. (Step 2 also *added* tests
+    // to that file; nothing made it, and PROGRESS.md keeps the two apart,
+    // because "nothing else changed" and "nothing else had to" are different
+    // claims and only the second one is the result.)
     // `stdout()` rather than `stdout().lock()`: the lock guard is not `Send`,
     // and the handle has to reach the search thread. `Output` serialises writes
     // itself, so the extra internal lock costs nothing at USI's line volume.

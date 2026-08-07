@@ -103,9 +103,25 @@ evaluation, a principal variation, `info` lines and mate scoring;
 
 **The step-1 seam held.** `Searcher::search` takes `&SearchJob`, `Game` hands
 out no `&mut Position`, and neither had to change: the searcher asks `Game` for
-a board of its own. The only lines in `crates/rinsai` that changed are the two
-that *name* the searcher, exactly as step 1 predicted. Every pre-existing
-conformance and process test passed unmodified.
+a board of its own. Step 1's prediction was that only the lines *naming* the
+searcher would **need** to change, and that is what happened — six of them,
+every one naming it or pointing at where it lives:
+
+| File | Lines forced | What they are |
+|---|---|---|
+| `src/main.rs` | 2 | the `use`, and the `usi::run` call |
+| `tests/usi_conformance.rs` | 4 | the `use`, `dialogue`, its doc line, the module doc's pointer |
+| `tests/usi_process.rs` | 0 | — |
+
+Every pre-existing conformance and process test passed unmodified.
+
+**Not the same claim as "nothing else in the crate changed", which is false**:
+step 2 also added a helper and three tests to `usi_conformance.rs`, about eighty
+lines. Nothing forced those — they are new assertions about a search that did
+not exist before — so they say nothing either way about the seam. Keeping the
+two apart is the whole content of the result: a seam is verified by what a
+change *compelled*, not by a diffstat. (The looser wording shipped in this
+branch's first draft and was caught in review.)
 
 Measured, release build. Not a strength claim — E0 has no instrument for that
 (see below) — just what the thing does. **This table is the only home for these
