@@ -107,19 +107,36 @@ a board of its own. The only lines in `crates/rinsai` that changed are the two
 that *name* the searcher, exactly as step 1 predicted. Every pre-existing
 conformance and process test passed unmodified.
 
-Measured, release build, this machine. Not a strength claim — E0 has no
-instrument for that (see below) — just what the thing does:
+Measured, release build. Not a strength claim — E0 has no instrument for that
+(see below) — just what the thing does. **This table is the only home for these
+numbers**; nothing in the source repeats them, because the first draft of step 2
+put a timing in a doc comment and the two copies had already drifted apart by a
+factor of two when the branch was reviewed.
 
-| Position | Depth | Nodes | Time |
+| Position | Depth | Nodes | Time (this machine) |
 |---|---|---|---|
 | initial | 6 | 585 568 | 23 ms |
-| drop-heavy middlegame | 4 | 838 976 | 62 ms |
-| drop-heavy middlegame | 5 | 13 888 371 | 465 ms |
+| drop-heavy middlegame | 4 | 838 976 | 40 ms |
+| drop-heavy middlegame | 5 | 13 888 371 | 445 ms |
+
+**The two columns are not the same kind of fact, and the difference matters from
+step 3 on.** The node counts are deterministic: three runs reproduce all three
+to the digit, which is why they are what `bench` freezes as a regression test.
+The times are one machine on one day — the same three rows spread 22–30 ms,
+39–46 ms and 442–447 ms across four runs, the first of each batch being the
+slowest — so a time that differs from this table is not a result. That is the
+whole reason a quiet machine is a precondition for the SPRT loop (§8): a
+noisy run does not change the node counts at all, and changes the times enough
+to invent an improvement. The node rate these imply is used once, under "the
+poll interval is 1024 nodes" below.
 
 **Expect the scores to alternate by depth parity, and do not go looking for the
-bug.** From the initial position, odd depths report +215 and even depths 0: 215
-is a pawn's board value plus a pawn's hand value, i.e. a capture the search sees
-but not the recapture. That is the horizon effect, it is what DESIGN.md means by
+bug.** From the initial position, depths 3 and up report +215 at odd depths and
+0 at even ones (depth 1 is 0: the initial position has no capture one ply in).
+215 is a pawn's board value plus a pawn's hand value — after `7g7f`, every White
+reply leaves Black a free pawn on ply 3, `8h×3c` if the diagonal is open and
+`8h×4d` if `4c4d` blocks it, and at depth 4 White recaptures with `2b` so the
+score falls back to 0. That is the horizon effect, it is what DESIGN.md means by
 "material evaluation without qsearch fails", and step 3 is the answer.
 
 And it holds a whole game: 70 plies against the local material-only YaneuraOu
@@ -221,6 +238,18 @@ them.
   extension, the early cut-off and the delay margin that go with it — is step
   5's whole subject and is not approximated. `byoyomi 0` means "this time
   control has no byoyomi", not a zero-millisecond budget.
+
+  ⚠️ **"Honoured" means the search stops on time, not that the move arrives on
+  time**, and the difference is a lost game rather than a lost tempo. The
+  deadline is `search()`'s entry plus the stated budget exactly: everything
+  before that instant — the server sending `go`, the pipe, the protocol thread
+  parsing it, the channel handing it to the worker — and everything after it —
+  up to two poll intervals of overshoot, then building and flushing `bestmove`,
+  then the wire back — falls outside the budget. Locally that is microseconds
+  and the step-2 game at `go byoyomi 200` never noticed. Over a network it is
+  not, and a byoyomi overrun is an immediate loss. The margin that covers this
+  is named in step 5's list above and stays there; **until step 5, do not enter
+  rinsai anywhere the clock is enforced across a network — floodgate included.**
 
 - **`DEFAULT_DEPTH = 4`, and it must stay even.** It answers "no budget of any
   kind was named" and only that — applying it as a ceiling over a stated budget

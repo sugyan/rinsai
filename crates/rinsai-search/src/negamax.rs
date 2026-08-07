@@ -38,21 +38,21 @@ use crate::search::{BestMove, InfoSink, Limits, SearchJob, SearchSignals, Search
 /// quiescence search to settle the exchange properly.
 ///
 /// Four rather than six because there is no interior move ordering yet, so the
-/// tree is close to a full minimax. Measured in the drop-heavy middlegame the
-/// tests use, release build: depth 4 takes about 30 ms and depth 6 about six
-/// seconds. Six would be a long think for a move nobody asked to have thought
-/// about.
+/// tree is close to a full minimax and each further pair of plies costs an order
+/// of magnitude. Six would be a long think for a move nobody asked to have
+/// thought about. The node counts and timings behind that are in PROGRESS.md,
+/// not here — a measurement copied into a doc comment is a measurement that
+/// goes stale silently.
 const DEFAULT_DEPTH: Depth = 4;
 
 /// How often the search asks whether it is out of budget.
 ///
-/// The conventional starting point, and untuned. Measured on this tree rather
-/// than assumed: a release build runs at roughly 20–30 M nodes/s, because most
-/// nodes are depth-zero leaves that only evaluate, so 1024 nodes is about 40 µs
-/// of latency — far inside any USI deadline. Expect that to grow as a node gets
-/// more expensive (quiescence at step 3, ordering work at E1), and expect step
-/// 5's time-management SPRT to be where the number is chosen rather than
-/// inherited.
+/// The conventional starting point, and untuned. It is far inside any USI
+/// deadline at this step's node rate, because most nodes are depth-zero leaves
+/// that only evaluate (the rate itself is in PROGRESS.md). Expect the interval
+/// to buy less latency as a node gets more expensive — quiescence at step 3,
+/// ordering work at E1 — and expect step 5's time-management SPRT to be where
+/// the number is chosen rather than inherited.
 const POLL_INTERVAL_NODES: u64 = 1024;
 
 /// The deepest iteration any search will start. One below [`MAX_PLY`] so that
@@ -68,9 +68,11 @@ struct Window {
 }
 
 impl Window {
-    /// The full window. E1's aspiration search is the first caller that will
-    /// want a narrower one, and [`NegamaxSearcher::negamax_root`] already takes
-    /// the window as a parameter so that it can.
+    /// The full window, and **the only one [`NegamaxSearcher::negamax_root`]
+    /// accepts today** — it asserts as much, and the reason is in that method's
+    /// doc. E1's aspiration search is what will want a narrower one, and
+    /// widening the root's contract is part of that step rather than something
+    /// already paid for here.
     fn open() -> Self {
         Self {
             alpha: -Score::INFINITE,
@@ -200,6 +202,19 @@ impl NegamaxSearcher {
     /// iteration's [`Self::pv`] and best move stand. `Some` therefore carries
     /// the promise that `pv[0]` is fresh and non-empty, which is what lets the
     /// caller read `pv[0][0]` without checking.
+    ///
+    /// ⚠️ **`window` must be open, and the assertion below is load-bearing
+    /// rather than defensive.** What the code actually returns `None` on is "no
+    /// root move raised alpha", and that is only the same thing as "no root move
+    /// finished" while alpha starts at `-INFINITE`. Hand this a narrow window
+    /// and an ordinary **fail-low** — the case aspiration search exists to
+    /// re-search wider — comes back as `None`, whereupon [`Searcher::search`]
+    /// breaks out of the deepening loop instead of re-searching. That failure
+    /// has no wrong answer and no panic in it: the engine simply stops
+    /// deepening, and every test here passes because every test here searches an
+    /// open window. Note too that this ignores `window.beta` outright; a root
+    /// with a real beta needs a cutoff. E1 owns both, and owes this method a
+    /// return type that tells fail-low apart from abandoned.
     fn negamax_root(
         &mut self,
         board: &mut Position,
@@ -207,6 +222,11 @@ impl NegamaxSearcher {
         depth: Depth,
         budget: &Budget<'_>,
     ) -> Option<Score> {
+        debug_assert_eq!(
+            window.alpha,
+            -Score::INFINITE,
+            "negamax_root cannot tell a fail-low from an abandoned iteration"
+        );
         self.nodes += 1;
 
         let mut best = -Score::INFINITE;
@@ -377,6 +397,15 @@ impl Searcher for NegamaxSearcher {
             let Some(score) = self.negamax_root(&mut board, Window::open(), depth, &budget) else {
                 break;
             };
+            // Taking the answer from a *partial* iteration is deliberate and is
+            // safe for exactly one reason: the root list was re-seeded below
+            // with the last iteration's move, so every move this iteration did
+            // finish was compared against that one at this depth. The `score`
+            // beside it is weaker than the move — over a prefix of the root list
+            // it is a lower bound, not the iteration's value — and the `info`
+            // line does not say so, because USI has no way to. A GUI reading a
+            // score that dipped at the last depth of a stopped search is seeing
+            // that, not a blunder.
             best = self.pv[0][0];
             out.info(
                 &SearchInfo {
@@ -504,11 +533,11 @@ mod tests {
 
     #[test]
     fn answers_with_a_legal_move() {
-        let board = game("startpos");
+        let fixture = game("startpos");
         let (best, _) = run("startpos", depth(2));
         match best {
             BestMove::Play { mv, ponder } => {
-                assert!(is_legal(board.position(), mv));
+                assert!(is_legal(fixture.position(), mv));
                 assert_eq!(ponder, None);
             }
             BestMove::Resign => panic!("the initial position has 30 legal moves"),
@@ -532,10 +561,10 @@ mod tests {
     /// covered by the gold on 5b.
     #[test]
     fn a_checkmated_root_resigns() {
-        let board = game("sfen 4k4/4G4/4G4/9/9/9/9/9/4K4 w - 1");
-        assert!(board.in_check(), "the fixture is not even check");
+        let fixture = game("sfen 4k4/4G4/4G4/9/9/9/9/9/4K4 w - 1");
+        assert!(fixture.in_check(), "the fixture is not even check");
         assert!(
-            board.position().legal_moves().is_empty(),
+            fixture.position().legal_moves().is_empty(),
             "the fixture is not mate"
         );
         let (best, _) = run("sfen 4k4/4G4/4G4/9/9/9/9/9/4K4 w - 1", depth(4));
@@ -681,6 +710,15 @@ mod tests {
     /// fails. Dropping the `pv[ply].clear()` at node entry does **not** show up
     /// here — that one is caught by `finds_the_mate_in_one`, and finding out
     /// which of the two tests actually notices took making both mutations.
+    ///
+    /// **The replay is the part with teeth; the head comparison at the end is
+    /// nearly free.** `best` is `self.pv[0][0]` and the printed line is
+    /// `&self.pv[0]`, read one statement apart in the same iteration, so a
+    /// reversed `update_pv` keeps them equal — that is precisely why the test
+    /// this replaced was worthless on its own. It is kept because it is not
+    /// *entirely* free: it fails the day `search` starts answering with
+    /// something other than the head of the line it published, which is a real
+    /// mistake and one E1's MultiPV work could make.
     #[test]
     fn the_reported_pv_is_playable() {
         for args in ["startpos", "startpos moves 7g7f 3c3d"] {
@@ -795,9 +833,15 @@ mod tests {
         );
     }
 
-    /// One line per completed iteration, deepening by one each time.
+    /// One line per iteration, deepening by one each time.
+    ///
+    /// The fixture states a depth and so is never cut short, which is the only
+    /// case this covers. A search that *is* cut short still emits a line for the
+    /// iteration it was in the middle of — see the comment beside `out.info` —
+    /// so "one line per **completed** iteration" would be a stronger claim than
+    /// either the code or this test makes.
     #[test]
-    fn one_info_line_per_completed_iteration() {
+    fn one_info_line_per_iteration() {
         let (_, lines) = run("startpos", depth(3));
         assert_eq!(lines.len(), 3, "{lines:?}");
         for (i, line) in lines.iter().enumerate() {
