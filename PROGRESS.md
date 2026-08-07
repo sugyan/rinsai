@@ -107,19 +107,48 @@ a board of its own. The only lines in `crates/rinsai` that changed are the two
 that *name* the searcher, exactly as step 1 predicted. Every pre-existing
 conformance and process test passed unmodified.
 
-Measured, release build, this machine. Not a strength claim — E0 has no
-instrument for that (see below) — just what the thing does:
+Measured, release build. Not a strength claim — E0 has no instrument for that
+(see below) — just what the thing does. **This table is the only home for these
+numbers**; nothing in the source repeats them, because the first draft of step 2
+put a timing in a doc comment and the two copies had already drifted apart by a
+factor of two when the branch was reviewed.
 
-| Position | Depth | Nodes | Time |
+| Position | Depth | Nodes | Time (this machine) |
 |---|---|---|---|
 | initial | 6 | 585 568 | 23 ms |
-| drop-heavy middlegame | 4 | 838 976 | 62 ms |
-| drop-heavy middlegame | 5 | 13 888 371 | 465 ms |
+| drop-heavy middlegame | 4 | 838 976 | 40 ms |
+| drop-heavy middlegame | 5 | 13 888 371 | 445 ms |
+
+**The two columns are not the same kind of fact, and the difference matters from
+step 3 on.** The node counts are deterministic: every run reproduces all three to
+the digit, which is why they are what `bench` freezes as a regression test. The
+times are one machine on one day — settled, the three rows sit at 22–23 ms,
+38–41 ms and 444–454 ms — so a time that differs from this table is not by itself
+a result. That is the whole reason a quiet machine is a precondition for the
+SPRT loop (§8): noise cannot move a node count and can move a time far enough to
+invent an improvement. The node rate these imply is used once, under "the poll
+interval is 1024 nodes" below.
+
+⚠️ **Discard the first run after a build.** It costs about 20–25 ms more than the
+settled figure, and that is an *absolute* amount rather than a proportional one,
+so it is +87% on the 23 ms row and +5% on the 445 ms one. Measured, and measured
+in the way that separates it from the explanation it looks like: run the three
+rows in order after a rebuild and the first one is slow; **run them in the
+reverse order and the penalty moves to whichever row now goes first**, not to
+whichever row is shortest. So it is paid once per *build* — a freshly written
+binary faulting into the page cache, the CPU coming up to clock — and not once
+per process, since the second and third processes of the same batch pay nothing.
+The reason to write it down rather than shrug: the E0 measurements that matter
+are tens of milliseconds long, so this one effect is larger than most of what
+step 5's time-management work will be looking for.
 
 **Expect the scores to alternate by depth parity, and do not go looking for the
-bug.** From the initial position, odd depths report +215 and even depths 0: 215
-is a pawn's board value plus a pawn's hand value, i.e. a capture the search sees
-but not the recapture. That is the horizon effect, it is what DESIGN.md means by
+bug.** From the initial position, depths 3 and up report +215 at odd depths and
+0 at even ones (depth 1 is 0: the initial position has no capture one ply in).
+215 is a pawn's board value plus a pawn's hand value — after `7g7f`, every White
+reply leaves Black a free pawn on ply 3, `8h×3c` if the diagonal is open and
+`8h×4d` if `4c4d` blocks it, and at depth 4 White recaptures with `2b` so the
+score falls back to 0. That is the horizon effect, it is what DESIGN.md means by
 "material evaluation without qsearch fails", and step 3 is the answer.
 
 And it holds a whole game: 70 plies against the local material-only YaneuraOu
@@ -222,6 +251,21 @@ them.
   5's whole subject and is not approximated. `byoyomi 0` means "this time
   control has no byoyomi", not a zero-millisecond budget.
 
+  ⚠️ **"Honoured" means the search stops on time, not that the move arrives on
+  time**, and the difference is a lost game rather than a lost tempo. The
+  deadline is `search()`'s entry plus the stated budget exactly: everything
+  before that instant — the server sending `go`, the pipe, the protocol thread
+  parsing it, the channel handing it to the worker — and everything after it —
+  up to two poll intervals of overshoot, then building and flushing `bestmove`,
+  then the wire back — falls outside the budget. Locally that is microseconds
+  and the step-2 game at `go byoyomi 200` never noticed. Over a network it is
+  not, and a byoyomi overrun is an immediate loss. The margin that covers this
+  is named in step 5's list above and stays there; **until step 5, do not enter
+  rinsai anywhere the clock is enforced across a network — floodgate included.**
+  That route does not open until E2 gives it a CSA client, so this is written
+  forward rather than describing anything reachable today; it is here because
+  here is where someone about to open it would be reading.
+
 - **`DEFAULT_DEPTH = 4`, and it must stay even.** It answers "no budget of any
   kind was named" and only that — applying it as a ceiling over a stated budget
   as well was a real bug in this step, caught by driving the release binary
@@ -236,6 +280,19 @@ them.
   20–30 M nodes/s at this step, because most nodes are depth-zero leaves that
   only evaluate, so 1024 nodes is about 40 µs. Expect that to grow as nodes get
   more expensive; step 5's SPRT is where the number stops being inherited.
+
+  ⚠️ **`self.nodes` accumulates across iterations and must not be reset per
+  iteration**, or the poll starves in a sparse position. Measured on two lone
+  kings (`4k4/9/9/9/9/9/9/9/4K4 b - 1`, about five legal moves a side): the
+  nodes spent *within* each iteration for depths 1–6 are 6, 15, 53, 120, 386,
+  851 — every one under the interval — against cumulative 6, 21, 74, 194, 580,
+  1 431. Reset per iteration and the poll does not fire once through depth 6, so
+  `stop` and any deadline go unnoticed for that whole stretch; accumulating, it
+  first fires partway through depth 6. This is **not** what makes depth 1
+  complete — that is the ≤ 594-node bound below, which stands on its own, since
+  `self.nodes` is 0 when depth 1 starts either way. Two separate properties of
+  one counter, and welding them together with a "because" is a mistake this file
+  made once already (DESIGN.md §9, 2026-08-07).
 
 - **Depth 1 always completes.** The poll only fires on a multiple of 1024 and a
   depth-1 iteration is `1 + N ≤ 594` nodes, so every `go` emits at least one

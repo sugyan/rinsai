@@ -57,6 +57,12 @@ impl Score {
     /// `best = Score::NONE; if score > best { … }` never fires, and the search
     /// keeps its first candidate forever without a single failing assertion.
     /// `Option<Score>` is the right shape for that, and the search uses it.
+    ///
+    /// ⚠️ It is also **not printable**. Sitting above the mate floor means
+    /// [`Self::mate_plies`] answers `Some(-2)` for it and `Some(-1)` for
+    /// [`Self::INFINITE`], so either one reaching an `info` line spells
+    /// `score mate -2` — the engine announcing a loss it never found. `info.rs`
+    /// asserts against both on the way to the wire.
     pub const NONE: Self = Self(32_002);
 
     /// The lowest absolute value that still means mate.

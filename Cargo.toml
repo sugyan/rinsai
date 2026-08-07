@@ -92,11 +92,13 @@ inherits = "release"
 debug = true
 strip = "none"
 
-# Measured on the step-1 tree: the rinsai-search suite runs in ~0.01 s here
-# against ~0.08 s at opt-level 0, and the whole `cargo test` differs by ~70 ms —
-# so this is not yet load-bearing. Kept because step 3's `bench` and the
-# fixed-depth node counts will make it so, and because shunsai's movegen is the
-# hot loop in a debug run too. Re-state the number once a search exists.
+# Load-bearing from step 2 on, which is what the step-1 note here predicted and
+# asked to have re-stated once a search existed. It now does: the suite runs
+# real searches — a 300 000-node budget, several depth-5 trees — and shunsai's
+# movegen is the hot loop in a debug run too. The step-1 figures (~0.01 s for
+# the rinsai-search suite against ~0.08 s at opt-level 0) described a tree with
+# no search in it and have been dropped rather than left to be read as current;
+# PROGRESS.md is where a measurement lives if one is wanted.
 # debug_assertions stay on.
 [profile.dev]
 opt-level = 1

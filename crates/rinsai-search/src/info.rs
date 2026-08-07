@@ -45,6 +45,24 @@ impl fmt::Display for SearchInfo<'_> {
 
         // USI reports mate distance in **plies**, which is exactly what
         // `mate_plies` returns — positive when the side to move mates.
+        //
+        // The two sentinels are excluded rather than trusted to stay out: both
+        // sit above the mate floor, so `INFINITE` prints as `score mate -1` and
+        // `NONE` as `score mate -2` — the engine announcing it is being mated
+        // next move. Nothing reaches this with either today (the search returns
+        // only real scores), and a wrong `mate` on the wire is the kind of thing
+        // a GUI believes.
+        //
+        // An assertion inside a `Display` impl is unusual enough to say why it
+        // is here: it makes a formatter that can panic. It earns the place
+        // because it is `debug_assert`, so the engine that plays does not carry
+        // it, and because the condition is a genuine bug rather than a caller's
+        // bad input — there is no sentinel a caller is entitled to print.
+        debug_assert!(
+            !matches!(self.score, Score::INFINITE | Score::NONE),
+            "a sentinel reached the wire: {:?}",
+            self.score
+        );
         match self.score.mate_plies() {
             Some(plies) => write!(f, " score mate {plies}")?,
             None => write!(f, " score cp {}", self.score.get())?,
