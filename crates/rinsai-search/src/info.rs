@@ -146,8 +146,9 @@ mod tests {
     }
 
     /// Sabotage: make the `seldepth` token conditional on it exceeding `depth`
-    /// and this fires. A GUI parses the line positionally; a token that appears
-    /// only in tactical positions makes the shape depend on the board.
+    /// and this fires. A token that appears only in tactical positions makes
+    /// the line's shape depend on the board, which turns a reader's bug into
+    /// one that reproduces on some positions and not others.
     #[test]
     fn seldepth_is_printed_even_when_it_equals_depth() {
         let line = SearchInfo {

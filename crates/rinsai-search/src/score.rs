@@ -16,8 +16,8 @@ use core::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 /// that) and the move buffer. 128 is the conventional value; nothing here has
 /// yet forced it.
 ///
-/// The per-ply state was expected to gain a static evaluation at step 3 and did
-/// not: quiescence computes its stand-pat as a local and nothing reads it
+/// The per-ply state was expected to gain a static evaluation at step 3a and
+/// did not: quiescence computes its stand-pat as a local and nothing reads it
 /// again. The second field — and with it the `Stack` struct step 2 declined to
 /// write — arrives with E1's killers or its futility margins, whichever lands
 /// first. Recorded because a prediction that did not come true is worth as much
@@ -27,9 +27,13 @@ pub const MAX_PLY: usize = 128;
 /// A search depth, in **whole plies**, signed.
 ///
 /// Signed because quiescence search runs at negative depth — which it does,
-/// from E0 step 3a, counting down from zero towards `QS_MAX_PLIES`. There is
-/// deliberately no fractional `ONE_PLY` scheme: modern engines converged away
-/// from it, and it buys nothing that a reduction table does not.
+/// from E0 step 3a, entering at zero and counting down towards
+/// `-QS_MAX_CHECK_PLIES`. ⚠️ Note which constant that is: it counts *checked*
+/// plies, not plies, so a capture chain never moves it. (`QS_MAX_PLIES` was the
+/// total-depth cap of the first implementation, measured and rejected —
+/// PROGRESS.md carries the sweep.) There is deliberately no fractional
+/// `ONE_PLY` scheme: modern engines converged away from it, and it buys nothing
+/// that a reduction table does not.
 pub type Depth = i32;
 
 /// An evaluation, in **centipawns**, from the point of view of the side to move.
