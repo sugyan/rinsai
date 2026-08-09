@@ -217,6 +217,17 @@ impl<'a> Budget<'a> {
     /// a second budget rather than a flag that skips the poll: `stop` means
     /// quit, and [`Self::expired`] is where it is read. Skipping the poll would
     /// suspend `stop` along with the clock.
+    ///
+    /// ⚠️ **It covers the whole first iteration, and only the first root move
+    /// needs it.** At root move 0 alpha is still `-INFINITE`, so any finite
+    /// score raises it and the iteration has an answer from then on; every later
+    /// move can be abandoned safely. Suspending the clock for all N of them
+    /// instead is therefore an overrun the guarantee does not buy — bounded by
+    /// one depth-1 iteration, and measured rather than estimated: PROGRESS.md
+    /// carries the figure and the position it was taken on. Left as it is
+    /// because narrowing it is a change to what the engine does with a *clock*,
+    /// which is step 5's subject and its margin discipline, not a tidy-up to
+    /// make on the way past.
     fn without_limits(&self) -> Self {
         Self {
             signals: self.signals,

@@ -569,6 +569,20 @@ them.
   four it changes nothing. A test written against any of the first four would
   have been a test that could not fail.
 
+  ⚠️ **What it costs, and why that is left standing.** The guarantee only needs
+  *root move 0* to finish: alpha is still `-INFINITE` there, so any finite score
+  raises it and the iteration has an answer from then on. Suspending the clock
+  for the whole iteration instead buys nothing after that move and overruns the
+  stated budget by the rest of it. Measured on the 49 006-node fixture, three
+  runs: **`go movetime 1` takes 5–6 ms** — the whole depth-1 iteration — against
+  1 ms on the ordinary drop-heavy position, whose depth 1 is 280 nodes. So the
+  worst case observed is about 5 ms of overrun, not a proportional blow-up.
+  Narrowing the relief to root move 0 would remove it and is not hard, but it is
+  a change to what the engine does with a **clock**, and the clock is step 5's
+  subject: it owns the network-delay margin, the fail-low extension and the SPRT
+  that can tell whether any of it helps. Recorded here with the number so step 5
+  inherits a decision rather than a discovery.
+
 - **Each iteration re-seeds the root list with its own answer.** Without it,
   deepening is only repeated work: an iteration cut short reports the best of
   whatever prefix of the root list it reached, which can be a *worse* move than

@@ -82,33 +82,46 @@ impl MoveBuf {
         let them = position.player_bb(position.side_to_move().flip());
         let moves = &mut self.moves;
         let _ = position.generate_moves(|set| {
-            if let MoveSet::Normal {
-                from,
-                promotions,
-                non_promotions,
-                ..
-            } = set
-            {
-                // The two boards overlap where promotion is optional, so a
-                // capture that may promote is emitted both ways: both are legal
-                // and both are captures. Where promotion is compulsory the
-                // square is in `promotions` alone, so only the promoting form
-                // is emitted. Choosing between the two is ordering, which is
-                // E1's.
-                for to in promotions & them {
-                    moves.push(Move::Normal {
-                        from,
-                        to,
-                        promote: true,
-                    });
+            // Exhaustive rather than `if let`, and the discarded arm is spelled
+            // out. A `MoveSet` variant added upstream would otherwise be
+            // silently missing captures — a strength bug with no symptom — where
+            // this makes it a compile error naming the place to decide. Same
+            // argument as `usi::options::Slot`, where it caught a real one at
+            // step 1; a new variant is a semver-major bump and so would be
+            // noticed anyway, but being told exactly where costs nothing.
+            match set {
+                MoveSet::Normal {
+                    from,
+                    promotions,
+                    non_promotions,
+                    ..
+                } => {
+                    // The two boards overlap where promotion is optional, so a
+                    // capture that may promote is emitted both ways: both are
+                    // legal and both are captures. Where promotion is
+                    // compulsory the square is in `promotions` alone, so only
+                    // the promoting form is emitted. Choosing between the two
+                    // is ordering, which is E1's.
+                    for to in promotions & them {
+                        moves.push(Move::Normal {
+                            from,
+                            to,
+                            promote: true,
+                        });
+                    }
+                    for to in non_promotions & them {
+                        moves.push(Move::Normal {
+                            from,
+                            to,
+                            promote: false,
+                        });
+                    }
                 }
-                for to in non_promotions & them {
-                    moves.push(Move::Normal {
-                        from,
-                        to,
-                        promote: false,
-                    });
-                }
+                // A drop can never capture: shunsai masks drop targets with the
+                // empty squares, so the whole fan-out is discarded here rather
+                // than filtered move by move. That is also most of what a shogi
+                // move list is, which is why this is where the cost goes.
+                MoveSet::Drop { .. } => {}
             }
             ControlFlow::Continue(())
         });
