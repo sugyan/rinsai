@@ -10,13 +10,12 @@ use std::fmt;
 
 /// Where a declared option's value is stored.
 ///
-/// This exists so that [`Options::set`] can dispatch on **which option** rather
+/// ⚠️ It exists so that [`Options::set`] dispatches on **which option** rather
 /// than on what kind of control it is. Dispatching on the kind works only while
-/// there is at most one option of each kind: the moment `Threads` joins
-/// `USI_Hash` as a second spin, `setoption name Threads value 4` starts writing
-/// into the hash size — silently, which is exactly the class of lie this module
-/// opens by warning against. Adding an option now means adding a variant here,
-/// which makes the `match` below non-exhaustive and fails to compile.
+/// there is at most one option per kind: the moment `Threads` joins `USI_Hash`
+/// as a second spin, `setoption name Threads value 4` silently writes the hash
+/// size. Adding an option means adding a variant here, which makes the `match`
+/// below non-exhaustive and fails to compile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Slot {
     HashMb,
@@ -49,12 +48,9 @@ pub(crate) struct OptionSpec {
 /// `BookFile` at E4. An option we do not declare but that someone sends is
 /// still accepted silently, so nothing breaks in the meantime.
 ///
-/// The spin bounds are **conventional, not measured**. 256 MB is a size a
-/// floodgate VM can spare; `min 1` exists so a smoke test can run a tiny table;
-/// `max 65536` is larger than any machine this is planned to run on. Step 3b
-/// builds the transposition table and has to honour whatever is advertised
-/// here, so `min 1` in particular is a commitment that the table works at 1 MB —
-/// revisit these there rather than treating them as decided.
+/// The spin bounds are **conventional, not measured**. ⚠️ Step 3b has to
+/// honour whatever is advertised here, so `min 1` in particular is a commitment
+/// that the transposition table works at 1 MB.
 pub(crate) const OPTIONS: &[OptionSpec] = &[
     OptionSpec {
         name: "USI_Hash",

@@ -1,10 +1,8 @@
 //! Evaluation scores and search depths.
 //!
-//! Both are newtype-free of the mistakes that make them worth defining: a
-//! [`Score`] is a distinct type from a node count, a depth or a millisecond
-//! count, because sign errors in `-search(-beta, -alpha)` are the single
-//! largest bug class in an alpha-beta engine and a bare `i32` catches none of
-//! them.
+//! [`Score`] is a newtype rather than an `i32` because sign errors in
+//! `-search(-beta, -alpha)` are the largest bug class in an alpha-beta engine
+//! and a bare integer catches none of them.
 
 use core::fmt;
 use core::ops::{Add, AddAssign, Neg, Sub, SubAssign};
@@ -12,28 +10,15 @@ use core::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 /// The deepest ply the search will ever reach, counting quiescence.
 ///
 /// It sizes three things together so they cannot drift apart: the mate band
-/// below, the search's per-ply state (the principal variation, and still only
-/// that) and the move buffer. 128 is the conventional value; nothing here has
-/// yet forced it.
-///
-/// The per-ply state was expected to gain a static evaluation at step 3a and
-/// did not: quiescence computes its stand-pat as a local and nothing reads it
-/// again. The second field — and with it the `Stack` struct step 2 declined to
-/// write — arrives with E1's killers or its futility margins, whichever lands
-/// first. Recorded because a prediction that did not come true is worth as much
-/// as one that did.
+/// below, the search's per-ply state and the move buffer. 128 is the
+/// conventional value; nothing here has yet forced it.
 pub const MAX_PLY: usize = 128;
 
 /// A search depth, in **whole plies**, signed.
 ///
-/// Signed because quiescence search runs at negative depth — which it does,
-/// from E0 step 3a, entering at zero and counting down towards
-/// `-QS_MAX_CHECK_PLIES`. ⚠️ Note which constant that is: it counts *checked*
-/// plies, not plies, so a capture chain never moves it. (`QS_MAX_PLIES` was the
-/// total-depth cap of the first implementation, measured and rejected —
-/// PROGRESS.md carries the sweep.) There is deliberately no fractional
-/// `ONE_PLY` scheme: modern engines converged away from it, and it buys nothing
-/// that a reduction table does not.
+/// Signed because quiescence runs at negative depth, entering at zero and
+/// counting down towards `-QS_MAX_CHECK_PLIES`. ⚠️ Note which constant that
+/// is: it counts *checked* plies, not plies, so a capture chain never moves it.
 pub type Depth = i32;
 
 /// An evaluation, in **centipawns**, from the point of view of the side to move.
@@ -58,23 +43,19 @@ impl Score {
     /// `-INFINITE` is representable without overflow.
     pub const INFINITE: Self = Self(32_001);
 
-    /// "No score recorded" — an empty transposition-table slot.
+    /// "No score recorded" — an empty transposition-table slot. Caller: step
+    /// 3b's transposition table.
     ///
-    /// **No caller yet**; its caller is E0 step 3b's transposition table. Kept
-    /// under the rule in CONVENTIONS.md: a surface whose caller can be *named*
-    /// stays, with the name written down.
+    /// ⚠️ **Not a "nothing found yet" seed for a maximum.** It compares as
+    /// +32_002, above every real score and above [`Self::INFINITE`], so
+    /// `best = Score::NONE; if score > best { … }` never fires and the search
+    /// keeps its first candidate forever, with nothing asserting. Use
+    /// `Option<Score>`, as the search does.
     ///
-    /// ⚠️ It is **not** a "nothing found yet" seed for a maximum. It compares
-    /// as +32_002 — above every real score, [`Self::INFINITE`] included — so
-    /// `best = Score::NONE; if score > best { … }` never fires, and the search
-    /// keeps its first candidate forever without a single failing assertion.
-    /// `Option<Score>` is the right shape for that, and the search uses it.
-    ///
-    /// ⚠️ It is also **not printable**. Sitting above the mate floor means
-    /// [`Self::mate_plies`] answers `Some(-2)` for it and `Some(-1)` for
-    /// [`Self::INFINITE`], so either one reaching an `info` line spells
-    /// `score mate -2` — the engine announcing a loss it never found. `info.rs`
-    /// asserts against both on the way to the wire.
+    /// ⚠️ **Not printable.** Above the mate floor, so [`Self::mate_plies`]
+    /// answers `Some(-2)` for it and `Some(-1)` for [`Self::INFINITE`] —
+    /// either one reaching an `info` line spells `score mate -2`, the engine
+    /// announcing a loss it never found. `info.rs` asserts against both.
     pub const NONE: Self = Self(32_002);
 
     /// The lowest absolute value that still means mate.
@@ -87,17 +68,14 @@ impl Score {
         Self(centipawns)
     }
 
-    /// The raw centipawn value.
     #[inline]
     #[must_use]
     pub const fn get(self) -> i32 {
         self.0
     }
 
-    /// Mate delivered by the side to move, `ply` plies from the root.
-    ///
-    /// Nearer mates score higher, which is what makes the search prefer the
-    /// shortest one.
+    /// Mate delivered by the side to move, `ply` plies from the root. Nearer
+    /// mates score higher, which is what makes the search prefer the shortest.
     #[inline]
     #[must_use]
     pub const fn mate_in(ply: usize) -> Self {
@@ -141,14 +119,12 @@ impl Score {
     }
 
     /// Clamps into the ordinary-evaluation band, so a static evaluation can
-    /// never masquerade as a mate.
+    /// never masquerade as a mate. Caller: E3's inference boundary, where the
+    /// network's own scale makes the conversion unbounded by construction.
     ///
-    /// **No caller yet**; its caller is E3's inference boundary, where the
-    /// network emits its own scale and the conversion into centipawns is
-    /// unbounded by construction. Step 2's material evaluation deliberately
-    /// does *not* use it: the largest balance a legal position can hold is far
-    /// below the mate band, and `eval` asserts that instead — a clamp there
-    /// would hide a broken value table rather than fail on it.
+    /// ⚠️ Material evaluation deliberately does **not** use it: `eval` asserts
+    /// its own range instead, because a clamp there would hide a broken value
+    /// table rather than fail on it.
     #[inline]
     #[must_use]
     pub const fn clamp_to_eval(self) -> Self {
@@ -171,13 +147,8 @@ impl Neg for Score {
     }
 }
 
-// The four arithmetic impls below have **no caller yet**, and are kept for the
-// same reason as `Score::NONE` and `clamp_to_eval`: their callers are named.
-// E1's aspiration windows widen with `alpha - delta` and `beta + delta`, and
-// step 3b's transposition table adjusts a stored mate score by ply on the way
-// in and out. Step 3a needs none of it — the evaluator accumulates in `i32` and
-// wraps once, the mate constructors produce mate scores, and the root window is
-// `±INFINITE`.
+// Callers for the four impls below: E1's aspiration windows (`alpha - delta`,
+// `beta + delta`) and step 3b's mate-score-by-ply adjustment.
 
 impl Add<i32> for Score {
     type Output = Self;

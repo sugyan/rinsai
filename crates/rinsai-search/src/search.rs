@@ -18,16 +18,12 @@ use crate::game::Game;
 
 /// What a `go` command asked for.
 ///
-/// Every field is parsed from E0 step 1 and most are ignored until later steps,
-/// so the grammar and its conformance tests are written once. `infinite` and
-/// `ponder` are honoured immediately: an engine that answers `go infinite` at
-/// once is visibly broken to any analysis GUI, and that bug would be invisible
-/// in a design where "there is no search yet".
+/// Every field is parsed, and most are ignored until later steps, so the
+/// grammar and its conformance tests are written once.
 ///
-/// The deadline is deliberately *not* part of this. Real time management
-/// decides — extend on a fail-low, cut short when the move is obvious — so the
-/// search has to own the clock and see the raw parameters. Step 5 then changes
-/// only what the searcher does with them.
+/// ⚠️ The deadline is deliberately *not* part of this: time management extends
+/// on a fail-low and cuts short on an obvious move, so the search has to own
+/// the clock and see the raw parameters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Limits {
     pub btime: Option<Duration>,
@@ -44,15 +40,10 @@ pub struct Limits {
 
 /// The flags that stop a search from outside it.
 ///
-/// Atomics rather than a channel. The load-bearing reason is E2: one `Arc`
-/// broadcasts to every Lazy SMP thread, where a channel would need one per
-/// thread. A relaxed load of a rarely-written bool should also be cheaper than
-/// `try_recv` on the polling path — **still unmeasured**, though the polling
-/// path itself has existed since step 2 and now runs at every quiescence node
-/// as well. The interval is chosen in `negamax.rs` and is step 5's to measure
-/// against the time-management SPRT.
+/// Atomics rather than a channel, because E2's Lazy SMP broadcasts one `Arc`
+/// to every thread where a channel would need one per thread.
 ///
-/// A **fresh set is created per `go`**, so a `stop` that arrives late cannot
+/// ⚠️ A **fresh set is created per `go`**, so a `stop` that arrives late cannot
 /// abort the *next* search — the classic bug in globally-flagged engines.
 #[derive(Debug, Default)]
 pub struct SearchSignals {
@@ -67,9 +58,8 @@ impl SearchSignals {
         Self::default()
     }
 
-    /// The hot-path poll. Relaxed is correct: this flag only gates "abandon and
-    /// return", and the result handoff is ordered by the output mutex and the
-    /// worker's own channel.
+    /// The hot-path poll. Relaxed is correct: this only gates "abandon and
+    /// return", and the handoff is ordered by the output mutex and the channel.
     #[inline]
     #[must_use]
     pub fn stopped(&self) -> bool {
@@ -143,13 +133,9 @@ pub enum BestMove {
 
 /// Where `info` lines go while a search runs.
 ///
-/// A callback rather than a channel, for four reasons. The protocol thread is
-/// blocked reading stdin and cannot pump a receiver, so `info` would either
-/// freeze mid-search or need a third thread just to drain it. A channel cannot
-/// carry a borrowed principal variation without allocating per event. E3's
-/// self-play wants a silent search, and a no-op implementation of this compiles
-/// to nothing. And shunsai already made the same choice one layer down, in
-/// `generate_moves`.
+/// A callback rather than a channel: the protocol thread is blocked reading
+/// stdin and could not pump a receiver, and a channel cannot carry a borrowed
+/// principal variation without allocating per event.
 pub trait InfoSink: Send + Sync {
     fn info(&self, line: &str);
 }
@@ -167,15 +153,14 @@ impl InfoSink for SilentSink {
 /// A trait rather than a concrete type because it is the seam the conformance
 /// tests inject through: a recording implementation turns "did `go infinite`
 /// reach the search?" into a value assertion instead of a sleep. Anything that
-/// must survive between searches — the transposition table from step 3b, the
-/// history tables from E1, E3's accumulator stack — lives in the implementor,
-/// which the worker thread owns for its whole life.
+/// must survive between searches lives in the implementor, which the worker
+/// thread owns for its whole life.
 pub trait Searcher: Send {
     /// Runs one search, returning promptly once `job.signals.stopped()`.
     ///
-    /// Note that this **returns** a [`BestMove`] rather than printing one. That
-    /// is what makes "exactly one `bestmove` per `go`" a structural property of
-    /// the driver rather than a rule every code path has to remember.
+    /// ⚠️ It **returns** a [`BestMove`] rather than printing one. That is what
+    /// makes "exactly one `bestmove` per `go`" structural rather than a rule
+    /// every code path has to remember.
     fn search(&mut self, job: &SearchJob, out: &dyn InfoSink) -> BestMove;
 
     /// Clears whatever carries between games. Called on `usinewgame`.
@@ -199,16 +184,13 @@ pub struct SearchDriver {
     /// The signals of every job submitted and not yet finished, so [`Drop`] can
     /// stop all of what it is about to wait for.
     ///
-    /// **Every** rather than the most recent: the worker is a single FIFO, so a
-    /// second `go` queues behind the first, and remembering one set would stop
-    /// the job that has not started while joining on the one that is running.
+    /// ⚠️ **Every** rather than the most recent: the worker is a single FIFO,
+    /// so a second `go` queues behind the first, and remembering one set would
+    /// stop the job that has not started while joining on the one running.
     ///
-    /// `Weak`, not `Arc`, and that is the whole lifetime rule: a job's signals
-    /// live exactly as long as the job and its submitter, and this field only
-    /// *observes* them. An `Arc` here would instead keep every set alive until
-    /// the next `submit` swept it, and a dead entry that still answers `stop()`
-    /// is indistinguishable from a live one. Touched once per `go` and never on
-    /// a search's hot path, so the lock costs nothing.
+    /// ⚠️ `Weak`, not `Arc`. This field only *observes*; an `Arc` would keep
+    /// every set alive until the next `submit` swept it, and a dead entry that
+    /// still answers `stop()` is indistinguishable from a live one.
     outstanding: Mutex<Vec<Weak<SearchSignals>>>,
 }
 
@@ -236,18 +218,14 @@ impl SearchDriver {
     /// Queues a search. **Returns `false` if it could not be queued**, which
     /// means the worker is gone.
     ///
-    /// The caller has to know: it has already committed to producing one
-    /// `bestmove` for this `go`, and a dropped job produces none. Reporting it
-    /// is what lets the protocol layer answer anyway rather than leaving the
-    /// engine looking like it is still thinking, forever.
+    /// The caller has already committed to one `bestmove` for this `go` and a
+    /// dropped job produces none, so it has to be able to answer anyway.
     #[must_use]
     pub fn submit(&self, job: SearchJob) -> bool {
         {
             let mut outstanding = self.outstanding.lock().unwrap_or_else(|e| e.into_inner());
-            // Sweep the entries whose job has answered and been dropped. This
-            // is housekeeping, not correctness — `shutdown` skips a dead entry
-            // anyway — and it is what keeps the set proportional to searches in
-            // flight rather than to searches ever run.
+            // Housekeeping, not correctness: keeps the set proportional to
+            // searches in flight rather than to searches ever run.
             outstanding.retain(|signals| signals.strong_count() > 0);
             outstanding.push(Arc::downgrade(&job.signals));
         }
@@ -270,18 +248,14 @@ impl SearchDriver {
     /// Stops every search that has not yet answered, then waits for the worker
     /// to drain the queue and exit.
     ///
-    /// Raising `stop` here rather than requiring the caller to have done it is
-    /// what keeps [`Drop`] from blocking forever: a `go infinite` never ends on
-    /// its own, so a `join` without a `stop` waits for something that will not
-    /// happen. The caller may of course have stopped it already; `stop` is
-    /// idempotent.
+    /// ⚠️ Raising `stop` here is what keeps [`Drop`] from blocking forever: a
+    /// `go infinite` never ends on its own, so a `join` without a `stop` waits
+    /// for something that will not happen. `stop` is idempotent.
     ///
-    /// Note that closing the channel does **not** discard what is queued —
-    /// `mpsc` delivers messages sent before the disconnect — so a job waiting
-    /// behind the running one still runs and still answers. That is the
-    /// intended behaviour rather than a leak: it is what keeps "one `bestmove`
-    /// per accepted `go`" true across a shutdown. Because its signals were
-    /// raised above, it returns at once instead of searching.
+    /// ⚠️ Closing the channel does **not** discard what is queued — `mpsc`
+    /// delivers messages sent before the disconnect — so a job behind the
+    /// running one still runs and still answers. Intended: it is what keeps
+    /// "one `bestmove` per accepted `go`" true across a shutdown.
     pub fn shutdown(&mut self) {
         for signals in self
             .outstanding
@@ -298,11 +272,9 @@ impl SearchDriver {
         }
         drop(self.tx.take());
         if let Some(handle) = self.handle.take() {
-            // An `Err` here is the worker having panicked. `worker` catches
-            // panics from the searcher itself, so reaching this means the
-            // driver's own loop failed — report it rather than swallowing it,
-            // because the alternative is an engine that looks healthy and never
-            // moves again.
+            // An `Err` is the worker having panicked. `worker` catches the
+            // searcher's own panics, so reaching this means the driver's loop
+            // failed — report it rather than swallowing it.
             if handle.join().is_err() {
                 eprintln!("rinsai: the search thread died; no further search will run");
             }
@@ -323,31 +295,25 @@ fn worker<S: Searcher>(
     emit: &dyn Fn(BestMove),
 ) {
     for command in rx {
-        // The outer catch is what keeps the *worker* alive. The inner one below
-        // keeps the *job* answered. They are different guarantees and both are
-        // needed: a panic anywhere in this loop body — `new_game` clearing a
-        // transposition table at step 3b, or the emit closure writing to a
-        // broken stdout — would otherwise end the thread with the loop, after
-        // which every later job is sent into a closed channel and the engine
-        // answers the handshake forever while never moving again.
+        // ⚠️ Two catches, two different guarantees, both needed. The outer one
+        // keeps the *worker* alive; the inner one below keeps the *job*
+        // answered. Losing either ends the thread with this loop, after which
+        // every later job goes into a closed channel and the engine answers the
+        // handshake forever while never moving again — which, from a match
+        // harness, reads as a clean exit after a game lost on time.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             match command {
                 Command::NewGame => searcher.new_game(),
                 Command::Go(job) => {
-                    // Catching the panic is what keeps "one answer per job" true
-                    // when a search goes wrong. Without it the worker thread dies
-                    // with this loop: the answer never comes, every later job is
-                    // sent into a closed channel, and the engine goes on answering
-                    // `usi` and `isready` normally while never moving again — a
-                    // failure that reads, from a match harness, as a clean exit
-                    // after a game lost on time. Resigning is a far better failure
-                    // than hanging, and the panic message is already on stderr.
+                    // The inner catch: "one answer per job" when a search goes
+                    // wrong. Resigning beats hanging, and the panic message is
+                    // already on stderr.
                     //
-                    // `AssertUnwindSafe` is needed for the `&mut S`, and is not
-                    // `unsafe`. The residual risk is real and worth naming: a
-                    // searcher that panics may have left its own state (from step 3b,
-                    // a transposition table) inconsistent. `usinewgame` clears it,
-                    // and one bad game beats a dead engine.
+                    // ⚠️ `AssertUnwindSafe` (needed for the `&mut S`, not
+                    // `unsafe`) carries a real residual risk: a searcher that
+                    // panics may have left its own state inconsistent.
+                    // `usinewgame` clears it, and one bad game beats a dead
+                    // engine.
                     let best = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         searcher.search(&job, sink)
                     }))
@@ -356,12 +322,10 @@ fn worker<S: Searcher>(
                         BestMove::Resign
                     });
 
-                    // USI forbids answering a ponder search before `ponderhit` or
-                    // `stop`, and that is a *protocol* obligation, not a search one:
-                    // a real search returns as soon as it hits its depth or node
-                    // limit, which during ponder would be a `bestmove` the GUI never
-                    // asked for. Holding it here makes every future searcher correct
-                    // by construction rather than by remembering.
+                    // USI forbids answering a ponder search before `ponderhit`
+                    // or `stop`. A *protocol* obligation, not a search one, so
+                    // holding it here makes every future searcher correct by
+                    // construction rather than by remembering.
                     if job.limits.ponder {
                         while !job.signals.ponder_hit() && !job.signals.stopped() {
                             job.signals.wait_until_signalled();
@@ -373,10 +337,8 @@ fn worker<S: Searcher>(
             }
         }));
         if outcome.is_err() {
-            // Note the counter has already been lowered by the emit closure
-            // before the write, so the protocol layer is not left believing a
-            // search is still running. The answer itself may be missing or
-            // half-written, which is degraded but not stuck.
+            // The emit closure lowered the counter before the write, so the
+            // protocol layer is not left believing a search is still running.
             eprintln!("rinsai: the search thread recovered from a panic outside the search");
         }
     }
@@ -477,12 +439,8 @@ mod tests {
     /// A panicking search must still answer, and must not take the worker with
     /// it.
     ///
-    /// Without the `catch_unwind` the thread dies with the loop: the answer
-    /// never comes, every later job is sent into a closed channel, and the
-    /// engine goes on answering `usi` and `isready` while never moving again.
-    /// From a match harness that reads as a clean exit after a game lost on
-    /// time — the worst shape a failure can take. Sabotage: remove the
-    /// `catch_unwind` and this test hangs on the second job instead.
+    /// Sabotage: remove the inner `catch_unwind` and this hangs on the second
+    /// job instead. See `worker` for what that failure looks like from outside.
     ///
     /// (The panic message on stderr during this test is expected.)
     #[test]
@@ -517,11 +475,8 @@ mod tests {
     /// A panic *outside* the searcher — here in `new_game`, at step 3b a
     /// transposition table being cleared — must not take the worker with it.
     ///
-    /// The inner `catch_unwind` only covers `search`. Without the outer one the
-    /// thread ends with the loop, and every later job is then sent into a
-    /// closed channel: the engine answers the handshake forever and never
-    /// moves. Sabotage: remove the outer catch and the `go` below is never
-    /// answered.
+    /// The inner `catch_unwind` only covers `search`. Sabotage: remove the
+    /// outer catch and the `go` below is never answered.
     ///
     /// (The panic message on stderr during this test is expected.)
     #[test]
@@ -609,17 +564,15 @@ mod tests {
     /// …and it must stop **every** search that has not answered, not just the
     /// last one submitted.
     ///
-    /// The worker is a single FIFO, so a second `go` queues behind the first.
-    /// A driver that remembers only the most recent job's signals therefore
-    /// raises `stop` on the one that has not started yet and joins on the one
-    /// that is actually running — which, for a search that ends only on `stop`,
-    /// never returns. `usi::run` cannot reach this because `Engine::go` stops
-    /// the previous search before submitting, but [`SearchDriver`] is public
-    /// API and E3's self-play driver is its second caller.
+    /// A driver remembering only the most recent job's signals raises `stop` on
+    /// the one that has not started and joins on the one that is running —
+    /// which, for a search that ends only on `stop`, never returns. ⚠️
+    /// `usi::run` cannot reach this because `Engine::go` stops the previous
+    /// search first, but [`SearchDriver`] is public API and E3's self-play
+    /// driver is its second caller.
     ///
-    /// Sabotage: replace the sweep in `submit` with `outstanding.clear()`, so
-    /// that only the most recent job is remembered, and this times out after
-    /// the ten seconds below.
+    /// Sabotage: replace the sweep in `submit` with `outstanding.clear()` and
+    /// this times out.
     #[test]
     fn shutdown_stops_every_outstanding_search_not_only_the_last() {
         struct Waiter;
@@ -652,10 +605,8 @@ mod tests {
     }
 
     /// USI forbids answering a ponder search before `ponderhit` or `stop`, and
-    /// the driver holds that rather than each searcher: step 2's search returns
-    /// as soon as it hits its depth or node limit, which during ponder would be
-    /// a `bestmove` the GUI never asked for. Sabotage: remove the ponder wait
-    /// from `worker` and the answer arrives before `ponderhit`.
+    /// the driver holds that rather than each searcher. Sabotage: remove the
+    /// ponder wait from `worker` and the answer arrives before `ponderhit`.
     #[test]
     fn a_ponder_search_that_returns_early_still_waits_to_answer() {
         struct Immediate;

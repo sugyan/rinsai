@@ -1,18 +1,15 @@
 //! Material evaluation.
 //!
 //! Counts pieces, weights them, and reports the difference from the side to
-//! move. That is the whole of E0's evaluation: no piece-square tables, no king
-//! safety, no mobility. E3 replaces all of it with a network, so the value of
-//! anything spent refining these numbers is bounded by how long they live.
+//! move. No piece-square tables, no king safety, no mobility; E3 replaces all
+//! of it with a network.
 //!
-//! **The values are ours.** CLAUDE.md forbids reusing a table from a GPL
-//! engine, so the ordering is derived from the rules of shogi — empty-board
-//! destination counts, slider or stepper, colour-bound or not, promotion
-//! potential — the magnitudes are interpolated on that ordering, and everything
-//! is rounded to a multiple of five so that nobody mistakes them for fitted
-//! values. They are a **starting point for SPSA at E4**, not a measurement.
-//! The derivation is written out in CONVENTIONS.md; the invariants it implies are
-//! asserted below.
+//! ⚠️ **The values are ours, and that is a licensing property.** CLAUDE.md
+//! forbids reusing a table from a GPL engine, so the ordering is derived from
+//! the rules of shogi and everything is rounded to a multiple of five so that
+//! nobody mistakes them for fitted values — `every_value_is_a_round_number` is
+//! what keeps that true. They are a starting point for SPSA at E4, not a
+//! measurement. CONVENTIONS.md carries the derivation.
 
 use shogi_core::{Hand, PieceKind};
 use shunsai::Position;
@@ -47,13 +44,9 @@ const BOARD: [i32; PieceKind::NUM] = [
 /// What the same piece is worth held in hand, indexed the same way. Only the
 /// seven droppable kinds are non-zero.
 ///
-/// Every entry is 10–15% above its board counterpart. A piece in hand has
-/// maximal optionality — any empty square, subject only to 二歩, 打ち歩詰め and
-/// the no-dead-piece rule — and cannot be captured while it is there; the
-/// counterweight is that deploying it costs a tempo, which is why the premium
-/// is a tenth and not a half. It is largest for the kinds whose *board*
-/// placement is most constrained: a pawn or a lance commits to a file, and a
-/// bishop on the board is routinely blocked where a bishop in hand never is.
+/// Every entry is 10–15% above its board counterpart: a piece in hand has
+/// maximal optionality and cannot be captured, against the tempo that deploying
+/// it costs. Largest for the kinds whose *board* placement is most constrained.
 const HAND: [i32; PieceKind::NUM] = [
     115,  // Pawn   +15%
     400,  // Lance  +14%
@@ -67,9 +60,9 @@ const HAND: [i32; PieceKind::NUM] = [
 
 /// The material balance in centipawns, **from the side to move**.
 ///
-/// Positive is good for whoever is to move; a parent in the search negates its
-/// child. There is no `clamp_to_eval` here on purpose — the largest balance any
-/// legal position can hold is far below the mate band, and
+/// Positive is good for whoever is to move; a parent negates its child. ⚠️ No
+/// `clamp_to_eval` here on purpose: the largest balance a legal position can
+/// hold is far below the mate band, and
 /// `no_material_balance_can_reach_the_mate_band` asserts it. A clamp would turn
 /// a broken value table into a quietly plausible score.
 pub(crate) fn evaluate(position: &Position) -> Score {
@@ -84,10 +77,9 @@ pub(crate) fn evaluate(position: &Position) -> Score {
             continue; // the king, and only the king
         }
         // `piece_kind_bb` holds both colours, hence the two intersections.
-        // `count()` is `Bitboard`'s inherent popcount, not `Iterator::count` —
-        // `Bitboard` *is* the iterator, so the two are one method call apart.
-        // `expect` rather than `unwrap_or(0)`: a board holds at most 81 pieces,
-        // so this cannot fail — and if it ever does, a silent zero is a wrong
+        // ⚠️ `count()` is `Bitboard`'s inherent popcount, not `Iterator::count`
+        // — `Bitboard` *is* the iterator, so the two are one method call apart.
+        // `expect` rather than `unwrap_or(0)`, because a silent zero is a wrong
         // evaluation nobody would notice.
         let bb = position.piece_kind_bb(kind);
         let ours = i32::try_from((bb & ours).count()).expect("a bitboard holds at most 81 squares");
@@ -127,12 +119,10 @@ mod tests {
 
     /// The same balance, computed the obvious slow way.
     ///
-    /// It reads the **same tables** as [`evaluate`], deliberately: what the
-    /// differential is here to check is the *bitboard traversal* — which colour
-    /// a set bit belongs to, whether a promoted kind is counted once or twice,
-    /// whether hands are added from the right side — and duplicating the
-    /// numbers as well would only test that two copies of a typo agree.
-    /// The numbers are pinned separately, by `the_table_is_indexed_by_kind`.
+    /// ⚠️ It reads the **same tables** as [`evaluate`], deliberately: what the
+    /// differential checks is the *bitboard traversal*, and duplicating the
+    /// numbers would only test that two copies of a typo agree. The numbers are
+    /// pinned separately, by `the_table_is_indexed_by_kind`.
     fn evaluate_naively(position: &Position) -> Score {
         let us = position.side_to_move();
         let mut total: i32 = 0;
@@ -236,7 +226,7 @@ mod tests {
         }
     }
 
-    /// The bound that makes `Score::clamp_to_eval` unnecessary at step 2.
+    /// The bound that makes `Score::clamp_to_eval` unnecessary here.
     ///
     /// Every piece, counted at whichever of its three prices is highest, on one
     /// side and none on the other — a balance no legal position can exceed.
@@ -325,9 +315,8 @@ mod tests {
     /// …and over a whole game, so that positions nobody thought to write down
     /// get walked too.
     ///
-    /// The playout is seeded and the generator is five lines inline rather than
-    /// a `rand` dependency: every dependency is provenance-scan surface
-    /// (CLAUDE.md), and this one would buy nothing a xorshift does not.
+    /// ⚠️ The generator is five lines inline rather than a `rand` dependency:
+    /// every dependency is provenance-scan surface (CLAUDE.md).
     #[test]
     fn the_fast_path_agrees_with_the_oracle_through_a_whole_game() {
         fn next(state: &mut u64) -> u64 {
