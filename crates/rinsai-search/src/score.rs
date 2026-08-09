@@ -61,7 +61,7 @@ impl Score {
     /// "No score recorded" — an empty transposition-table slot.
     ///
     /// **No caller yet**; its caller is E0 step 3b's transposition table. Kept
-    /// under the rule in PROGRESS.md: a surface whose caller can be *named*
+    /// under the rule in CONVENTIONS.md: a surface whose caller can be *named*
     /// stays, with the name written down.
     ///
     /// ⚠️ It is **not** a "nothing found yet" seed for a maximum. It compares

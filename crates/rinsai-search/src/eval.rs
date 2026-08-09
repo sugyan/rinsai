@@ -11,7 +11,7 @@
 //! potential — the magnitudes are interpolated on that ordering, and everything
 //! is rounded to a multiple of five so that nobody mistakes them for fitted
 //! values. They are a **starting point for SPSA at E4**, not a measurement.
-//! The derivation is written out in PROGRESS.md; the invariants it implies are
+//! The derivation is written out in CONVENTIONS.md; the invariants it implies are
 //! asserted below.
 
 use shogi_core::{Hand, PieceKind};

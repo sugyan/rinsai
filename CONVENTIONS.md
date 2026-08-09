@@ -1,0 +1,203 @@
+# rinsai — frozen conventions
+
+What the code already assumes. **Changing any of these needs a
+[DECISIONS.md](./DECISIONS.md) entry**, because something is built on it.
+
+Organised by subject rather than by the step that froze it: the step is an
+accident of history, and three lists ordered by it were three lists nobody could
+search. Where a convention has an argument behind it, the argument is in
+DECISIONS.md and the measurement is in [PROGRESS.md](./PROGRESS.md); this file
+carries the rule.
+
+## Vocabulary and scores
+
+- **A bare `Position` means `shunsai::Position`** — the board a search walks,
+  and the only one of the two with unmake and an incremental Zobrist key.
+  `shogi_core::Position` is a *record* (root, current position, moves played) and
+  `Game` delegates that half to it under the alias `Record`; it is never
+  imported unqualified. Its `from_usi` is not used at all, for the reason under
+  "Traps" in PROGRESS.md — **do not confuse "we cannot parse with it" with "we
+  cannot store in it"**, which is the mistake the first draft of `Game` made.
+- **Evaluation is negamax from the side to move.** Positive is good for whoever
+  is to move; a parent takes `-child`. At the root the side to move is the
+  engine, so USI's `score cp` needs no flip.
+- **Centipawns, pawn = 100.** E3's network emits its own scale, and the
+  conversion at the inference boundary is exactly where silent strength drift
+  lives.
+- **`Depth` is signed whole plies.** No fractional `ONE_PLY` scheme. Signed
+  because quiescence runs at negative depth, counting down from zero towards
+  `QS_MAX_CHECK_PLIES`.
+- **`MAX_PLY = 128`**, sizing the search stack, the mate band and the move
+  buffer together.
+
+## Evaluation
+
+- **Piece values are a starting point for SPSA at E4, not a measurement.** The
+  ordering comes from the rules of shogi — empty-board destination counts,
+  slider or stepper, colour-bound or not, promotion potential — the magnitudes
+  are interpolated on that ordering, and everything is rounded to a multiple of
+  five so that nobody reads them as fitted. Pawn = 100 anchors it. Two
+  modelling choices worth naming: a **promoted minor is exactly a gold on the
+  board**, because it moves exactly as a gold and anything else would be a claim
+  about the position rather than the material; and **a piece in hand is worth
+  10–15% more than the same piece on the board**, most for the kinds whose board
+  placement is most constrained. "と金は金以上" then falls out on its own.
+  The one known simplification: 成銀 is genuinely worse than 銀 sometimes (a
+  silver retreats diagonally, a promoted one does not) and this model says it is
+  always 50 better. Left unmodelled deliberately; E3 replaces the whole table.
+- ⚠️ **The values are ours, and that is a licensing property, not a preference.**
+  CLAUDE.md forbids reusing a table from a GPL engine. The rounding to fives is
+  the visible evidence, and `eval::tests::every_value_is_a_round_number` is what
+  keeps it true.
+
+## Search
+
+- **Node counting: one node per `search`/`qsearch` entry, including the root,
+  excluding bulk-counted leaves.** Frozen because step 3b makes these numbers a
+  regression test, and a convention changed afterwards invalidates the whole
+  committed set. shunsai settled the same question one repository over.
+- **The poll interval is 1024 nodes**, checked at the top of the interior node,
+  at the top of every quiescence node, and once per deepening iteration — *not*
+  per root move, which would break the first-iteration guarantee below. Step 5's
+  SPRT is where the number stops being inherited.
+
+  ⚠️ **Quiescence has to poll, and the reason is not tidiness.** The test is
+  `nodes.is_multiple_of(1024)` — an *exact* multiple — which is safe only while
+  every increment *inside the tree* is seen by something that polls. A
+  quiescence search that counted nodes without polling would leave the values
+  seen at interior-node entries non-consecutive, and they could then step clean
+  over every multiple of the interval: `stop`, the deadline and the node limit
+  all missed, and missed unpredictably rather than reliably. The mutation was
+  made; the test that goes red is `a_deep_search_still_answers_a_node_limit`.
+
+  ⚠️ **The one exception: `negamax_root`'s own increment is not polled.** Since
+  `self.nodes` accumulates across iterations, an iteration beginning at
+  `nodes ≡ 1023 (mod 1024)` consumes that multiple at the root and no poll fires
+  at it. Bounded and benign — every later increment in that iteration *is*
+  polled, so the next multiple is at most one interval away — but it is an
+  exception to the sentence above, not an instance of it.
+
+  ⚠️ **`self.nodes` accumulates across iterations and must not be reset per
+  iteration**, or the poll starves in a sparse position: in a two-lone-kings
+  position no single iteration through depth 6 reaches 1024 nodes on its own, so
+  a per-iteration counter never fires the poll and `stop` and any deadline go
+  unnoticed for that whole stretch. This is **not** what makes depth 1 complete
+  — that is `Budget::without_limits` below, which stands on its own. Two
+  separate properties of one counter; welding them with a "because" is a mistake
+  this project made once already.
+
+- **The search always answers with a move it actually searched.** The mechanism
+  is structural: **the first iteration runs against `Budget::without_limits`**,
+  the same budget with the clock and the node limit suspended. Without it, a
+  poll landing inside the first root move's subtree leaves `negamax_root`
+  returning `None`, the deepening loop breaking, and the answer sitting at the
+  unsearched seed — a move in shunsai's unspecified generation order, with no
+  `info` line emitted at all.
+
+  ⚠️ **`signals.stopped()` stays live** through it, which is why it is a second
+  budget rather than a flag that skips the poll: `stop` means quit, and the poll
+  is where it is read.
+
+  ⚠️ **It costs a bounded overrun, and that is left standing on purpose.** The
+  guarantee only needs *root move 0* to finish — alpha is still `-INFINITE`
+  there, so any finite score raises it. Suspending the clock for the whole
+  iteration buys nothing after that move and overruns the stated budget by the
+  rest of it. Narrowing the relief to root move 0 would remove the overrun and
+  is not hard, but it changes what the engine does with a **clock**, and the
+  clock is step 5's subject.
+
+- **Each iteration re-seeds the root list with its own answer.** Without it,
+  deepening is only repeated work: an iteration cut short reports the best of
+  whatever prefix of the root list it reached, which can be a *worse* move than
+  the last completed iteration chose. Root-only; not the interior move ordering
+  E1 is about.
+
+- **`MoveBuf::get` returns a `Move` by value, not a slice**, and that is what
+  makes the recursion compile: a slice would borrow the buffer across the
+  recursive `&mut self` call. **The root move list lives outside the buffer**,
+  because it persists across iterations and gets reordered, which is not what a
+  ply-threaded buffer is for.
+
+- **A child gives the move buffer back exactly as it found it, asserted at the
+  boundary rather than left to a test.** Forgetting a `truncate` is a leak, not
+  a wrong answer — every ply reads its own base, so the search still plays
+  correctly — so no ordinary test sees it, and with two node types an interior
+  node's own `truncate` destroys the evidence of anything its quiescence
+  children left behind. The invariant is a `debug_assert_eq!` on either side of
+  every child call.
+
+## Time control
+
+- **`movetime` and `byoyomi` are honoured; `btime`/`wtime`/`binc`/`winc` are
+  ignored.** The line is *a budget the engine was told* versus *a budget it
+  would have to decide*. `movetime n` means "spend n ms" and has no judgement in
+  it; turning a remaining clock into a per-move allowance — with the fail-low
+  extension, the early cut-off and the delay margin that go with it — is step
+  5's whole subject and is not approximated. `byoyomi 0` means "this time
+  control has no byoyomi", not a zero-millisecond budget.
+
+- **`DEFAULT_DEPTH = 4`** answers "no budget of any kind was named" and only
+  that. Applying it as a ceiling over a stated budget as well was a real bug,
+  and `the_depth_ceiling_follows_the_budget_that_was_named` pins it.
+
+  ⚠️ **"Honoured" means the search stops on time, not that the move arrives on
+  time**, and the difference is a lost game rather than a lost tempo. The
+  deadline is `search()`'s entry plus the stated budget exactly: everything
+  before that instant — the server sending `go`, the pipe, the protocol thread
+  parsing it, the channel handing it to the worker — and everything after it —
+  up to two poll intervals of overshoot, then building and flushing `bestmove`,
+  then the wire back — falls outside the budget. Locally that is microseconds.
+  Over a network it is not, and a byoyomi overrun is an immediate loss. The
+  margin that covers this is step 5's; **until step 5, do not enter rinsai
+  anywhere the clock is enforced across a network — floodgate included.** That
+  route does not open until E2 gives it a CSA client, so this is written forward
+  rather than describing anything reachable today; it is here because here is
+  where someone about to open it would be reading.
+
+## The `info` line
+
+- **It carries `depth seldepth time nodes nps score pv`, and nothing else.**
+  `hashfull` joins before `score` at step 3b; `multipv` and `currmove` still
+  have no consumer. A field that cannot be filled honestly is not printed, and a
+  field that can is printed **unconditionally**, including when it is
+  uninteresting: a token that comes and goes makes the line's shape depend on
+  the position, which is how a reader's bug becomes one that reproduces on some
+  positions and not others.
+- **`seldepth` resets per iteration; `nodes` accumulates across them.** The
+  asymmetry is deliberate. USI prints `seldepth` beside `depth` and it means the
+  selective depth *of that iteration*. `nodes` accumulates for an unrelated
+  reason — resetting it starves the poll, above.
+
+## Tests
+
+- **No test may name a move the engine chose.** shunsai's public documentation
+  says nothing about generation order either way, so it is an unspecified
+  implementation detail. Assert "this is legal here" by replaying the move into
+  a position the test builds itself.
+- **A sabotage note is only worth writing if the mutation was made and the test
+  went red**, and it has to sit on the test it describes. ⚠️ **Re-run every
+  sabotage after a change, including the ones a previous step already
+  verified** — a note is trusted exactly because it was verified once, and a
+  note that cannot fire is worse than none.
+- **A surface with no caller stays if — and only if — a *specific* caller can be
+  named, and the name goes in its doc comment. Otherwise it goes.** "It'll
+  probably be useful" is what this rule exists to prevent; a named caller is a
+  record rather than a wish. See DECISIONS.md for the exception that produced it.
+
+### Fixture provenance
+
+The shared fixtures come from shunsai (MIT, same author),
+`benches/suite/common.rs`, where their perft values are cross-checked against
+nine independent implementations. Written down because step 3b builds a
+committed bench position set, which is where the licensing rule bites hardest.
+
+- **The drop-heavy middlegame ("matsuri")**
+  `l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1` — a
+  diagram from the shogi perft literature, i.e. a fact about a board rather than
+  an expression. The same diagram appears in other engines' suites, GPL ones
+  included; that is not reuse, because no code is copied.
+- **The 593-legal-move position**
+  `R8/2K1S1SSk/4B4/9/9/9/9/9/1L1L1L3 b RBGSNLP3g3n17p 1` — same file, same
+  standing.
+- **`the_first_iteration_is_never_abandoned`'s fixture** is two plies on from
+  the matsuri position, reached by rinsai's own search.

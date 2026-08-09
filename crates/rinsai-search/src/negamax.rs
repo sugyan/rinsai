@@ -41,7 +41,7 @@ use crate::search::{BestMove, InfoSink, Limits, SearchJob, SearchSignals, Search
 /// It no longer has to be even. Until step 3a it did: an odd depth ended the
 /// line on a capture of ours that the opponent never answered, so the search
 /// valued material it could not keep — which is exactly what quiescence
-/// removes. The parity rule went with its reason (DESIGN.md §9); the value
+/// removes. The parity rule went with its reason (DECISIONS.md); the value
 /// stays at four, because raising it is a behaviour change and E0 has no
 /// instrument to justify one.
 ///
@@ -56,7 +56,7 @@ const DEFAULT_DEPTH: Depth = 4;
 /// How often the search asks whether it is out of budget.
 ///
 /// The conventional starting point, and untuned. It is far inside any USI
-/// deadline at this step's node rate (the rate itself is in PROGRESS.md).
+/// deadline at the node rates E0 has measured.
 /// Expect the interval to buy less latency as a node gets more expensive —
 /// ordering work at E1 — and expect step 5's time-management SPRT to be where
 /// the number is chosen rather than inherited.
@@ -211,7 +211,7 @@ impl<'a> Budget<'a> {
     /// landing inside the first root move's subtree leaves
     /// [`NegamaxSearcher::negamax_root`] returning `None` and the answer sitting
     /// at the unsearched seed — a move in shunsai's unspecified generation
-    /// order. PROGRESS.md carries the argument.
+    /// order. CONVENTIONS.md carries the rule.
     ///
     /// ⚠️ **`signals.stopped()` stays live**, which is the whole reason this is
     /// a second budget rather than a flag that skips the poll: `stop` means
@@ -276,7 +276,7 @@ pub struct NegamaxSearcher {
     /// them. The asymmetry is deliberate: USI prints `seldepth` beside `depth`
     /// and it means the selective depth *of that iteration*, while `nodes`
     /// accumulates because resetting it starves the poll in a sparse position.
-    /// PROGRESS.md carries both arguments.
+    /// CONVENTIONS.md carries both rules.
     seldepth: usize,
     /// Sticky. Once the budget is spent every frame returns at once without
     /// polling again, so an abandoned subtree cannot spend time on its way out.
@@ -1550,7 +1550,7 @@ mod tests {
     /// It used to also assert that the depth was *even*, because an odd one
     /// ended every unclocked line on an unanswered capture. That was true only
     /// while there was no quiescence search, which is precisely what quiescence
-    /// removes — so the assertion went with its reason (DESIGN.md §9) rather
+    /// removes — so the assertion went with its reason (DECISIONS.md) rather
     /// than being left to pin a rule nobody could still justify.
     #[test]
     fn an_unclocked_go_falls_back_to_the_default_depth() {

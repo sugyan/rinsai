@@ -21,7 +21,7 @@ pub const MAX_LEGAL_MOVES: usize = 593;
 /// `MAX_LEGAL_MOVES * MAX_PLY`, sliced per ply, generation appending and the
 /// caller truncating back on the way out — is shunsai's own
 /// `perft_materialize` (`examples/perft.rs`), and the alternatives it was
-/// chosen over are argued in PROGRESS.md.
+/// chosen over are argued in DECISIONS.md.
 ///
 /// **The moves come out by value, one at a time, and that is load-bearing.**
 /// A `&[Move]` handed back here would borrow the buffer for as long as the
