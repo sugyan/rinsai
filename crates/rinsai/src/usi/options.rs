@@ -51,7 +51,7 @@ pub(crate) struct OptionSpec {
 ///
 /// The spin bounds are **conventional, not measured**. 256 MB is a size a
 /// floodgate VM can spare; `min 1` exists so a smoke test can run a tiny table;
-/// `max 65536` is larger than any machine this is planned to run on. Step 3
+/// `max 65536` is larger than any machine this is planned to run on. Step 3b
 /// builds the transposition table and has to honour whatever is advertised
 /// here, so `min 1` in particular is a commitment that the table works at 1 MB —
 /// revisit these there rather than treating them as decided.
@@ -64,7 +64,7 @@ pub(crate) const OPTIONS: &[OptionSpec] = &[
             max: 65_536,
         },
         slot: Slot::HashMb,
-        planned: Some("E0 step 3, with the transposition table"),
+        planned: Some("E0 step 3b, with the transposition table"),
     },
     OptionSpec {
         name: "USI_Ponder",
@@ -310,7 +310,7 @@ mod tests {
         assert!(options.set("USI_Hash", Some("512")).is_ok());
         assert_eq!(
             options.unhonoured_changes(),
-            vec![("USI_Hash", "E0 step 3, with the transposition table")]
+            vec![("USI_Hash", "E0 step 3b, with the transposition table")]
         );
     }
 }

@@ -12,16 +12,28 @@ use core::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 /// The deepest ply the search will ever reach, counting quiescence.
 ///
 /// It sizes three things together so they cannot drift apart: the mate band
-/// below, the search's per-ply state (E0 step 2 — the principal variation, and
-/// from step 3 the static evaluation beside it) and the move buffer. 128 is the
-/// conventional value; nothing here has yet forced it.
+/// below, the search's per-ply state (the principal variation, and still only
+/// that) and the move buffer. 128 is the conventional value; nothing here has
+/// yet forced it.
+///
+/// The per-ply state was expected to gain a static evaluation at step 3a and
+/// did not: quiescence computes its stand-pat as a local and nothing reads it
+/// again. The second field — and with it the `Stack` struct step 2 declined to
+/// write — arrives with E1's killers or its futility margins, whichever lands
+/// first. Recorded because a prediction that did not come true is worth as much
+/// as one that did.
 pub const MAX_PLY: usize = 128;
 
 /// A search depth, in **whole plies**, signed.
 ///
-/// Signed because quiescence search runs at negative depth from E0 step 3.
-/// There is deliberately no fractional `ONE_PLY` scheme: modern engines
-/// converged away from it, and it buys nothing that a reduction table does not.
+/// Signed because quiescence search runs at negative depth — which it does,
+/// from E0 step 3a, entering at zero and counting down towards
+/// `-QS_MAX_CHECK_PLIES`. ⚠️ Note which constant that is: it counts *checked*
+/// plies, not plies, so a capture chain never moves it. (`QS_MAX_PLIES` was the
+/// total-depth cap of the first implementation, measured and rejected —
+/// PROGRESS.md carries the sweep.) There is deliberately no fractional
+/// `ONE_PLY` scheme: modern engines converged away from it, and it buys nothing
+/// that a reduction table does not.
 pub type Depth = i32;
 
 /// An evaluation, in **centipawns**, from the point of view of the side to move.
@@ -48,7 +60,7 @@ impl Score {
 
     /// "No score recorded" — an empty transposition-table slot.
     ///
-    /// **No caller yet**; its caller is E0 step 3's transposition table. Kept
+    /// **No caller yet**; its caller is E0 step 3b's transposition table. Kept
     /// under the rule in PROGRESS.md: a surface whose caller can be *named*
     /// stays, with the name written down.
     ///
@@ -162,8 +174,8 @@ impl Neg for Score {
 // The four arithmetic impls below have **no caller yet**, and are kept for the
 // same reason as `Score::NONE` and `clamp_to_eval`: their callers are named.
 // E1's aspiration windows widen with `alpha - delta` and `beta + delta`, and
-// step 3's transposition table adjusts a stored mate score by ply on the way in
-// and out. Step 2 needs none of it — the evaluator accumulates in `i32` and
+// step 3b's transposition table adjusts a stored mate score by ply on the way
+// in and out. Step 3a needs none of it — the evaluator accumulates in `i32` and
 // wraps once, the mate constructors produce mate scores, and the root window is
 // `±INFINITE`.
 
