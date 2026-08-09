@@ -171,9 +171,10 @@ step 3b on.** The node counts are deterministic: every run reproduces all of the
 to the digit, which is why they are what `bench` freezes as a regression test. The
 times are one machine on one day — settled, the three rows sit at 22–23 ms,
 38–41 ms and 444–469 ms across two sessions — so a time that differs from this
-table is not by itself a result. Note that the spread is not proportional: the
-short rows hold to about ±2% and the long one to about ±3%, so a threshold read
-off the short rows would be too tight for the long one. That is the whole reason
+table is not by itself a result. Note that the spread does not track the
+magnitude: as a fraction the three rows sit at about ±2%, ±4% and ±3%, so the
+*widest* is a short row and a threshold cannot be read off row length either
+way. That is the whole reason
 a quiet machine is a precondition for the SPRT loop (§8): noise cannot move a
 node count and can move a time far enough to invent an improvement. The node
 rate these imply is used once, under "the poll interval is 1024 nodes" below.
@@ -224,10 +225,12 @@ went deep enough to notice it.
 After quiescence, **depths 1 through 8 all report 0**. The initial position is
 symmetric and the engine now says so at every depth. `the_horizon_effect_fingerprint_is_gone`
 asserts it against the recorded magnitude rather than against "the score is
-small", so a search that broke in some new way and reported ±90 cannot pass it by
-being differently wrong.
+small" — the threshold *is* the fingerprint's magnitude, so the effect returning
+fails it whatever depths it returns at. ⚠️ It remains an upper bound and nothing
+more: a search that broke in some new way and reported ±90 would pass. Only the
+fingerprint is pinned, not the scores.
 
-And it holds a whole game: 70 plies against the local material-only YaneuraOu
+And step 2 held a whole game: 70 plies against the local material-only YaneuraOu
 (`NodesLimit 10000` against `go byoyomi 200`), ending in rinsai being mated and
 answering `resign`. No illegal move, no protocol stall, nothing on stderr. Step
 1's game ended at 22 plies, and **the comparison means nothing** — different
@@ -257,8 +260,11 @@ is. Where promotion is optional a capture is emitted **both ways**; both are
 legal and choosing between them is ordering, which is E1's.
 
 **Deliberately absent, each with the step that owns it**: non-capture promotions
-(E1, beside SEE), checks (E1 item 7 — they need `gives_check`, which shunsai does
-not have), SEE (E1 item 8 — needs `attackers_to`), delta pruning (E1 item 9).
+(E1 item 8, beside SEE), checks (E1 item 8 as well — they need `gives_check`,
+which shunsai does not have), SEE (E1 item 8 — needs `attackers_to`), delta
+pruning (E1 item 9). DESIGN.md's item 8 groups all three of the first in one
+sentence; item 7 is check *extension*, which is a main-search feature and not
+this.
 The と金作り argument E1 inherits, with its number: in rinsai's own table a pawn
 is 100 and a promoted pawn 600, so 歩→と is a **500 cp event** that a capture-only
 quiescence is blind to. That is the largest single thing this design gives up,
@@ -382,7 +388,7 @@ Findings from step 3a's planning that 3b should not re-derive:
   staged generation an interior node generates its whole list anyway, so scanning
   it and swapping the move to the front *is* the legality check, and costs one
   pass instead of a second `generate_moves` walk. ⚠️ Consequence: `is_legal`'s
-  doc names a second caller "from E0 step 3" that **does not arrive**, and 3b
+  doc names a second caller "from E0 step 3b" that **does not arrive**, and 3b
   owes that doc a correction rather than leaving a promise standing.
 - **An Exact-bound hit may cut only when its score falls outside the window.** An
   in-window Exact cut returns after `pv[ply].clear()` and before the move loop,
@@ -505,12 +511,21 @@ them.
 
   ⚠️ **Quiescence has to poll, and the reason is not tidiness.** The test is
   `nodes.is_multiple_of(1024)` — an *exact* multiple — which is safe only while
-  every increment is seen by something that polls. A quiescence search that
-  counted nodes without polling would leave the values seen at interior-node
-  entries non-consecutive, and they could then step clean over every multiple of
-  the interval: `stop`, the deadline and the node limit all missed, and missed
-  unpredictably rather than reliably. The mutation was made; the test that goes
-  red is `a_deep_search_still_answers_a_node_limit`.
+  every increment *inside the tree* is seen by something that polls. A
+  quiescence search that counted nodes without polling would leave the values
+  seen at interior-node entries non-consecutive, and they could then step clean
+  over every multiple of the interval: `stop`, the deadline and the node limit
+  all missed, and missed unpredictably rather than reliably. The mutation was
+  made; the test that goes red is `a_deep_search_still_answers_a_node_limit`.
+
+  The qualifier is load-bearing, and the exception is worth naming rather than
+  leaving for someone to rediscover: **`negamax_root`'s own increment is not
+  polled.** Since `self.nodes` accumulates across iterations, an iteration that
+  begins at `nodes ≡ 1023 (mod 1024)` consumes that multiple at the root and no
+  poll fires at it. Bounded and benign — every later increment in that iteration
+  *is* polled, so the next multiple is at most one interval away, inside the "up
+  to two poll intervals of overshoot" already recorded above — but it is an
+  exception to the sentence, not an instance of it.
 
   ⚠️ **`self.nodes` accumulates across iterations and must not be reset per
   iteration**, or the poll starves in a sparse position. Measured on two lone
@@ -520,10 +535,12 @@ them.
   1 431. Reset per iteration and the poll does not fire once through depth 6, so
   `stop` and any deadline go unnoticed for that whole stretch; accumulating, it
   first fires partway through depth 6. This is **not** what makes depth 1
-  complete — that is the ≤ 594-node bound below, which stands on its own, since
-  `self.nodes` is 0 when depth 1 starts either way. Two separate properties of
-  one counter, and welding them together with a "because" is a mistake this file
-  made once already (DESIGN.md §9, 2026-08-07).
+  complete — that is `Budget::without_limits` below, which stands on its own,
+  since `self.nodes` is 0 when depth 1 starts either way. (It used to be the
+  ≤ 594-node bound; step 3a replaced the bound but not this sentence, and the
+  pointer sat on its own contradiction until it was re-read.) Two separate
+  properties of one counter, and welding them together with a "because" is a
+  mistake this file made once already (DESIGN.md §9, 2026-08-07).
 
 - **The search always answers with a move it actually searched.** Restated at
   step 3a (DESIGN.md §9), because quiescence removed the proof that used to carry

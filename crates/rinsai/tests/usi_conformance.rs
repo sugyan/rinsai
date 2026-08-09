@@ -426,11 +426,15 @@ fn crlf_line_endings_work() {
 /// (`negamax::tests::the_reported_pv_is_playable`) or over real pipes
 /// (`usi_process::a_scripted_game_over_real_pipes`).
 ///
-/// ⚠️ The same property is why `seldepth` cannot be *asserted* here beyond its
-/// presence and its shape: every dialogue is answered from depth 1, so it would
-/// read 1 every time and an assertion about it could not fail. `hashfull` will
-/// be in the same position at step 3b. Those belong in `rinsai-search`'s tests
+/// ⚠️ The same property is why no *exact* `seldepth` can be asserted here: what
+/// the line reports is a race between the search and `quit`, not a fixed value.
+/// It is emphatically **not** that it reads 1 — this fixture's own depth-1
+/// iteration goes deeper than that, because after `7g7f 3c3d` both bishop
+/// diagonals are open and quiescence has captures to resolve. What is assertable
+/// here is the token's presence, its shape and its slot; the value belongs in
+/// `rinsai-search`'s tests
 /// (`negamax::tests::seldepth_reaches_past_the_nominal_depth_where_captures_exist`).
+/// `hashfull` will be in the same position at step 3b.
 #[test]
 fn the_info_line_is_well_formed_and_its_pv_is_playable() {
     let args = "startpos moves 7g7f 3c3d";

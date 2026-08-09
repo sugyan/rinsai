@@ -8,12 +8,18 @@
 //!
 //! The three structural decisions worth knowing before reading:
 //!
-//! * [`NegamaxSearcher::child`] is the only place a child is searched and the
-//!   only place a score is negated. It dispatches between the interior node and
-//!   quiescence, which is what keeps the node-counting convention exact.
+//! * [`NegamaxSearcher::child`] is the only place an *interior* node's child is
+//!   searched, and the only place the interior/quiescence dispatch happens —
+//!   which is what keeps the node-counting convention exact.
+//!   ⚠️ It is **not** the only place a score is negated:
+//!   [`NegamaxSearcher::qsearch`] recurses into itself directly and negates
+//!   there. There are two seams, not one, and by PROGRESS.md's generated-to-kept
+//!   table the quiescence seam carries the overwhelming majority of the nodes —
+//!   so anything that changes what happens at a negation (E1's extensions, an
+//!   aspiration re-search, a ply or depth adjustment) has to touch both.
 //! * The recursion carries a [`Window`] rather than a loose `(alpha, beta)`
-//!   pair, so the child call is `-self.negamax(board, -window, …)` and the
-//!   classic `-search(-beta, -alpha)` transposition cannot be mistyped.
+//!   pair, so both child calls read `-self.…(board, -window, …)` and the classic
+//!   `-search(-beta, -alpha)` transposition cannot be mistyped at either seam.
 //! * The board is a **parameter**, never a field. `self.negamax(…)` while
 //!   `&mut self.board` is live does not compile, and the tempting repairs
 //!   (`RefCell`, `mem::take`) are all worse than passing it.
@@ -55,9 +61,21 @@ const DEFAULT_DEPTH: Depth = 4;
 /// ordering work at E1 — and expect step 5's time-management SPRT to be where
 /// the number is chosen rather than inherited.
 ///
-/// ⚠️ The test against it is an **exact** multiple, so every increment has to
-/// be seen by something that polls or the counter can step clean over one. That
-/// is why [`NegamaxSearcher::qsearch`] polls as well.
+/// ⚠️ The test against it is an **exact** multiple, so every increment *inside
+/// the tree* has to be seen by something that polls or the counter can step
+/// clean over one. That is why [`NegamaxSearcher::qsearch`] polls as well:
+/// counting a whole quiescence subtree without polling would make the values
+/// seen at [`NegamaxSearcher::negamax`] entries non-consecutive by orders of
+/// magnitude, and multiples could then be missed indefinitely.
+///
+/// The one increment that is *not* polled is
+/// [`NegamaxSearcher::negamax_root`]'s own, so one multiple can be stepped over
+/// per deepening iteration — `nodes` accumulates across iterations, so an
+/// iteration beginning at `nodes ≡ 1023 (mod 1024)` consumes 1024 at the root.
+/// That is bounded and benign: every later increment in the iteration is
+/// polled, so the next multiple is at most one interval away. Named here
+/// because it is an exception to the sentence above, not because it costs
+/// anything.
 const POLL_INTERVAL_NODES: u64 = 1024;
 
 /// The deepest iteration any search will start.
@@ -185,9 +203,12 @@ impl<'a> Budget<'a> {
     /// "the search answers with a move it actually searched" true now that
     /// quiescence exists. Until step 3a the guarantee was arithmetic — a
     /// depth-1 iteration was `1 + N ≤ 594` nodes and the poll only fires on an
-    /// exact multiple of 1024, so it could not fire. With quiescence a depth-1
-    /// iteration runs to tens of thousands of nodes in a tactical position, and
-    /// a poll landing inside the first root move's subtree leaves
+    /// exact multiple of 1024, so it could not fire. Quiescence removed the
+    /// bound rather than the behaviour: a depth-1 iteration still costs a few
+    /// hundred nodes in every fixture in this repository, and it took searching
+    /// the drop-heavy fixture's descendants to find one — at 49 006 nodes —
+    /// where the poll can fire at all. But *can* is enough, because a poll
+    /// landing inside the first root move's subtree leaves
     /// [`NegamaxSearcher::negamax_root`] returning `None` and the answer sitting
     /// at the unsearched seed — a move in shunsai's unspecified generation
     /// order. PROGRESS.md carries the argument.
@@ -332,9 +353,13 @@ impl NegamaxSearcher {
     /// The dispatch lives at the call site rather than at the top of
     /// [`Self::negamax`] for the counting convention's sake: one node per entry
     /// means each of the two must own its increment, and a `negamax` that
-    /// turned round and called `qsearch` would count the node twice. The
-    /// negation lives here for the same reason [`Window`] negates as a unit —
-    /// one place where `-search(-beta, -alpha)` can be got wrong.
+    /// turned round and called `qsearch` would count the node twice.
+    ///
+    /// ⚠️ **This is the interior seam, not the only one.** [`Self::qsearch`]
+    /// recurses into itself and negates there, so `-search(-beta, -alpha)` is
+    /// written out twice in this file. [`Window`] negating as a unit is what
+    /// keeps both of them from being got wrong, and it is why the two calls read
+    /// alike; it does not make this the single place to change.
     /// ⚠️ It also checks that a child gives the move buffer back exactly as it
     /// found it, and that check is here because nothing else can see it.
     /// Forgetting a `truncate` is a leak rather than a wrong answer — every ply
@@ -444,17 +469,27 @@ impl NegamaxSearcher {
     /// fingerprint it removes.
     ///
     /// **It searches captures, and nothing else.** Deliberately absent, each
-    /// with the step that owns it: non-capture promotions (E1, beside SEE —
-    /// と金作り is a large material event this is blind to, and the argument is
-    /// in PROGRESS.md); checks (E1 item 7, and they need `gives_check`, which
-    /// shunsai does not have); SEE (E1 item 8, needs `attackers_to`); delta
-    /// pruning (E1 item 9). What this produces is deliberately an *unordered,
-    /// unpruned* baseline for each of those to be measured against.
+    /// with the step that owns it: non-capture promotions (E1 item 8, beside
+    /// SEE — と金作り is a large material event this is blind to, and the
+    /// argument is in PROGRESS.md); checks (E1 item 8 as well, and they need
+    /// `gives_check`, which shunsai does not have); SEE (E1 item 8, needs
+    /// `attackers_to`); delta pruning (E1 item 9). What this produces is
+    /// deliberately an *unordered, unpruned* baseline for each of those to be
+    /// measured against.
     ///
-    /// The one imprecision kept: a node not in check whose stand-pat already
-    /// beats β returns without generating, so a position that is mate *without*
-    /// check — legal in shogi, and vanishingly rare — reports material instead.
-    /// That is step 2's depth-zero imprecision narrowed, not removed.
+    /// **Two imprecisions kept, and neither is confined to one branch.**
+    ///
+    /// * A node **not in check** never claims mate, cutoff or not. It only ever
+    ///   generates captures, so an empty list means "no capture" and cannot be
+    ///   told from "no legal move" — and the stand-pat β cutoff does not even
+    ///   generate. Either way a position that is mate *without* check — legal in
+    ///   shogi, and vanishingly rare — reports material.
+    /// * A node **in check** past [`QS_MAX_CHECK_PLIES`] evaluates without
+    ///   generating either, so a real checkmate there reports material too. That
+    ///   is the known lie [`QS_MAX_CHECK_PLIES`]'s own doc admits, and it fires
+    ///   far more often than the first.
+    ///
+    /// Both are step 2's depth-zero imprecision narrowed, not removed.
     fn qsearch(
         &mut self,
         board: &mut Position,
@@ -512,10 +547,17 @@ impl NegamaxSearcher {
             }
             best = -Score::INFINITE;
         } else {
-            // Standing pat is the claim that we need not capture at all. It
-            // holds because a quiet position's value is its evaluation, and
-            // because there is always some quiet move to make instead — shogi
-            // has no stalemate.
+            // Standing pat is the claim that we need not capture at all: it
+            // assumes the side to move has *some* move worth at least the
+            // static evaluation, and takes that as a lower bound on the node.
+            // That is the conventional quiescence assumption and it is an
+            // assumption, not a theorem — it is false in zugzwang, and false in
+            // a position whose only legal moves are captures. Drops make the
+            // first effectively absent in shogi (DESIGN.md's E1 item 5 makes
+            // the same argument for null-move pruning) and the second is rare
+            // enough to live with. It is also what keeps a node that is not in
+            // check from ever claiming mate: it did not generate every move, so
+            // it does not know.
             let stand_pat = eval::evaluate(board);
             if stand_pat >= window.beta {
                 return stand_pat;
@@ -982,9 +1024,12 @@ mod tests {
     /// past its horizon. The initial position is symmetric, so a score of that
     /// magnitude is the effect and nothing else.
     ///
-    /// Written against the recorded number rather than as "the scores are
-    /// small", so that a search which broke in some new way and reported ±90
-    /// cannot pass this by being differently wrong.
+    /// Written against the recorded number rather than a round one, so the
+    /// threshold means something: it is the magnitude the fingerprint had, so
+    /// the effect coming back fails this whether or not it comes back at the
+    /// same depths. ⚠️ It is still an upper bound and nothing more — a search
+    /// that broke in some new way and reported ±90 passes. Only the fingerprint
+    /// is pinned here; the scores themselves are not.
     ///
     /// Sabotage: evaluate in `child` instead of dispatching to `qsearch`, and
     /// 215 comes straight back at every odd depth.
@@ -1124,12 +1169,27 @@ mod tests {
     /// A node limit has to be honoured on a tactical position too, where the
     /// unclocked first iteration is itself expensive.
     ///
-    /// The bound is built from a *measured* depth-1 cost, because the first
+    /// Both bounds are built from a *measured* depth-1 cost, because the first
     /// iteration runs unclocked by design: nothing can stop before it finishes,
     /// so the limit can only bite after that. That interaction — an
     /// unstoppable iteration in front of a node limit — is what this covers and
     /// what the startpos-based `a_deep_search_still_answers_a_node_limit` does
     /// not, since depth 1 costs 31 nodes there.
+    ///
+    /// ⚠️ **The fixture has to be one whose depth-1 iteration outruns the
+    /// limit, and the lower bound is what makes it load-bearing.** This test
+    /// used the drop-heavy fixture itself, whose depth 1 costs 280 nodes
+    /// against a limit of 20 000 — so the limit bit in iteration *two* and the
+    /// interaction above went unmeasured: deleting the `depth == 1` special
+    /// case in `Searcher::search` left it green. Measured, so that the fixture
+    /// is chosen rather than assumed: with `nodes 20 000` the position below
+    /// reports 49 006 nodes and one `info` line, i.e. exactly the unclocked
+    /// first iteration and nothing after it.
+    ///
+    /// Sabotage: pass `budget` rather than `first` to the depth-1 iteration and
+    /// this goes red either way round — the iteration stops at about 20 480
+    /// nodes, which trips the lower bound, or it stops before the first root
+    /// move finishes, in which case no `info` line is emitted at all.
     ///
     /// ⚠️ **It is not the test that catches the poll being dropped from
     /// `qsearch`.** That mutation was made, and the one that went red was
@@ -1137,7 +1197,10 @@ mod tests {
     /// The note said otherwise until the mutation was actually run.
     #[test]
     fn a_node_limit_is_honoured_inside_a_quiescence_subtree() {
-        let args = "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
+        // The same fixture as `the_first_iteration_is_never_abandoned` above,
+        // and for the same reason: it is the one whose depth-1 iteration is
+        // expensive enough for a stated budget to have something to cut.
+        let args = "sfen l6nl/6+Pgk/2np1S3/p1p1p2Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn4p 3";
         let (_, first) = run(args, depth(1));
         let unclocked = field(&first[0], "nodes");
 
@@ -1150,6 +1213,10 @@ mod tests {
             },
         );
         let nodes = field(lines.last().expect("an iteration finished"), "nodes");
+        assert!(
+            nodes >= unclocked,
+            "the node limit cut the first iteration short: {nodes} < {unclocked}"
+        );
         assert!(
             nodes < unclocked + 20_000 + 4 * i64::try_from(POLL_INTERVAL_NODES).expect("fits"),
             "the node limit went unnoticed inside quiescence: {nodes}"
@@ -1470,10 +1537,10 @@ mod tests {
     /// `go` with only a clock on it falls back to a fixed depth.
     ///
     /// It used to also assert that the depth was *even*, because an odd one
-    /// ended every unclocked line on an unanswered capture. Quiescence is what
-    /// made that true and quiescence is what removed it, so the assertion went
-    /// with its reason (DESIGN.md §9) rather than being left to pin a rule
-    /// nobody could still justify.
+    /// ended every unclocked line on an unanswered capture. That was true only
+    /// while there was no quiescence search, which is precisely what quiescence
+    /// removes — so the assertion went with its reason (DESIGN.md §9) rather
+    /// than being left to pin a rule nobody could still justify.
     #[test]
     fn an_unclocked_go_falls_back_to_the_default_depth() {
         let limits = Limits {
