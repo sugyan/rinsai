@@ -444,6 +444,46 @@ of non-blank non-comment lines:
 DESIGN.md was 63 426 bytes of which §9 was 40 482 (63.8%), and §9 accounted for
 37 241 of the file's 39 785 bytes of lifetime growth (93.6%).
 
+**⚠️ The wasm target compiles and the binary has no engine in it.** Measured on
+rustc 1.94.1, `wasm32-unknown-unknown`, at `1dbf0cd`. `cargo check --workspace
+--all-targets --all-features --locked --target wasm32-unknown-unknown` passes
+unmodified in 1.9 s. The release binary does not:
+
+| | |
+|---|---|
+| `rinsai.wasm`, release | 89 223 bytes |
+| imports | **none** |
+| `main()` | traps — `RuntimeError: unreachable` |
+| exports | `main`, plus `shogi_core`'s `#[no_mangle]` C ABI and nothing else |
+| deepest surviving rinsai symbol | `rinsai_search::search::SearchDriver::spawn` |
+| absent from the name section | `qsearch`, `generate_moves`, `undo_move`, `evaluate`, `legal_moves` |
+| rinsai source paths referenced | one — `crates/rinsai-search/src/search.rs` |
+
+`std::thread::spawn` returns `Err(UNSUPPORTED_PLATFORM)` unconditionally on this
+target, so `search.rs`'s `.expect("the operating system can start a thread")` is
+a proven divergence and everything downstream of it — the entire search — is
+dead code. That panic message and that one path are what survive; the string
+`the operating system can start a thread` is in the binary and the search is
+not. The std paths it references say the rest: `sys/pal/wasm/../unsupported/
+time.rs`, `sys/sync/mutex/no_threads.rs`, `sys/thread_local/no_threads.rs`.
+
+**So a green `cargo check` on this target is not evidence of portability**, and
+the CI job that runs it is scoped accordingly — see the comment on the step.
+
+**NNUE weights against a browser download.** Arithmetic, not measurement:
+
+| Feature transformer | Bytes | |
+|---|---|---|
+| HalfKP 125 388 × 256, int16 — the E3 plan | 64 198 656 | 61.22 MiB |
+| P-only 1 548 × 256, int16 | 792 576 | 774 KiB |
+
+The rest of `halfkp_256x2-32-32` is the 512→32→32→1 head, 17 440 int8 MACs and
+about 17.5 KB — **99.97% of the file is the feature transformer.** Two external
+figures this rests on, attributed rather than measured here: LZMA buys about 3%
+over deflate on a quantized NNUE, and `@mizarjp/yaneuraou.k-p` ships a playable
+browser engine with a small net embedded in about 2.6 MB (both from the
+`mizar/YaneuraOu.wasm` release assets and its npm packages).
+
 ## Step 3b — what to do next
 
 TT + transposition-move ordering + `rinsai bench`. Carried in unchanged from

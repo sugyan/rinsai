@@ -77,6 +77,23 @@ Newest last. The format follows shunsai's.
   - **`negamax`'s own `pv[ply].clear()` cannot be shown to matter; `qsearch`'s can.** Deleting the interior-node clear reproduces `depth`, `seldepth`, `score` and `pv` byte-identically over 9 fixtures × depths 1–6. The reason is structural: an interior node that never raises alpha has failed low, so its parent fails high and never reads its line, whereas a quiescence node can return an exact score without writing one. The line stays — it costs nothing, and E1's aspiration windows remove the assumption the argument rests on — but PROGRESS.md now records that it is unfalsifiable today, so a future "delete the dead line" has something to check itself against.
   - **Eight sabotage notes were false, and this is the first time the re-run rule was executed rather than asserted.** Step 3a added "re-run every sabotage after a change"; this is the first review to actually apply every mutation and watch the suite. Of the notes checked, eight described a failure the mutation does not produce — wrong test, wrong count, wrong symptom, or a test structurally unable to see it (`usi_conformance`'s `infinite` note, on a dialogue that injects `CapturingSearcher` and never reaches the real searcher). **A rule that is written but never executed is worth what an unverified note is worth.**
 
+- **2026-08-10 — The USI layer is not shared with `tuishogi`, because an engine and a GUI need opposite halves of the protocol.**
+  - **What the question turns on, and it is not how the code is factored.** `tuishogi` — a sibling TUI board, MIT, its own repository — reaches a phase where it drives an engine over USI, and the proposal was to extract whatever rinsai's protocol layer could lend it. The answer is nothing. USI is asymmetric: an engine **reads** what a GUI sends and **writes** its answers, and a GUI does exactly the reverse. The function that parses `go btime 1000` and the function that writes it are two functions, and having either does not give you the other. rinsai holds the engine half and only that, so an extraction hands `tuishogi` nothing it can call.
+  - **So this was never "extract the USI layer".** It was "write a new crate holding both directions of both types, and retire part of the existing one into it" — the direction-neutral grammar is a minority of the four files, and the mirror halves exist in neither repository. A shared type is the *union* of both sides' needs rather than the intersection, and the union is visible already: `GuiCommand::GameOver` carries no payload because rinsai discards the argument, `GoMate` collapses its own, `Unknown(String)` exists so the loop can log what it ignored, and `Position(String)` is deliberately opaque. Each is small; together they are a permanent tax on both consumers, paid so that neither can have the type it wants.
+  - **The GUI half is on crates.io and rinsai cannot use it, which is the same fact from the other side.** `usi` 0.6.2 (nozaq/usi-rs) is MIT, depends on `itertools` and `thiserror` and nothing else, and — decisively for `tuishogi`, whose CI asserts exactly one `shogi_core` in the lock — **does not depend on `shogi_core` at all**; its moves are strings. It offers `EngineCommand::parse`, `Info(Vec<InfoParams>)`, and `BestMoveParams { MakeMove, Resign, Win }`, the last carrying 入玉宣言, which is the shogi-specific thing a chess-derived codec would be missing. `usi/command.rs` already records why that crate is useless *here*: its `GuiCommand` can be written but not read. That sentence is exactly the reason it fits there. (Read off crates.io and docs.rs, not from source: recorded as an attribution, and the crate's last release is 2022, which is the risk `tuishogi` takes on.)
+  - **What is genuinely duplicated, and it does not pay for a crate.** The drop-colour fix — `shogi_usi_parser`'s `Move::from_usi` hard-codes every drop to Black, so both programs rewrite it, about ten lines each — and the habit of reading stdout with `read_until(b'\n')` and `from_utf8_lossy` rather than `BufRead::lines`, which is transport and cannot be shared across a `tokio` consumer and a threads-only one anyway. The dialect knowledge is worth more than the code, and PROGRESS.md's "Input the engine must survive" already holds it in one place, at zero cost.
+  - **Reopened when** a dialect bug found in one repository turns out to have a twin in the other, or a third Rust consumer appears. ⚠️ **Not** when rinsai's step-7 match harness arrives: that harness is Ayane, in Python, so it is not a second consumer of anything written here. `tuishogi`'s own documents currently give it as the reason to split, which is a premise worth correcting there before it is acted on.
+
+- **2026-08-10 — WebAssembly compatibility is kept as a constraint on the search core, and nothing is built for it.**
+  - **The question was whether a browser build is reachable, and the surprise is that the toolchain says yes when the binary says no.** `cargo check` for `wasm32-unknown-unknown` passes today, unmodified, on stable. The release binary is 89 KB with no imports and a `main` that traps on `unreachable`, because `std::thread::spawn` fails unconditionally on that target and LLVM folds the failure, deleting everything downstream of `SearchDriver::spawn` — which is the whole search. PROGRESS.md carries the figures and the surviving-symbol list. **A compiling target is not a supported target**, and the CI job added here is scoped to say so on its face rather than in a comment nobody re-reads.
+  - **Three runtime traps, and the roadmap already owns the code around all three.** `thread::spawn` in `SearchDriver`, `Instant::now` in `Budget`, and `Condvar::wait` behind `wait_until_signalled`. Step 5 rewrites `Budget` for real time management and wants an injectable clock for its own tests regardless — a wall clock is not something a time-management SPRT can be written against. E2 rewrites `SearchDriver` for Lazy SMP. Doing either seam early means writing it twice, so both are deferred into the step that was going to touch them anyway, and the third is not a trap to fix but a subset to declare: `go infinite` and `go ponder` cannot work on one thread, so a browser session implements less than USI and says so.
+  - **`catch_unwind` is inert there, and that is worth knowing before it is relied on.** The target is `panic = "abort"`, so the two nested catches in the worker catch nothing and the "a panicking search answers `resign` and the engine plays on" guarantee is a **native-only** property. The workspace profile's note about deliberately not setting `panic = "abort"` is true of the builds it describes and does not travel.
+  - **The decision that makes this cheap was already made, for unrelated reasons.** `Budget` honours a budget it was *told* and refuses one it would have to *decide*; `depth` and `nodes` are therefore already clock-free, and a host sending `go depth 6 nodes 3000000` is asking a question the engine can already answer. A browser owns a wall clock and can size the next slice from the last one. **Nothing new is needed at the seam**, which is why the rule in CONVENTIONS.md is a constraint on what may become load-bearing rather than a request for work.
+  - **`web-time` was checked and not adopted.** It is `MIT OR Apache-2.0` and a genuine drop-in for `Instant`, and on wasm it pulls `js-sys` and `wasm-bindgen` — about ten crates into a lock file whose whole third-party tree is three, every one of them provenance-scan surface. A `cfg`-selected clock costs nothing and adds none. **Adopted if** a browser build ever needs a deadline *inside* the engine that the host cannot express as depth or nodes; nothing on the roadmap does.
+  - **The honest ceiling, stated so it is not rediscovered at E3.** The E3 network's feature transformer is about 61 MiB and quantized weights are effectively incompressible — PROGRESS.md carries both figures and their sources. No browser build ships that, and no amount of GPU offload changes it: **the constraint is download size, not arithmetic.** WebGPU is additionally the wrong instrument for this evaluation — NNUE's cost is an incremental accumulator update of a few columns, αβ evaluates positions strictly sequentially so there is nothing to batch, and a dispatch costs more than the whole evaluation. GPU is the right instrument for the E6 DL/MCTS branch and not for this one. So a browser build forks at **the evaluation and nowhere else**, which is a fork the native design already has, since `EvalFile` exists precisely because networks are swapped without recompiling.
+  - **Two E3 consequences that are free now and expensive later**, recorded here because E3 is where they land: the network's feature-set dimension belongs in the file header rather than a `const`, or a smaller net needs a second inference path forever; and `EvalFile` should be a thin wrapper over a `load_network(&[u8])`, which a browser needs, self-play wants, and a filesystem path cannot provide.
+  - **Revisited when** the browser stops being of interest, or when honouring the CONVENTIONS.md rule costs measurable Elo natively. In that case the native engine wins and the wasm build is dropped — it is a constraint accepted while it is free, not a goal with a claim on the roadmap.
+
 ## Recorded but deliberately not built
 
 [CLAUDE.md](./CLAUDE.md) forbids building for a consumer that does not exist
@@ -233,6 +250,50 @@ The condition that would reopen it: something that has to wait on *many*
 independent I/O sources at once inside the engine process. Nothing on the E0–E6
 roadmap does. (The match harness at step 7 runs many engine processes, but that
 is Ayane, in Python.)
+
+⚠️ **The conclusion stands; one premise above is narrower than it reads.** "The
+concurrency here is two threads" describes an engine that is an OS process with
+stdio, which is every build this project ships. A browser build is neither — it
+has no stdin to block on and no thread to give the search — and it does not want
+async either, because it has nothing to wait on: the host calls in, the search
+runs, the answer returns. So the wasm case is not a counterexample to this entry
+and not an argument for a runtime; it is outside the situation the entry
+describes. See the 2026-08-10 log entry and CONVENTIONS.md's Portability rule.
+
+### A browser build — the shape it would take, and why none of it is written
+
+The consumer does not exist: there is no web application to put an engine in.
+What is built is the constraint (CONVENTIONS.md's Portability rule) and a CI job
+that keeps the target compiling. The shape is recorded so that whoever does
+build it is not re-deriving it, and so that step 5 and E2 know what they are
+absorbing.
+
+**Single-threaded, in a Web Worker, on stable Rust.** The search is called
+directly — `Searcher::search` is already the interface and `SearchDriver` is
+merely one caller of it — so the driver is bypassed rather than ported. The
+threaded alternative needs `+atomics`, `SharedArrayBuffer`, COOP/COEP headers on
+the host and `-Z build-std`, i.e. **nightly**: it buys Lazy SMP in a browser,
+which is optimising the weakest build for strength, and it collides with the
+`rust-version = "1.88"` discipline for the sake of it.
+
+**Sliced by `go depth N`, with `nodes` as a cap.** The host owns the wall clock,
+sizes the next slice from the last, and never sends `infinite` or `ponder`. Each
+slice re-runs the deepening prefix; that waste is real at step 3a and mostly
+disappears at 3b, because the transposition table outlives a `go`.
+
+**A string-in, lines-out interface** — `step(line) -> Vec<String>` — rather than
+a typed JS API. `tests/usi_conformance.rs` is already exactly that harness over
+`Cursor` and `Vec<u8>`, so the binding would arrive with its conformance tests
+already written, and a web GUI would drive wasm and a child process with one
+code path. A typed API would re-encode `usi/command.rs` and `info.rs` into a
+second protocol covered by one set of tests. The one obstacle is that `Engine`
+owns a `SearchDriver` concretely; a `Runner` trait with an inline implementation
+is what E2 would add anyway.
+
+**Built when** there is a web application asking for it. ⚠️ Not before: a
+`cfg(target_arch = "wasm32")` branch nobody exercises rots faster than an absent
+one, which is why the constraint and the compile check are the whole of what
+lands now.
 
 ### `usi.rs`, not `usi/mod.rs`
 
