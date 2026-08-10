@@ -27,6 +27,7 @@ use crate::info::SearchInfo;
 use crate::moves::{MAX_LEGAL_MOVES, MoveBuf};
 use crate::score::{Depth, MAX_PLY, Score};
 use crate::search::{BestMove, InfoSink, Limits, SearchJob, SearchSignals, Searcher};
+use crate::tt::{Bound, DEFAULT_HASH_MB, Hit, Table};
 
 /// How deep a `go` that named no budget at all searches.
 ///
@@ -107,6 +108,27 @@ impl Neg for Window {
             alpha: -self.beta,
             beta: -self.alpha,
         }
+    }
+}
+
+/// Whether a transposition-table hit may be returned instead of searching.
+///
+/// Each arm returns a value on the far side of a window edge from the bound
+/// that justifies it, so the node's fail-high or fail-low is proved.
+///
+/// ⚠️ **An exact score *strictly inside* the window may not be returned**, and
+/// the reason is the principal variation rather than the score: cutting returns
+/// after [`NegamaxSearcher::negamax`]'s `pv[ply].clear()` and before its move
+/// loop, so the parent raises alpha on an empty line. Every other arm leaves the
+/// parent failing high — its line then never surfaces — or untouched.
+///
+/// ⚠️ **That is a reading of the code, not an observation** — PROGRESS.md
+/// carries the sweep that could not reproduce it, and why this is kept anyway.
+fn cuts(hit: &Hit, window: &Window) -> bool {
+    match hit.bound {
+        Bound::Lower => hit.score >= window.beta,
+        Bound::Upper => hit.score <= window.alpha,
+        Bound::Exact => hit.score >= window.beta || hit.score <= window.alpha,
     }
 }
 
@@ -211,6 +233,9 @@ pub struct NegamaxSearcher {
     /// a row clear on every node unless it also carries a per-ply length — at
     /// which point it is a `Vec` with extra steps.
     pv: Vec<Vec<Move>>,
+    /// Survives between searches on purpose — a position's value does not stop
+    /// being true because the clock moved. `usinewgame` is what clears it.
+    tt: Table,
     nodes: u64,
     /// The deepest ply reached, quiescence included. Reset **per iteration**,
     /// unlike [`Self::nodes`], which accumulates across them — CONVENTIONS.md
@@ -222,12 +247,35 @@ pub struct NegamaxSearcher {
 }
 
 impl NegamaxSearcher {
+    /// A searcher whose table is the size `USI_Hash` advertises as its default.
+    ///
+    /// ⚠️ **Not what a test wants.** It allocates [`DEFAULT_HASH_MB`] MiB, and
+    /// `usi_conformance.rs` alone drives thirty-one dialogues — use
+    /// [`Self::with_hash_mb`] there.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_hash_mb(DEFAULT_HASH_MB)
+    }
+
+    /// Nodes visited by the last search. Caller: `rinsai bench`, which has no
+    /// other way to read the figure it exists to freeze.
+    #[must_use]
+    pub fn nodes(&self) -> u64 {
+        self.nodes
+    }
+
+    /// A searcher with a table of `mb` MiB.
+    ///
+    /// Callers: `rinsai bench`, and every test that does not want a quarter of a
+    /// gigabyte. ⚠️ **Not `setoption name USI_Hash`** — that resizes the table
+    /// the worker's searcher already owns, through [`Searcher::set_hash_mb`].
+    #[must_use]
+    pub fn with_hash_mb(mb: usize) -> Self {
         Self {
             root_moves: Vec::with_capacity(MAX_LEGAL_MOVES),
             buf: MoveBuf::new(),
             pv: (0..=MAX_PLY).map(|_| Vec::with_capacity(MAX_PLY)).collect(),
+            tt: Table::new(mb),
             nodes: 0,
             seldepth: 0,
             stopped: false,
@@ -361,6 +409,18 @@ impl NegamaxSearcher {
             return Score::ZERO;
         }
 
+        // Kept for the store on the way out, because the loop below moves the
+        // window's alpha and the bound is decided by comparing the two.
+        let entry_alpha = window.alpha;
+        let key = board.key();
+        let hit = self.tt.probe(key, ply);
+        if let Some(hit) = hit
+            && hit.depth >= depth
+            && cuts(&hit, &window)
+        {
+            return hit.score;
+        }
+
         let base = self.buf.generate(board);
         if self.buf.len() == base {
             // Shogi has no stalemate, so no legal move is mate — no `in_check`
@@ -369,7 +429,20 @@ impl NegamaxSearcher {
             return Score::mated_in(ply);
         }
 
+        // ⚠️ **Membership in the list this node generated is the legality
+        // check**, and the only one: a key collision hands back a move from
+        // another position, and shunsai's `do_move` validates nothing.
+        if let Some(mv) = hit.and_then(|hit| hit.mv)
+            && let Some(index) = (base..self.buf.len()).find(|&i| self.buf.get(i) == mv)
+        {
+            self.buf.swap(base, index);
+        }
+
         let mut best = -Score::INFINITE;
+        // Only a move that raised alpha, because only such a move was proved
+        // better than something. A fail-low node offers none, and offering the
+        // least bad of a losing set would fill the table with noise.
+        let mut best_move = None;
         for i in base..self.buf.len() {
             let mv = self.buf.get(i);
             board.do_move(mv);
@@ -384,6 +457,7 @@ impl NegamaxSearcher {
                 best = score;
                 if score > window.alpha {
                     window.alpha = score;
+                    best_move = Some(mv);
                     self.update_pv(ply, mv);
                     if window.alpha >= window.beta {
                         break;
@@ -392,6 +466,21 @@ impl NegamaxSearcher {
             }
         }
         self.buf.truncate(base);
+
+        // ⚠️ **Nothing is stored from an abandoned search**, and not because
+        // `best` is a placeholder — the `break` above discards those. It is that
+        // `best` is then the maximum over a *prefix* of the list, so every bound
+        // below would be false, and the entry outlives the search that made it.
+        if !self.stopped {
+            let bound = if best >= window.beta {
+                Bound::Lower
+            } else if window.alpha > entry_alpha {
+                Bound::Exact
+            } else {
+                Bound::Upper
+            };
+            self.tt.store(key, ply, depth, bound, best, best_move);
+        }
         best
     }
 
@@ -563,6 +652,10 @@ impl Searcher for NegamaxSearcher {
         self.nodes = 0;
         self.seldepth = 0;
         self.stopped = false;
+        // ⚠️ The table is *not* reset here — see the field. What this does is
+        // age it, so entries from the previous `go` still answer probes but
+        // lose every replacement contest against this search's own.
+        self.tt.new_search();
         // Not redundant with the per-ply truncation: a panic caught by
         // `search::worker` unwinds past every one of those, and the worker
         // keeps this searcher for the next `go`.
@@ -614,6 +707,7 @@ impl Searcher for NegamaxSearcher {
                     seldepth: self.seldepth,
                     score,
                     nodes: self.nodes,
+                    hashfull: self.tt.hashfull(),
                     elapsed: started.elapsed(),
                     pv: &self.pv[0],
                 }
@@ -640,6 +734,14 @@ impl Searcher for NegamaxSearcher {
                 ponder: None,
             },
         )
+    }
+
+    fn new_game(&mut self) {
+        self.tt.clear();
+    }
+
+    fn set_hash_mb(&mut self, mb: usize) {
+        self.tt.resize(mb);
     }
 }
 
@@ -679,6 +781,14 @@ mod tests {
         Game::from_usi_position(args).expect("the fixture parses")
     }
 
+    /// ⚠️ **Never [`NegamaxSearcher::new`] in a test.** It allocates
+    /// [`DEFAULT_HASH_MB`] MiB, and this module builds a dozen searchers while
+    /// `usi_conformance.rs` drives thirty-one dialogues. One MiB is the smallest
+    /// `USI_Hash` admits, so it is also the size the engine has to work at.
+    fn searcher() -> NegamaxSearcher {
+        NegamaxSearcher::with_hash_mb(1)
+    }
+
     fn job(game: Game, limits: Limits) -> SearchJob {
         SearchJob {
             id: 0,
@@ -697,7 +807,7 @@ mod tests {
 
     fn run(args: &str, limits: Limits) -> (BestMove, Vec<String>) {
         let sink = Lines::default();
-        let best = NegamaxSearcher::new().search(&job(game(args), limits), &sink);
+        let best = searcher().search(&job(game(args), limits), &sink);
         (best, sink.take())
     }
 
@@ -797,7 +907,7 @@ mod tests {
         let signals = Arc::clone(&job.signals);
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let _ = tx.send(NegamaxSearcher::new().search(&job, &SilentSink));
+            let _ = tx.send(searcher().search(&job, &SilentSink));
         });
 
         assert!(
@@ -824,7 +934,7 @@ mod tests {
         let signals = Arc::clone(&job.signals);
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let _ = tx.send(NegamaxSearcher::new().search(&job, &SilentSink));
+            let _ = tx.send(searcher().search(&job, &SilentSink));
         });
 
         assert!(
@@ -1190,8 +1300,7 @@ mod tests {
         };
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let _ =
-                tx.send(NegamaxSearcher::new().search(&job(game("startpos"), limits), &SilentSink));
+            let _ = tx.send(searcher().search(&job(game("startpos"), limits), &SilentSink));
         });
         assert!(
             matches!(
@@ -1221,9 +1330,7 @@ mod tests {
         let searching = Arc::clone(&sink);
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let _ = tx.send(
-                NegamaxSearcher::new().search(&job(game("startpos"), limits), searching.as_ref()),
-            );
+            let _ = tx.send(searcher().search(&job(game("startpos"), limits), searching.as_ref()));
         });
         let best = rx
             .recv_timeout(Duration::from_secs(10))
@@ -1261,7 +1368,7 @@ mod tests {
     /// `negamax` and the buffer comes back holding thousands of moves.
     #[test]
     fn the_move_buffer_comes_back_empty() {
-        let mut searcher = NegamaxSearcher::new();
+        let mut searcher = searcher();
         let _ = searcher.search(&job(game("startpos"), depth(3)), &SilentSink);
         assert_eq!(searcher.buf.len(), 0);
     }
@@ -1269,17 +1376,32 @@ mod tests {
     /// Each iteration leaves its answer at the head of the root list, so the
     /// next one starts there.
     ///
-    /// The fixture is chosen so the two disagree: the initial position's
-    /// depth-1 answer is not its depth-3 answer, so a deleted re-seed leaves
-    /// generation order at the head and this fails. It names no move — both
-    /// sides of the comparison come from the engine.
+    /// ⚠️ **Vacuous unless the answer differs from the move shunsai generates
+    /// first**, which is why the first assertion is there — it fails loudly
+    /// when the fixture stops discriminating, rather than leaving the second
+    /// one passing for no reason. Not every fixture does; PROGRESS.md says
+    /// which.
+    ///
+    /// Sabotage: delete the `root_moves.swap` in the deepening loop.
     #[test]
     fn each_iteration_starts_from_the_last_answer() {
-        let mut searcher = NegamaxSearcher::new();
-        let best = searcher.search(&job(game("startpos"), depth(3)), &SilentSink);
+        let args = "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
+        let mut generated = Vec::new();
+        let _ = game(args).search_board().generate_moves(|set| {
+            generated.extend(set);
+            ControlFlow::Continue(())
+        });
+
+        let mut searcher = searcher();
+        let best = searcher.search(&job(game(args), depth(3)), &SilentSink);
         let BestMove::Play { mv, .. } = best else {
-            panic!("the initial position has legal moves")
+            panic!("the fixture has legal moves")
         };
+        assert_ne!(
+            generated[0], mv,
+            "the fixture's answer is now the first move generated, so this test \
+             can no longer fail — find another"
+        );
         assert_eq!(
             searcher.root_moves[0], mv,
             "the root list was not re-seeded with the iteration's answer"
@@ -1360,6 +1482,153 @@ mod tests {
             deepest > i64::from(DEFAULT_DEPTH),
             "a 300 000 node budget only reached depth {deepest}"
         );
+    }
+
+    // ----------------------------------------------------- transposition table
+
+    /// One searcher of `mb` MiB, the same search twice, and the node count of
+    /// each.
+    ///
+    /// One searcher, because what is measured is what the table carries between
+    /// the two. ⚠️ **`mb` is a parameter because table *size* moves a node count
+    /// on its own** — a bigger table evicts less — so comparing two searches at
+    /// different sizes measures that instead.
+    fn twice(
+        mb: usize,
+        args: &str,
+        limits: Limits,
+        between: impl FnOnce(&mut NegamaxSearcher),
+    ) -> (i64, i64) {
+        let mut searcher = NegamaxSearcher::with_hash_mb(mb);
+        let first = Lines::default();
+        let _ = searcher.search(&job(game(args), limits), &first);
+        between(&mut searcher);
+        let second = Lines::default();
+        let _ = searcher.search(&job(game(args), limits), &second);
+
+        let nodes =
+            |lines: Vec<String>| field(lines.last().expect("an iteration finished"), "nodes");
+        (nodes(first.take()), nodes(second.take()))
+    }
+
+    /// The table survives a `go`, so searching the same position again is
+    /// cheaper.
+    ///
+    /// Sabotage: never store, or never probe — either makes the two counts
+    /// equal. ⚠️ **Deleting the `buf.swap` does not fire this**, which is why
+    /// the ordering has a test of its own below, on another fixture.
+    #[test]
+    fn a_repeated_search_reuses_what_the_last_one_proved() {
+        let (first, second) = twice(1, "startpos", depth(6), |_| {});
+        assert!(
+            second < first,
+            "the second search cost {second} against the first's {first}"
+        );
+    }
+
+    /// The transposition move is searched first, as a node-count tripwire.
+    ///
+    /// A ceiling with room on both sides, like
+    /// [`quiescence_is_bounded_on_the_drop_heavy_fixture`]. ⚠️ **The fixture is
+    /// load-bearing** — the ordering is worth nothing at the initial position;
+    /// PROGRESS.md carries the sweep that picked this one.
+    ///
+    /// Sabotage: drop the `buf.swap`.
+    #[test]
+    fn the_transposition_move_is_searched_first() {
+        let (_, lines) = run("startpos moves 2g2f 8c8d 2f2e 8d8e", depth(5));
+        let last = lines.last().expect("an iteration finished");
+        assert!(
+            field(last, "nodes") < 3_000_000,
+            "the transposition move is not being tried first: {last}"
+        );
+    }
+
+    /// …and `usinewgame` takes it away again, because the next game's positions
+    /// are not merely stale — the entries describe a different tree.
+    ///
+    /// Sabotage: make `new_game` a no-op and the second count drops, exactly as
+    /// in the test above.
+    #[test]
+    fn usinewgame_empties_the_table() {
+        let (first, second) = twice(1, "startpos", depth(6), Searcher::new_game);
+        assert_eq!(first, second, "entries survived `usinewgame`");
+    }
+
+    /// A resize does too — an operator changing the configuration mid-session
+    /// must not leave the search reading entries from the old table.
+    ///
+    /// ⚠️ **The resize is to the size the searcher already has**, so what is
+    /// measured is the clearing rather than the sizing: a different size also
+    /// empties the table, and moves the count for its own reason.
+    #[test]
+    fn resizing_the_hash_empties_the_table() {
+        for mb in [1, 2] {
+            let (first, second) = twice(mb, "startpos", depth(6), |s| s.set_hash_mb(mb));
+            assert_eq!(first, second, "entries survived a resize at {mb} MiB");
+        }
+    }
+
+    /// `hashfull` is real data rather than a constant: zero while nothing has
+    /// been stored, and above zero once the search has filled some of the table.
+    ///
+    /// ⚠️ **Depth 1 is genuinely zero**: the root dispatches its children
+    /// straight into quiescence, which does not touch the table.
+    ///
+    /// ⚠️ **[`searcher`]'s one MiB is load-bearing for the second row**: at the
+    /// advertised default an E0-depth search fills so little of the table that
+    /// this reads zero permille, so the same assertion there could not pass.
+    ///
+    /// Sabotage: report a constant.
+    #[test]
+    fn hashfull_reports_the_table_filling_up() {
+        let (_, lines) = run("startpos", depth(6));
+        assert_eq!(field(&lines[0], "hashfull"), 0, "{}", lines[0]);
+        let last = lines.last().expect("an iteration finished");
+        assert!(field(last, "hashfull") > 0, "{last}");
+        assert!(field(last, "hashfull") <= 1_000, "{last}");
+    }
+
+    /// The rule [`cuts`] exists for, as a table.
+    ///
+    /// ⚠️ **A unit test on purpose: no end-to-end test catches an in-window
+    /// exact cut.** PROGRESS.md carries the sweep that failed to, and why the
+    /// restriction is kept anyway.
+    ///
+    /// Sabotage: `Bound::Exact => true`.
+    #[test]
+    fn a_hit_cuts_only_where_it_lands_on_or_past_a_window_edge() {
+        let window = Window {
+            alpha: Score::cp(-50),
+            beta: Score::cp(50),
+        };
+        let hit = |bound, cp| Hit {
+            score: Score::cp(cp),
+            depth: 0,
+            bound,
+            mv: None,
+        };
+
+        // Strictly inside: nothing may cut, an exact score included — this node
+        // still owes its parent a line.
+        for bound in [Bound::Upper, Bound::Lower, Bound::Exact] {
+            for cp in [-49, 0, 49] {
+                assert!(!cuts(&hit(bound, cp), &window), "{bound:?} at {cp} cp");
+            }
+        }
+        // At or past an edge, each bound cuts on the side it proves and not on
+        // the other. ⚠️ Inclusive: a score *equal* to β is a fail-high, which is
+        // what makes this agree with the search's own `alpha >= beta`.
+        for cp in [50, 51, 5_000] {
+            assert!(cuts(&hit(Bound::Lower, cp), &window), "{cp} cp");
+            assert!(cuts(&hit(Bound::Exact, cp), &window), "{cp} cp");
+            assert!(!cuts(&hit(Bound::Upper, cp), &window), "{cp} cp");
+        }
+        for cp in [-50, -51, -5_000] {
+            assert!(cuts(&hit(Bound::Upper, cp), &window), "{cp} cp");
+            assert!(cuts(&hit(Bound::Exact, cp), &window), "{cp} cp");
+            assert!(!cuts(&hit(Bound::Lower, cp), &window), "{cp} cp");
+        }
     }
 
     /// `go` with only a clock on it falls back to a fixed depth.

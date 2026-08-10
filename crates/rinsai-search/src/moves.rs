@@ -138,6 +138,12 @@ impl MoveBuf {
         self.moves[index]
     }
 
+    /// Exchanges two moves. The transposition move's ordering: it is found by
+    /// scanning the list a node generated anyway, then swapped to the front.
+    pub(crate) fn swap(&mut self, a: usize, b: usize) {
+        self.moves.swap(a, b);
+    }
+
     /// Drops everything generated at or after `base`, ending a ply.
     pub(crate) fn truncate(&mut self, base: usize) {
         self.moves.truncate(base);
@@ -163,9 +169,13 @@ impl Default for MoveBuf {
 ///
 /// shunsai has no `is_legal`: generation is always fully legal, so nothing
 /// inside it ever needs to ask. The caller is moves arriving over USI, and from
-/// E2 over CSA. ⚠️ Step 3b validates its transposition move by scanning the
-/// list it has already generated, not through here — PROGRESS.md carries the
-/// reason.
+/// E2 over CSA.
+///
+/// ⚠️ **The search is not a caller and is not going to be.** A transposition
+/// move is validated by scanning the list its node generated anyway, which is
+/// one pass rather than a second `generate_moves` walk — see
+/// [`NegamaxSearcher`](crate::NegamaxSearcher). Anything else inside the search
+/// that needs to ask "is this legal here" should reach for that shape first.
 ///
 /// `position.legal_moves().contains(&mv)` is the obviously-correct version; it
 /// allocates, and is kept as the test oracle rather than used here.

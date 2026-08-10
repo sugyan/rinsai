@@ -18,8 +18,8 @@ conventions and rebaselines every committed node count (DECISIONS.md).
 | 1 | Skeleton + USI shell — workspace, CI, shunsai wiring, protocol loop, `bestmove` = a legal move | **done** |
 | 2 | Material evaluation + iterative-deepening negamax αβ — PV, `info` output, mate scoring | **done** |
 | 3a | Quiescence search — captures only, `seldepth` | **done** |
-| 3b | TT + transposition-move ordering — `hashfull`, `USI_Hash`, `rinsai bench` | next |
-| 4 | Repetition (千日手) + 連続王手 — history *queries*, mate-in-1..5 suite | |
+| 3b | TT + transposition-move ordering — `hashfull`, `USI_Hash`, `rinsai bench` | **done** |
+| 4 | Repetition (千日手) + 連続王手 — history *queries*, mate-in-1..5 suite | next |
 | 5 | Time management — byoyomi / Fischer / movetime, `stop` responsiveness | |
 | 6 | `openings-v1` extractor — floodgate CSA → balanced opening SFENs (`crates/xtask` arrives here) | |
 | 7 | Match harness + SPRT — Ayane vendored, `tools/opponents.toml.example` | |
@@ -137,12 +137,18 @@ numbers**; nothing in the source repeats them, because the first draft of step 2
 put a timing in a doc comment and the two copies had already drifted apart by a
 factor of two when the branch was reviewed.
 
-| Position | Depth | Nodes, step 2 | Nodes, step 3a | seldepth | Time, step 2 |
-|---|---|---|---|---|---|
-| initial | 6 | 585 568 | **376 695** | 29 | 23 ms |
-| drop-heavy middlegame | 4 | 838 976 | **7 030 029** | 29 | 40 ms |
-| drop-heavy middlegame | 5 | 13 888 371 | **378 188 510** | 32 | 445 ms |
-| two lone kings | 6 | 1 431 | **1 431** | 6 | — |
+| Position | Depth | Nodes, step 2 | Nodes, step 3a | Nodes, step 3b | seldepth, 3b | Time, step 2 |
+|---|---|---|---|---|---|---|
+| initial | 6 | 585 568 | 376 695 | **128 167** | 29 | 23 ms |
+| drop-heavy middlegame | 4 | 838 976 | 7 030 029 | **4 049 636** | 29 | 40 ms |
+| drop-heavy middlegame | 5 | 13 888 371 | 378 188 510 | **33 416 692** | 31 | 445 ms |
+| two lone kings | 6 | 1 431 | 1 431 | **747** | 6 | — |
+
+⚠️ **The step-3b column is at the advertised default table size (256 MiB) and
+is not the count at another size.** Table size moves a node count on its own —
+a bigger table evicts less — which is why `bench` fixes its own size rather than
+reading `USI_Hash`, and why a count quoted without a size is not a result. Each
+row was taken three times in one process and reproduces to the digit.
 
 Step 3a's counts were taken three times and reproduce to the digit. **Its times
 are not recorded, and that is deliberate**: the machine was not quiet — a
@@ -370,6 +376,160 @@ ran 70 plies and step 1's 22, and **the comparison still means nothing** — one
 game each, different opponents' settings, and E0 has no instrument for strength.
 Recorded as "it plays", which is all it is.
 
+## What step 3b delivered
+
+A transposition table, the transposition move searched first, `hashfull` on the
+`info` line, an honoured `USI_Hash`, and `rinsai bench`. The column above is the
+result; what follows is what building it changed or found out.
+
+### The table, and what it is worth
+
+16-byte slots, a power-of-two count indexed by `key & mask`, the **full** 64-bit
+key stored so a hit is never an index accident, and depth-preferred replacement
+with entries from earlier searches giving way first. The move is stored as a
+`CompactMove` — `Option<CompactMove>` is two bytes *guaranteed*, being a
+`#[repr(transparent)] NonZeroU16`, where `Move` carries no `#[repr]` at all.
+
+**The transposition move being searched first is worth more than the scores are,
+and by a lot.** Node counts with the stored move swapped to the front of the
+list against the same search without that one line, one MiB, release:
+
+| Position | d=2 | d=3 | d=4 | d=5 |
+|---|---|---|---|---|
+| initial | 1.00× | 1.00× | 1.01× | 1.00× |
+| initial + `7g7f 3c3d` | 1.00× | 1.46× | 1.39× | 1.44× |
+| initial + `2g2f 8c8d 2f2e 8d8e` | 1.00× | 1.00× | 1.94× | **14.02×** |
+| an open middlegame | 1.00× | 1.53× | 1.57× | 2.13× |
+| drop-heavy middlegame | 1.00× | 1.12× | 1.55× | **8.08×** |
+
+Two things worth reading rather than skimming:
+
+- **The initial position gains nothing at all**, at any depth measured. It is the
+  one fixture where the ordering is worth 1.00×, and the first draft of
+  `a_repeated_search_reuses_what_the_last_one_proved` used it — so deleting the
+  swap left that test green. This is why
+  `the_transposition_move_is_searched_first` uses a different fixture, and why
+  the fixture is named as load-bearing in its doc.
+- **The effect is strongly super-linear in depth**, 1.00× → 1.94× → 14.02× on one
+  fixture across two plies. E1's ordering work (MVV-LVA, killers, history) is
+  measured against a search that already has this.
+
+### Quiescence does **not** probe the table, and the reason is not the measured one
+
+Whether quiescence should probe and store as well was left to measurement rather
+than decided up front. It was measured, by patching it in and taking it out
+again — the instrumentation was throwaway and is not in the tree.
+
+| Position | Depth | Nodes, table in interior nodes | Nodes, in quiescence too | Ratio | ms | ms |
+|---|---|---|---|---|---|---|
+| initial | 6 | 128 167 | 99 267 | 0.77× | 15 | 17 |
+| drop-heavy middlegame | 4 | 4 049 636 | 2 036 973 | **0.50×** | 432 | 419 |
+| drop-heavy middlegame | 5 | 33 416 692 | 15 649 522 | **0.47×** | 3 379 | 2 926 |
+
+**The expectation was that it would lose, and it does not — it halves the tree.**
+The argument for expecting a loss is the ordinary one: quiescence is 91–99% of
+all nodes, so probing there would thrash the table with shallow entries and evict
+the interior ones that pay. That argument is refuted on every row, and it is
+recorded here because it is what would otherwise have been written down as the
+*reason*, unmeasured, and believed.
+
+It is nonetheless **not shipped in 3b**, and DECISIONS.md carries why. The number
+is here so that E1 does not re-derive it.
+
+### `bench`, and what fixes a baseline
+
+`rinsai bench [depth]`, a binary subcommand following the Stockfish convention
+rather than a criterion target. The position set is `positions/bench-v1.sfen`,
+compiled in with `include_str!` so the counts cannot depend on the working
+directory, and every line carries its provenance in the file's header.
+
+⚠️ **The per-position counts live in `crates/rinsai/src/bench.rs`, not here, and
+that is the one deliberate exception to "a number goes in a PROGRESS.md table
+and nowhere else".** A regression baseline has to be executable to be a
+regression test; a copy of it here would be a second copy that drifts. What
+belongs here is the total and the conditions:
+
+| | |
+|---|---|
+| positions | 7 |
+| depth | 4 |
+| table | 16 MiB, fixed — **not** `USI_Hash` |
+| total nodes | 4 133 205 |
+| reproducibility | three runs, identical to the digit |
+| debug and release | identical counts |
+| release, one run | 451 ms, 9.16 M nodes/s — ⚠️ **not a result**, see below |
+
+⚠️ **The time is the one figure here that is not evidence of anything.** The
+machine was not certified quiet — this session had been building and running
+tests throughout — so it is recorded as "what the thing did", the same standing
+step 3a gave its own times. The node count is the measurement; the same rule as
+everywhere else in this file, and the reason CLAUDE.md §3 makes a quiet machine
+a precondition for the SPRT loop rather than for this.
+
+**Three inputs are fixed rather than inherited, and each of them would otherwise
+be a hidden variable in the baseline**: the table size (an operator's option
+must not move a regression count), the position order together with a
+`new_game` between positions (or position *n* is searched against whatever
+1..n−1 left in the table), and the depth.
+
+### Allocating the default table costs about as much as an E0-depth search
+
+Three measurements of allocating a 256 MiB table alone, in one process: **20.6
+ms, 12.1 ms, 6.3 ms** — the spread is the usual first-touch effect, not noise
+between runs. A whole depth-6 search from the initial position is 13–20 ms on
+the same machine and in the same session, which is what makes the two
+comparable despite neither being a certified-quiet figure. The table is
+allocated **once per searcher**, not per `go`,
+and the USI specification lets `isready` take arbitrarily long — which is where
+step 1 already put slow initialisation. Recorded because the two figures being
+the same order is not obvious, and because a future change that moved allocation
+onto the `go` path would look harmless and would not be.
+
+### `hashfull` is honest and, at E0 depths, uninformative
+
+Permille of the first thousand slots holding an entry from the current search.
+At the advertised 256 MiB it reads **0, 2, 6, 0** on the four fixtures above —
+an E0-depth search fills almost none of a quarter-gigabyte table. It is real
+data (it rises with depth, and reads 0 in the depth-1 iteration because the root
+dispatches straight into quiescence, which stores nothing), but the field only
+becomes interesting when E1 and E2 search deeper.
+
+⚠️ Consequence for tests: `hashfull_reports_the_table_filling_up` needs the
+1 MiB table its helper builds. The same assertion at the default would be a test
+that cannot **pass**.
+
+### Findings carried in from step 3a's planning, and how each turned out
+
+- **`Option<CompactMove>` is 2 bytes, guaranteed** — held, and used.
+- **Validate the transposition move by list membership, not `is_legal`** — held.
+  `is_legal`'s doc has been corrected: it named a second caller "from E0 step 3b"
+  that does not arrive.
+- **An Exact-bound hit may cut only when its score falls outside the window** —
+  implemented, and **the end-to-end hazard it predicts could not be
+  demonstrated.** Letting the `Bound::Exact` arm cut unconditionally leaves every
+  published line byte-identical across three fixtures at depths 1–8, moving only
+  the node count — not at all through depth 5, and by at most 1.2% after that.
+  The restriction is kept, because the path it
+  guards is reachable and the cost of guarding it is that 1%; but the sabotage
+  note that claimed a shortened line was **false**, and the test that claimed to
+  catch it could not. Both are replaced by a unit test on the rule itself.
+- **Route `USI_Hash` through the existing FIFO** — held (`Command::SetHash`).
+- **The test suite must not allocate 256 MB per searcher** — held.
+  `NegamaxSearcher::with_hash_mb` exists for it and every test uses 1 MiB.
+- **`shogi_core`'s `hash` and `ord` features are off in this graph** — still
+  true, and still step 4's first obstacle. The table needed neither: it compares
+  keys as `u64` and moves by `PartialEq`.
+
+### It still plays
+
+104 plies against the local material-only YaneuraOu (`NodesLimit 10000` against
+`go byoyomi 200`), ending in rinsai being mated and answering `resign`. Every
+move was replayed through rinsai's own parser afterwards, so "no illegal move"
+is checked rather than assumed; no protocol stall, nothing on stderr from either
+side. Step 3a's game ran 84 plies, step 2's 70 and step 1's 22, and **the
+comparison still means nothing** — one game each, and E0 has no instrument for
+strength. Recorded as "it plays", which is all it is.
+
 ## Measurements the conventions rest on
 
 [CONVENTIONS.md](./CONVENTIONS.md) carries the rules these produced and
@@ -417,7 +577,45 @@ move scoring 1 590 cp below what the last completed iteration had chosen.
 **`a_stated_budget_deepens_past_the_default`'s 300 000-node budget reaches depth
 6**, so its `> DEFAULT_DEPTH` assertion is not on a knife edge.
 
-**⚠️ `negamax`'s own `pv[ply].clear()` cannot be shown to matter, and
+**The sabotage re-run at step 3b: 35 mutations, three findings.** CONVENTIONS.md
+requires re-running every sabotage after a change, previously verified ones
+included. Step 3b is the second step to actually execute it. Each mutation was
+applied to the tree, the whole suite run, and the failing tests recorded.
+
+| | |
+|---|---|
+| mutations applied | 39 |
+| fired on the test their note names | 34 |
+| expected not to fire, and did not | 1 |
+| notes that were **false** | 2 |
+| behaviour with **no test at all** | 1 |
+| pre-existing tests found **hollowed out** | 1 |
+
+The one expected not to fire is `negamax`'s own `pv[ply].clear()`, recorded
+below and still unfalsifiable with a transposition table in the search. The one
+with no test was the transposition move being searched first — deleting the
+`swap` left the suite green, and `the_transposition_move_is_searched_first` is
+what closed that. The other three are each a different failure mode:
+
+- **A note naming a mutation the test cannot see.** "Store a `Move` instead of a
+  `CompactMove` and the size assertion fires" — it does not. `Option<Move>`
+  happens to fit the same sixteen bytes on today's compiler, so the suite stays
+  green. The rule is still right and the *reason* is now stated correctly: `Move`
+  is forbidden because its size is **unpromised**, and "unpromised" is exactly
+  what no size assertion can test.
+- **A note predicting an end-to-end symptom that does not occur.** Above, under
+  the Exact-bound cut.
+- **A pre-existing test hollowed out by this step's own change.**
+  `each_iteration_starts_from_the_last_answer` compares the search's answer
+  against the head of the root list, which says nothing unless the answer differs
+  from the move shunsai generates first. At the initial position it used to; with
+  a transposition table in the search it no longer does, so deleting the
+  re-seeding left the test green. Only the drop-heavy fixture still disagrees, of
+  five measured, and the test now asserts that disagreement out loud *before* the
+  assertion that matters — so the day that fixture stops discriminating, it says
+  so instead of going quiet.
+
+⚠️ **`negamax`'s own `pv[ply].clear()` cannot be shown to matter, and
 [`qsearch`]'s can.** Deleting the clear at the top of the *interior* node leaves
 the whole workspace green, and a sweep over 9 fixtures × depths 1–6 — 101 `info`
 lines — reproduces `depth`, `seldepth`, `score` and `pv` **byte-identically**.
@@ -483,49 +681,32 @@ attributed rather than measured here: `@mizarjp/yaneuraou.k-p` ships a playable
 browser shogi engine with a small net embedded in about 2.6 MB, which is the
 order a web build has to reach.
 
-## Step 3b — what to do next
+## Step 4 — what to do next
 
-TT + transposition-move ordering + `rinsai bench`. Carried in unchanged from
-step 2's list:
+Repetition (千日手) and 連続王手, plus the mate-in-1..5 suite. The history is
+already recorded — `Game::history()` has one `HistoryEntry` per position reached
+— and step 4 is the first thing to *read* it.
 
-1. **The transposition move must be tried first, in the same PR as the table.**
-   A table whose move nobody tries first is half a table. MVV-LVA, killers and
-   history stay at E1: those are interior-node heuristics that each want their
-   own SPRT.
-2. **`bench` freezes node counts.** It is now safe to freeze them — quiescence
-   has landed and the counts above are the post-quiescence ones — but the table
-   will move once more when the transposition table does, so `bench` belongs
-   last in the branch, after both.
+1. **⚠️ `shogi_core`'s `hash` and `ord` features are off in this graph**, so
+   `Hand` is not `Hash` and `Move` is not `Ord`. Step 4 meets this first, and
+   the answer is not to enable a feature without checking what else it pulls
+   into a dependency tree that CLAUDE.md §2 makes provenance-scan surface.
+2. **`key()` filters, hand equality confirms, the `in_check` run decides.**
+   CLAUDE.md §5 prescribes the triple and `HistoryEntry` already carries it.
+   Perpetual check is the case where the *checking* side loses, which is a
+   shogi-specific rule with no chess analogue and needs its own scenario tests.
+3. **The search has to see repetition, not just the protocol layer.** A draw
+   score inside the tree is what stops the engine walking into one — and it
+   interacts with the transposition table, because a position's value now
+   depends on the path that reached it. That is the one place step 3b's work
+   makes step 4 harder rather than easier.
+4. **`bench` will need re-freezing** if the search's scores change, which a draw
+   score at a repetition does. Expect `the_frozen_counts_are_what_the_search_produces`
+   to fire; that is the test working.
 
-Also waiting: `hashfull` on the `info` line, honouring `USI_Hash` (whose
-`planned` disclosure is a promise now one step overdue), and whether
-`Game::clone`'s Zobrist cross-check should stop being a `debug_assert`.
-
-Findings from step 3a's planning that 3b should not re-derive:
-
-- **`Option<CompactMove>` is 2 bytes, guaranteed.** `shogi_core::CompactMove` is
-  `#[repr(transparent)] NonZeroU16` and the `Move ⇄ CompactMove` round trip is
-  total and exhaustively tested upstream. `Move` itself carries **no `#[repr]`**,
-  so its size is unspecified and unstable across compiler versions — the same
-  rule `moves.rs` already wrote for the move buffer's reservation. Store the
-  compact form.
-- **Validate the transposition move by list membership, not `is_legal`.** With no
-  staged generation an interior node generates its whole list anyway, so scanning
-  it and swapping the move to the front *is* the legality check, and costs one
-  pass instead of a second `generate_moves` walk. ⚠️ Consequence: `is_legal`'s
-  doc names a second caller "from E0 step 3b" that **does not arrive**, and 3b
-  owes that doc a correction rather than leaving a promise standing.
-- **An Exact-bound hit may cut only when its score falls outside the window.** An
-  in-window Exact cut returns after `pv[ply].clear()` and before the move loop,
-  so the parent raises alpha, does not cut, and publishes a truncated line.
-- **Route `USI_Hash` through the existing FIFO** (`Command::SetHash`, mirroring
-  `Command::NewGame`), never a blocking acknowledgement — the worker is one
-  queue and `isready` during `go infinite` would hang the protocol.
-- **The test suite must not allocate the advertised 256 MB per searcher.**
-  `dialogue()` builds around twenty-five of them and `negamax.rs`'s helpers a
-  dozen more.
-- **`shogi_core`'s `hash` and `ord` features are off in this graph**, so `Hand`
-  is not `Hash` and `Move` is not `Ord`. Step 4 will meet that first.
+Also waiting, and neither is urgent: whether `Game::clone`'s Zobrist cross-check
+should stop being a `debug_assert` (DECISIONS.md says weigh it here, where its
+consumers finally exist), and the unbounded input line above.
 
 ## The shunsai constraint sheet
 

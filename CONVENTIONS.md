@@ -154,15 +154,56 @@ carries the rule.
   rather than describing anything reachable today; it is here because here is
   where someone about to open it would be reading.
 
+## The transposition table
+
+- **A stored move is never played without checking it against the list the node
+  generated.** A hit is a hit on a Zobrist key, so a 64-bit collision hands back
+  a move belonging to another position, and shunsai's `do_move` validates
+  nothing. Membership in the already-generated list *is* the check; `is_legal`
+  is not the caller for this and is documented as not being one.
+- **A hit may be returned in place of searching only when its score lands on or
+  past a window edge.** ⚠️ **An `Exact` score strictly inside the window may
+  not**, even though the bound would justify it: the node's line has been
+  cleared and not refilled, so a parent that raises alpha on it publishes one
+  move followed by nothing. DECISIONS.md carries the measurement that could not
+  demonstrate this end to end and why the restriction is kept regardless.
+- **Nothing is stored from an abandoned search.** Once the budget is spent a
+  frame returns a placeholder, and a placeholder in the table outlives the
+  search that made it — every later search then reads it as a proved value.
+- **The table survives a `go` and is cleared by `usinewgame`.** A position's
+  value does not stop being true because the clock moved. What a new search does
+  instead is *age* the table, so its own entries win replacement contests
+  against the previous search's without erasing them.
+- **`USI_Hash` is queued through the search FIFO, never acknowledged.** The
+  worker drains one queue, so waiting for a resize would hang the protocol
+  thread behind whatever search is in front of it — an `isready` during
+  `go infinite` would never return.
+- **Table size is an input to every node count.** A bigger table evicts less, so
+  a count quoted without a size is not a result, and `bench` fixes its own size
+  rather than reading `USI_Hash`.
+
+## `bench`
+
+- **It is a binary subcommand, not a criterion target**, and its counts are a
+  regression test rather than a speed measurement.
+- **Everything that could move a count is fixed inside it**: the position set
+  (compiled in), the depth, the table size, and a `new_game` between positions
+  so that position *n* is not searched against what 1..n−1 left behind.
+- **The frozen counts live beside the code, not in PROGRESS.md.** The single
+  deliberate exception to the "a number has one home and it is a PROGRESS.md
+  table" rule, because a baseline has to be executable — see DECISIONS.md.
+- **A committed position set is where the licensing rule bites hardest**, so
+  every line carries its provenance in the file's header, and a later set is a
+  new file rather than an edit to `bench-v1.sfen`.
+
 ## The `info` line
 
-- **It carries `depth seldepth time nodes nps score pv`, and nothing else.**
-  `hashfull` joins before `score` at step 3b; `multipv` and `currmove` still
-  have no consumer. A field that cannot be filled honestly is not printed, and a
-  field that can is printed **unconditionally**, including when it is
-  uninteresting: a token that comes and goes makes the line's shape depend on
-  the position, which is how a reader's bug becomes one that reproduces on some
-  positions and not others.
+- **It carries `depth seldepth time nodes nps hashfull score pv`, and nothing
+  else.** `multipv` and `currmove` still have no consumer. A field that cannot
+  be filled honestly is not printed, and a field that can is printed
+  **unconditionally**, including when it is uninteresting: a token that comes
+  and goes makes the line's shape depend on the position, which is how a
+  reader's bug becomes one that reproduces on some positions and not others.
 - **`seldepth` resets per iteration; `nodes` accumulates across them.** The
   asymmetry is deliberate. USI prints `seldepth` beside `depth` and it means the
   selective depth *of that iteration*. `nodes` accumulates for an unrelated
@@ -202,6 +243,13 @@ carries the rule.
   sabotage after a change, including the ones a previous step already
   verified** — a note is trusted exactly because it was verified once, and a
   note that cannot fire is worse than none.
+- **A test of an optimisation has to run on input the optimisation helps.**
+  "It is the obvious fixture" is not evidence that it does: the transposition
+  move is worth 14× on one position and 1.00× on the initial position, and the
+  first version of its test used the second. Where a fixture is what makes a
+  test able to fail, say so in its doc and — where the test can — assert the
+  property the fixture was chosen for, so that the day it stops holding the test
+  says so instead of going quiet.
 - **A surface with no caller stays if — and only if — a *specific* caller can be
   named, and the name goes in its doc comment. Otherwise it goes.** "It'll
   probably be useful" is what this rule exists to prevent; a named caller is a

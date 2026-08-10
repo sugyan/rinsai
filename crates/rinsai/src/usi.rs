@@ -40,7 +40,7 @@ use rinsai_search::{BestMove, Game, SearchDriver, SearchJob, SearchSignals, Sear
 
 use crate::output::Output;
 use command::{GuiCommand, parse_line};
-use options::{OPTIONS, Options};
+use options::{OPTIONS, Options, Slot};
 
 /// Runs the protocol until `quit` or end of input.
 ///
@@ -198,9 +198,17 @@ impl<W: Write + Send + 'static> Engine<W> {
     }
 
     fn set_option(&mut self, name: &str, value: Option<&str>) {
-        // Not state-affecting from the GUI's point of view, so stderr only.
-        if let Err(e) = self.options.set(name, value) {
-            warn(&format!("setoption: {e}"));
+        match self.options.set(name, value) {
+            // Queued behind whatever the worker is doing, never waited on —
+            // `SearchDriver::set_hash` carries why.
+            Ok(Slot::HashMb) => {
+                if !self.driver.set_hash(self.options.hash_mb()) {
+                    warn("the search thread is gone; `USI_Hash` was not delivered");
+                }
+            }
+            Ok(Slot::Ponder) => {}
+            // Not state-affecting from the GUI's point of view, so stderr only.
+            Err(e) => warn(&format!("setoption: {e}")),
         }
     }
 

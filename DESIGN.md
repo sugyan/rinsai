@@ -61,7 +61,7 @@ rinsai/
 │   ├── rinsai/            # bin: the engine. USI on stdio by default, --csa for floodgate
 │   └── xtask/             # bin: gen-openings / sprt / fetch-net / release  (added at E0 step 6)
 ├── train/                 # PyTorch: dataset, model, quantize, export   (added at E3)
-├── positions/             # openings-v1.sfen (frozen), test and bench positions  (added at E0 step 6)
+├── positions/             # bench-v1.sfen (frozen, E0 step 3b); openings-v1.sfen (E0 step 6)
 ├── tools/                 # match harness config, ladder definitions  (added at E0 step 7)
 └── .github/workflows/     # fmt / clippy -D warnings / test / MSRV / cargo-deny  (added at E0)
 ```
@@ -130,7 +130,8 @@ Introduction order, with the shogi-specific caveats that differ from chess:
 8. SEE in qsearch — and with it the two things E0 step 3a's quiescence leaves out: **non-capture promotions** (歩→と is a 500 cp event in rinsai's own table, so a capture-only quiescence is blind to と金作り — a shogi-specific gap with no chess analogue) and **checks**, which also need `gives_check`
 9. Futility / razoring — hand value belongs in the margin. **Baseline: E0 step 3a's quiescence is deliberately unpruned.** Also owns `QS_MAX_CHECK_PLIES`, which E0 set to 2 by measurement and without an instrument
 10. Aspiration windows
-11. Singular extensions, and the rest
+11. **Quiescence probes and stores in the transposition table.** Measured at E0 step 3b and **not** shipped there — PROGRESS.md carries the numbers. It halves the tree on every fixture tried, which is the opposite of what the conventional argument predicts, and it arrives here because it is a separable search change and because node count is not an instrument for strength. ⚠️ It also rebaselines every `bench` count, so it wants a pull request of its own whatever else is going on.
+12. Singular extensions, and the rest
 
 **SPRT discipline** — the parameters are in [CLAUDE.md](./CLAUDE.md) and are not restated here. What is specific to E1 is the pacing: **one item on this list is one SPRT**, in list order, and an item that fails to pass is recorded in DECISIONS.md with its numbers rather than retried until it does.
 

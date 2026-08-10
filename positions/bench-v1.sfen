@@ -1,0 +1,39 @@
+# rinsai bench positions, v1 — frozen at E0 step 3b.
+#
+# One `position` argument per line, in the USI spelling the engine already
+# parses; `#` starts a comment and blank lines are ignored. `crates/rinsai`
+# compiles this in with `include_str!`, so `rinsai bench` does not depend on the
+# working directory.
+#
+# PROVENANCE. CLAUDE.md §2 forbids reusing material from a GPL engine, and a
+# committed position set is where that bites hardest, so every line below says
+# where it came from. A *diagram* is a fact about a board rather than an
+# expression — which is why the two taken from the shogi perft literature are
+# clean even though GPL engines carry the same two — but the chain is written
+# down rather than assumed.
+#
+# ⚠️ FROZEN. The node counts these produce are a regression test (CLAUDE.md §3),
+# so adding, removing or reordering a line rebaselines every one of them.
+# A later set is a new file, `bench-v2.sfen`, not an edit to this one.
+
+# --- own: the start of a game, and three ordinary continuations of it. Played
+# --- by hand from the rules, not copied from any engine's suite.
+startpos
+startpos moves 7g7f 3c3d
+startpos moves 2g2f 8c8d 2f2e 8d8e
+startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c
+
+# --- shunsai (MIT, same author), benches/suite/common.rs, where the perft
+# --- values are cross-checked against nine independent implementations.
+# A drop-heavy middlegame, "matsuri": both sides hold pieces, so the drop half
+# of generation and the widest quiescence trees are both exercised.
+sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1
+
+# --- own: constructions, each one line of shogi rules rather than a diagram
+# --- from anywhere.
+# Two lone kings — the sparse end of the range, where a whole iteration costs
+# fewer nodes than one poll interval.
+sfen 4k4/9/9/9/9/9/9/9/4K4 b - 1
+# 頭金: a gold drop mates from 5b, protected by the gold on 5c. The mate path,
+# which is the one place the search's scores leave the ordinary band.
+sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1

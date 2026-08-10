@@ -41,11 +41,19 @@ impl Write for SharedBuf {
 /// Records every job it is handed, and optionally waits to be signalled before
 /// answering — which is how a test holds a search "in progress" without a sleep.
 #[derive(Clone, Default)]
-struct Recorded(Arc<Mutex<Vec<(u64, Limits, String)>>>);
+struct Recorded {
+    jobs: Arc<Mutex<Vec<(u64, Limits, String)>>>,
+    /// Every `set_hash_mb` the protocol layer delivered, in order.
+    hash_mb: Arc<Mutex<Vec<usize>>>,
+}
 
 impl Recorded {
     fn jobs(&self) -> Vec<(u64, Limits, String)> {
-        self.0.lock().unwrap().clone()
+        self.jobs.lock().unwrap().clone()
+    }
+
+    fn hash_mb(&self) -> Vec<usize> {
+        self.hash_mb.lock().unwrap().clone()
     }
 }
 
@@ -57,7 +65,7 @@ struct CapturingSearcher {
 impl Searcher for CapturingSearcher {
     fn search(&mut self, job: &SearchJob, _out: &dyn InfoSink) -> BestMove {
         self.recorded
-            .0
+            .jobs
             .lock()
             .unwrap()
             .push((job.id, job.limits, job.game.sfen()));
@@ -65,6 +73,10 @@ impl Searcher for CapturingSearcher {
             job.signals.wait_until_signalled();
         }
         BestMove::Resign
+    }
+
+    fn set_hash_mb(&mut self, mb: usize) {
+        self.recorded.hash_mb.lock().unwrap().push(mb);
     }
 }
 
@@ -84,8 +96,12 @@ fn drive<S: Searcher + 'static>(searcher: S, script: &str) -> Vec<String> {
 }
 
 /// Runs a script against the real engine.
+///
+/// ⚠️ **One MiB of transposition table, not the advertised default**, because
+/// every dialogue here builds a searcher. Nothing in this file depends on the
+/// size; `usi::options` holds the test that the default is honoured.
 fn dialogue(script: &str) -> Vec<String> {
-    drive(NegamaxSearcher::new(), script)
+    drive(NegamaxSearcher::with_hash_mb(1), script)
 }
 
 /// Runs a script against a recording searcher, returning the transcript and
@@ -370,11 +386,14 @@ fn usinewgame_is_silent_and_does_not_disturb_the_next_search() {
 /// A known option that is not yet acted on says so, once the operator has
 /// actually changed it. An unknown one is accepted in silence, because the
 /// specification requires ignoring what an engine does not understand.
+///
+/// ⚠️ The unhonoured option is `USI_Ponder`, not `USI_Hash`: the disclosure
+/// deletes itself as each option's step lands, and `USI_Hash`'s has.
 #[test]
 fn setoption_discloses_the_accepted_but_unused_and_ignores_the_unknown() {
     let lines = dialogue(
         "usi\n\
-         setoption name USI_Hash value 512\n\
+         setoption name USI_Ponder value true\n\
          setoption name Nonsense value 3\n\
          isready\nquit\n",
     );
@@ -382,10 +401,49 @@ fn setoption_discloses_the_accepted_but_unused_and_ignores_the_unknown() {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("USI_Hash is accepted but not yet used")),
+            .any(|l| l.contains("USI_Ponder is accepted but not yet used")),
         "{lines:?}"
     );
     assert!(!lines.iter().any(|l| l.contains("Nonsense")), "{lines:?}");
+}
+
+/// …and an option that *is* acted on has to reach the searcher, with the value
+/// the operator sent. ⚠️ Delivery only: what happens to the memory is
+/// `rinsai-search`'s, since a dialogue could observe a resize only by timing.
+///
+/// Sabotage: drop the `Slot::HashMb` arm from `Engine::set_option`.
+#[test]
+fn setoption_usi_hash_reaches_the_searcher() {
+    let (lines, recorded) = dialogue_capturing(
+        "usi\n\
+         setoption name USI_Hash value 2\n\
+         setoption name Nonsense value 3\n\
+         setoption name USI_Hash value 4\n\
+         isready\nquit\n",
+        false,
+    );
+    assert!(lines.contains(&"readyok".to_owned()));
+    assert_eq!(recorded.hash_mb(), vec![2, 4]);
+    // An honoured option must not also disclose itself as unused. ⚠️ Not
+    // "no line mentions it": the handshake declares it, which is required.
+    assert!(
+        !lines.iter().any(|l| l.contains("not yet used")),
+        "{lines:?}"
+    );
+}
+
+/// A value the spin bounds reject changes nothing and reaches nobody. Without
+/// this, `setoption name USI_Hash value 999999` would ask for a terabyte.
+#[test]
+fn a_rejected_usi_hash_value_never_reaches_the_searcher() {
+    let (_, recorded) = dialogue_capturing(
+        "setoption name USI_Hash value 999999\n\
+         setoption name USI_Hash value lots\n\
+         setoption name USI_Hash\n\
+         quit\n",
+        false,
+    );
+    assert!(recorded.hash_mb().is_empty(), "{:?}", recorded.hash_mb());
 }
 
 #[test]
@@ -440,7 +498,7 @@ fn the_info_line_is_well_formed_and_its_pv_is_playable() {
 
     let mut tokens = info.split_whitespace();
     assert_eq!(tokens.next(), Some("info"));
-    for name in ["depth", "seldepth", "time", "nodes", "nps"] {
+    for name in ["depth", "seldepth", "time", "nodes", "nps", "hashfull"] {
         assert_eq!(tokens.next(), Some(name), "{info}");
         assert!(
             tokens.next().is_some_and(|v| v.parse::<u64>().is_ok()),
