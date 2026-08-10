@@ -26,8 +26,10 @@ repository = "https://github.com/sugyan/rinsai"
 #
 #   TODO(shunsai-0.1-release): when shunsai v0.1.0 is on crates.io, replace this
 #   line with `shunsai = "0.1"`, drop the allow-git entry in deny.toml, remove
-#   the deviation footnote in DESIGN.md §2, and append the switch to DECISIONS.md. It is
-#   an E0 exit criterion in PROGRESS.md. `git grep 'TODO(shunsai-0.1-release)'`.
+#   the deviation footnote in DESIGN.md §2, and append the switch to
+#   DECISIONS.md. Those four are what change; `git grep
+#   'TODO(shunsai-0.1-release)'` also finds the prose that refers to them. It is
+#   an E0 exit criterion in PROGRESS.md.
 #
 # `version` alongside `git` states the semver expectation the rev stands in for,
 # and turns the eventual switch into deleting two fields. It does not affect

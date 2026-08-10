@@ -583,8 +583,12 @@ mod tests {
     /// ⚠️ A GUI or a server could end the process with one line before this
     /// existed — see [`Game::from_partial`].
     ///
-    /// Sabotage: delete the `check_piece_counts` call in `from_partial` and
-    /// every case here panics instead of returning an error.
+    /// Sabotage: delete the `check_piece_counts` call in `from_partial`. ⚠️
+    /// Only the three two-digit-hand cases panic (shunsai's `zobrist.rs`
+    /// indexes `[u64; 19]` by held count); the other four are silently
+    /// **accepted** and fail the assertion below instead. Those four are the
+    /// indirect route — no malformed field anywhere — that this check exists
+    /// for.
     #[test]
     fn a_position_no_shogi_set_could_reach_is_rejected() {
         for sfen in [
@@ -631,13 +635,19 @@ mod tests {
     }
 
     /// The king is the one kind that cannot change sides, so its bound is per
-    /// colour. A per-*set* total of two admits the first case below.
+    /// colour.
+    ///
+    /// ⚠️ **The first fixture is the only one that discriminates.** The other
+    /// two hold *three* kings, which a per-set total of two rejects on the
+    /// total alone; two black kings and no white one is the position only a
+    /// per-colour bound catches.
     ///
     /// Sabotage: put `(PieceKind::King, 2)` back into `PIECE_TOTALS` and drop
-    /// the per-colour loop, and both of these are accepted.
+    /// the per-colour loop, and the first case is accepted.
     #[test]
     fn two_kings_of_one_colour_are_rejected() {
         for sfen in [
+            "sfen 9/9/9/9/9/9/9/9/3KK4 b - 1",
             "sfen 4k4/9/9/9/9/9/9/9/3KK4 b - 1",
             "sfen 3kk4/9/9/9/9/9/9/9/4K4 b - 1",
         ] {

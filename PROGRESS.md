@@ -28,8 +28,11 @@ conventions and rebaselines every committed node count (DECISIONS.md).
 
 - **`TODO(shunsai-0.1-release)`** — the dependency is a git rev, which DESIGN.md
   §2 and shunsai's own DESIGN.md both say it should not be. E0 cannot be
-  declared finished with this outstanding. `git grep 'TODO(shunsai-0.1-release)'`
-  finds all four places that change together.
+  declared finished with this outstanding. ⚠️ `git grep
+  'TODO(shunsai-0.1-release)'` finds every mention, which is more than the four
+  things that actually change: the dependency line in `Cargo.toml`, the
+  `allow-git` entry in `deny.toml`, the deviation footnote in DESIGN.md §2, and
+  an appended DECISIONS.md entry. The rest are prose that refers to them.
 
 ## Input the engine must survive
 
@@ -177,9 +180,16 @@ table is not by itself a result. Note that the spread does not track the
 magnitude: as a fraction the three rows sit at about ±2%, ±4% and ±3%, so the
 *widest* is a short row and a threshold cannot be read off row length either
 way. That is the whole reason
-a quiet machine is a precondition for the SPRT loop (§8): noise cannot move a
-node count and can move a time far enough to invent an improvement. The node
-rate these imply is used once, under "the poll interval is 1024 nodes" below.
+a quiet machine is a precondition for the SPRT loop (CLAUDE.md §3): noise
+cannot move a node count and can move a time far enough to invent an
+improvement.
+
+**Node rate, and why it justifies nothing.** These rows imply roughly 8–10 M
+nodes/s. Step 2 measured 20–30 M, and the gap is not a regression: most of step
+2's nodes were depth-zero leaves that only evaluated, and quiescence replaced
+them with nodes that generate. ⚠️ The rate is therefore **not** an argument for
+the 1024-node poll interval. That interval is untuned, and step 5's SPRT is
+where it stops being inherited (CONVENTIONS.md).
 
 ⚠️ **Exec the binary once after a build, before measuring anything.** The first
 run of a freshly linked binary costs about 20–25 ms more than the settled
@@ -406,6 +416,33 @@ move scoring 1 590 cp below what the last completed iteration had chosen.
 
 **`a_stated_budget_deepens_past_the_default`'s 300 000-node budget reaches depth
 6**, so its `> DEFAULT_DEPTH` assertion is not on a knife edge.
+
+**⚠️ `negamax`'s own `pv[ply].clear()` cannot be shown to matter, and
+[`qsearch`]'s can.** Deleting the clear at the top of the *interior* node leaves
+the whole workspace green, and a sweep over 9 fixtures × depths 1–6 — 101 `info`
+lines — reproduces `depth`, `seldepth`, `score` and `pv` **byte-identically**.
+Deleting the *quiescence* copy turns `finds_the_mate_in_one` and
+`the_reported_pv_is_playable` red. The asymmetry has a reason: an interior node
+that never raises alpha has failed low, so its parent fails high and never reads
+its line, whereas a quiescence node can return an exact score without writing
+one — a stand-pat that beats alpha but no capture, or an evaluation forced by
+`ply >= MAX_PLY` or by `QS_MAX_CHECK_PLIES`. The line stays: it costs nothing,
+and E1's aspiration windows give the root a real beta, which is exactly the
+condition this argument assumes away. Recorded so a future "delete the dead
+line" has something to check itself against.
+
+**Prose volume, as of this step.** The figures the 2026-08-09 DECISIONS.md entry
+rests on, measured over `crates/**/*.rs` by bytes of comment lines against bytes
+of non-blank non-comment lines:
+
+| | before | after |
+|---|---|---|
+| comment bytes | 127 617 | 97 099 |
+| code bytes | 138 206 | 138 206 |
+| comments as a share of non-blank text | 48.0% | 41.3% |
+
+DESIGN.md was 63 426 bytes of which §9 was 40 482 (63.8%), and §9 accounted for
+37 241 of the file's 39 785 bytes of lifetime growth (93.6%).
 
 ## Step 3b — what to do next
 

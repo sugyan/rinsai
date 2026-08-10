@@ -273,8 +273,12 @@ fn every_go_field_reaches_the_search() {
     assert!(sfen.starts_with("lnsgkgsnl"));
 }
 
-/// Sabotage: stop honouring `infinite` in the searcher and the `bestmove` lands
-/// before `stop` — which is precisely how an analysis GUI sees a broken engine.
+/// ⚠️ This asserts that `go infinite` *reaches the searcher* and that exactly
+/// one `bestmove` comes back — not that the searcher honours it. `drive`
+/// injects [`CapturingSearcher`], which blocks on its own flag and never reads
+/// `limits`, so deleting the wait loop from `NegamaxSearcher::finish` leaves
+/// this green; the test that goes red is
+/// `negamax::tests::go_infinite_waits_for_stop_even_with_nothing_to_search`.
 #[test]
 fn go_infinite_waits_for_stop() {
     let (lines, recorded) =

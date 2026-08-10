@@ -53,9 +53,10 @@ impl Score {
     /// `Option<Score>`, as the search does.
     ///
     /// ⚠️ **Not printable.** Above the mate floor, so [`Self::mate_plies`]
-    /// answers `Some(-2)` for it and `Some(-1)` for [`Self::INFINITE`] —
-    /// either one reaching an `info` line spells `score mate -2`, the engine
-    /// announcing a loss it never found. `info.rs` asserts against both.
+    /// answers `Some(-2)` for it and `Some(-1)` for [`Self::INFINITE`] — either
+    /// one reaching an `info` line therefore spells the engine announcing a
+    /// loss it never found, `score mate -2` and `score mate -1` respectively.
+    /// `info.rs` asserts against both.
     pub const NONE: Self = Self(32_002);
 
     /// The lowest absolute value that still means mate.

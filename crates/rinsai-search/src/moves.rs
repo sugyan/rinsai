@@ -28,7 +28,6 @@ pub const MAX_LEGAL_MOVES: usize = 593;
 /// caller iterates, and the caller wants to recurse through `&mut self` in the
 /// middle of that loop. Indexing copies a `Move` — small and [`Copy`] — and
 /// ends the borrow on the same line.
-///
 #[derive(Debug)]
 pub(crate) struct MoveBuf {
     moves: Vec<Move>,
@@ -69,9 +68,13 @@ impl MoveBuf {
     /// exceed [`MAX_LEGAL_MOVES`].
     pub(crate) fn generate_captures(&mut self, position: &Position) -> usize {
         let base = self.moves.len();
-        // ⚠️ Read before any move is made. Reading it after `do_move` — or
-        // intersecting with our own board — makes every move look like a
-        // capture, and quiescence would never terminate.
+        // ⚠️ Read before any move is made: after `do_move` the side to move
+        // has flipped, so `them` becomes *our* pieces including the one just
+        // moved, and every move looks like a capture — quiescence would never
+        // terminate. Intersecting with our own board fails the other way: a
+        // legal move never lands on our own piece, so nothing is generated and
+        // quiescence stands pat everywhere, silently restoring the horizon
+        // effect. Both are silent; neither is a crash.
         let them = position.player_bb(position.side_to_move().flip());
         let moves = &mut self.moves;
         let _ = position.generate_moves(|set| {
@@ -159,10 +162,10 @@ impl Default for MoveBuf {
 /// Whether `mv` is legal in `position`, without allocating.
 ///
 /// shunsai has no `is_legal`: generation is always fully legal, so nothing
-/// inside it ever needs to ask. Callers here are moves arriving over USI, and
-/// from step 3b a transposition-table move before it is played — a 64-bit key
-/// collision would otherwise feed [`Position::do_move`] a move from a different
-/// position and trip its `expect`s.
+/// inside it ever needs to ask. The caller is moves arriving over USI, and from
+/// E2 over CSA. ⚠️ Step 3b validates its transposition move by scanning the
+/// list it has already generated, not through here — PROGRESS.md carries the
+/// reason.
 ///
 /// `position.legal_moves().contains(&mv)` is the obviously-correct version; it
 /// allocates, and is kept as the test oracle rather than used here.
@@ -292,9 +295,10 @@ mod tests {
         agrees_with_oracle(&position);
     }
 
-    /// Sabotage: swap the `promotions` / `non_promotions` selection and this is
-    /// the assertion that fires — the two boards overlap almost everywhere, so
-    /// only a compulsory promotion tells them apart.
+    /// Sabotage: swap the `promotions` / `non_promotions` selection. ⚠️ This
+    /// is not the only test that fires — the oracle tests do too, because the
+    /// boards differ for any move outside the promotion zone. What this one
+    /// adds is the *compulsory* case, where `non_promotions` is empty.
     #[test]
     fn a_compulsory_promotion_cannot_be_declined() {
         // A black pawn on 5b can only move to 5a, where unpromoted it would
@@ -356,9 +360,10 @@ mod tests {
     /// A ply generating into the buffer must leave the ply above it alone, and
     /// truncating must give that ply back exactly what it had.
     ///
-    /// ⚠️ It does *not* check that the search remembers to truncate at all —
-    /// that needs a test on the search, and `negamax`'s boundary assertion is
-    /// what covers it.
+    /// ⚠️ It does *not* check that the search remembers to truncate at all.
+    /// That is covered by `negamax::tests::the_move_buffer_comes_back_empty`
+    /// and, before it can even get that far, by the `debug_assert_eq!`s in
+    /// `NegamaxSearcher::child` and `NegamaxSearcher::qsearch`.
     #[test]
     fn a_ply_does_not_disturb_the_ply_above_it() {
         let mut buf = MoveBuf::new();
@@ -400,10 +405,10 @@ mod tests {
     }
 
     /// Sabotage: intersect with `player_bb(side_to_move())` instead of its
-    /// flip, and every quiet move reads as a capture — quiescence then never
-    /// terminates. Drop the `promotions` board and every capture-promotion
-    /// silently disappears from quiescence, which no score assertion would
-    /// notice. Let `MoveSet::Drop` through and drops appear as captures.
+    /// flip and **zero** captures are generated (`left: 0, right: 3`) — a legal
+    /// move never lands on our own piece — so quiescence stands pat everywhere.
+    /// Drop the `promotions` board and every capture-promotion silently
+    /// disappears. Let `MoveSet::Drop` through and drops appear as captures.
     #[test]
     fn the_capture_filter_is_exactly_the_captures() {
         for sfen in [

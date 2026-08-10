@@ -4,7 +4,7 @@
 
 `rinsai` is a [shogi](https://en.wikipedia.org/wiki/Shogi) engine aiming at strong results on [floodgate](https://wdoor.c.u-tokyo.ac.jp/) and in the [世界コンピュータ将棋選手権](https://www.computer-shogi.org/) (World Computer Shogi Championship). It is built on [`shunsai`](https://github.com/sugyan/shunsai) for legal move generation and position management.
 
-> ⚠️ **Status: very early.** rinsai speaks USI and searches: iterative-deepening negamax αβ over a material evaluation, with a quiescence search that resolves captures. There is **no transposition table, no move ordering, no repetition detection and no time allocation yet**. It plays legal games; that is not a strength claim, and E0 has no instrument for strength — the SPRT harness is step 7. The plan is in [DESIGN.md](./DESIGN.md) (route, repository structure, the staged roadmap E0–E6) and the current state is in [PROGRESS.md](./PROGRESS.md). E0 is a USI shell with iterative-deepening αβ, a transposition table, quiescence search, material evaluation and repetition detection, in eight steps of which three are done.
+> ⚠️ **Status: very early.** rinsai speaks USI and searches: iterative-deepening negamax αβ over a material evaluation, with a quiescence search that resolves captures. There is **no transposition table, no move ordering, no repetition detection and no time allocation yet**. It plays legal games; that is not a strength claim, and E0 has no instrument for strength — the SPRT harness is step 7. The plan is in [DESIGN.md](./DESIGN.md) (route, repository structure, the staged roadmap E0–E6), the current state and every measured number in [PROGRESS.md](./PROGRESS.md), what is frozen in [CONVENTIONS.md](./CONVENTIONS.md), and why in [DECISIONS.md](./DECISIONS.md). E0 is a USI shell with iterative-deepening αβ, a transposition table, quiescence search, material evaluation and repetition detection, in eight steps of which three are done.
 
 ## Concept
 
@@ -26,4 +26,4 @@
 
 `MIT OR Apache-2.0` (permissive), for the engine and the training pipeline alike.
 
-This project **does not reuse GPL-licensed code**. YaneuraOu, dlshogi, tanuki-, cshogi, 技巧2, Stockfish and the old `yasai` are GPL and are read-to-understand only, never ported. **Running** them as separate processes — sparring, match servers, CSA bridges — carries no obligation and is how this project gets its opposition. See [DESIGN.md](./DESIGN.md) §7 and [CLAUDE.md](./CLAUDE.md).
+This project **does not reuse GPL-licensed code**. YaneuraOu, dlshogi, tanuki-, cshogi, 技巧2, shogi-server, Stockfish, Fairy-Stockfish and the old `yasai` are GPL and are read-to-understand only, never ported. The list that governs is [CLAUDE.md](./CLAUDE.md) §2; this one is a digest. **Running** them as separate processes — sparring, match servers, CSA bridges — carries no obligation and is how this project gets its opposition. See [DESIGN.md](./DESIGN.md) §7 and [CLAUDE.md](./CLAUDE.md).

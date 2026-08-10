@@ -140,7 +140,9 @@ pub trait InfoSink: Send + Sync {
     fn info(&self, line: &str);
 }
 
-/// A no-op sink, for a search that nobody is watching.
+/// A no-op sink, for a search that nobody is watching. Caller: E3's self-play
+/// data generation, which drives the search in-process and wants it silent.
+/// (shunsai makes the same callback-not-channel choice in `generate_moves`.)
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SilentSink;
 
@@ -295,12 +297,14 @@ fn worker<S: Searcher>(
     emit: &dyn Fn(BestMove),
 ) {
     for command in rx {
-        // ⚠️ Two catches, two different guarantees, both needed. The outer one
-        // keeps the *worker* alive; the inner one below keeps the *job*
-        // answered. Losing either ends the thread with this loop, after which
-        // every later job goes into a closed channel and the engine answers the
-        // handshake forever while never moving again — which, from a match
-        // harness, reads as a clean exit after a game lost on time.
+        // ⚠️ Two catches, two different guarantees. **This outer one keeps the
+        // *worker* alive**; the inner one below only keeps the *job* answered,
+        // and since it is nested inside this one, losing it costs one answer
+        // rather than the thread. Losing *this* catch ends the thread with the
+        // loop, after which every later job goes into a closed channel and the
+        // engine answers the handshake forever while never moving again —
+        // which, from a match harness, reads as a clean exit after a game lost
+        // on time.
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             match command {
                 Command::NewGame => searcher.new_game(),
@@ -439,8 +443,10 @@ mod tests {
     /// A panicking search must still answer, and must not take the worker with
     /// it.
     ///
-    /// Sabotage: remove the inner `catch_unwind` and this hangs on the second
-    /// job instead. See `worker` for what that failure looks like from outside.
+    /// Sabotage: remove the inner `catch_unwind` and this fails on the
+    /// `assert_eq!` below with the **first** job's answer missing
+    /// (`["resign"]` against `["resign", "resign"]`). ⚠️ It does not hang —
+    /// the outer catch still lets `shutdown` join. See `worker`.
     ///
     /// (The panic message on stderr during this test is expected.)
     #[test]

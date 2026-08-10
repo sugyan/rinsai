@@ -302,10 +302,13 @@ impl NegamaxSearcher {
     /// ⚠️ **This is the interior seam, not the only one** — [`Self::qsearch`]
     /// negates inside itself as well.
     ///
-    /// ⚠️ **The buffer check here is the only thing that can see a leak.**
-    /// Forgetting a `truncate` is a leak rather than a wrong answer — every ply
-    /// reads its own base, so the search still plays correctly — and the parent
-    /// frame's own `truncate` hides the evidence before a test can reach it.
+    /// ⚠️ **This check covers interior-node children; [`Self::qsearch`] carries
+    /// the matching one for the quiescence recursion, which never passes
+    /// through here.** Forgetting a `truncate` is a leak rather than a wrong
+    /// answer — every ply reads its own base, so the search still plays
+    /// correctly — and the parent frame's own `truncate` hides the evidence
+    /// before a test can reach it, which is why the assertion is at the
+    /// boundary rather than in a test.
     #[inline]
     fn child(
         &mut self,
@@ -496,7 +499,8 @@ impl NegamaxSearcher {
                 ply + 1,
                 budget,
             );
-            // As in `child`: the only place a quiescence leak is still visible.
+            // The `child`-side twin of this assertion cannot see the
+            // qsearch->qsearch recursion, so it needs its own.
             debug_assert_eq!(self.buf.len(), given, "a quiescence child leaked moves");
             board.undo_move(mv);
 
@@ -864,8 +868,9 @@ mod tests {
     /// bishop diagonal, and White's own pawn on 3c blocks the bishop on 2b, so
     /// `2b8h+` is not available.
     ///
-    /// Sabotage: move `self.nodes += 1` below the stand-pat return in `qsearch`
-    /// and this drops to 1.
+    /// Sabotage: move `self.nodes += 1` below the stand-pat return in
+    /// `qsearch` and the count collapses. ⚠️ Not to 1 — the root window is
+    /// open, so the first root move's child cannot take the stand-pat cutoff.
     #[test]
     fn the_root_and_every_leaf_count_as_one_node() {
         for args in [
@@ -1091,9 +1096,10 @@ mod tests {
     /// the route.
     ///
     /// Sabotage: score a mated node `Score::mated_in(0)` instead of
-    /// `mated_in(ply)` and the announced distance is wrong; drop the
-    /// `pv[ply].clear()` at node entry and a stale line from an earlier subtree
-    /// hangs off the mate.
+    /// `mated_in(ply)` and the announced distance is wrong; drop
+    /// **[`Self::qsearch`]'s** `pv[ply].clear()` and a stale line from an
+    /// earlier subtree hangs off the mate. ⚠️ Dropping [`Self::negamax`]'s
+    /// copy instead changes nothing here or anywhere — see PROGRESS.md.
     #[test]
     fn finds_the_mate_in_one() {
         let (_, lines) = run("sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1", depth(4));
@@ -1112,7 +1118,8 @@ mod tests {
     /// because no dialogue there gets past depth 1.
     ///
     /// Sabotage: append the child line before the move in `update_pv`, or drop
-    /// the `pv[ply].clear()` at node entry.
+    /// **[`Self::qsearch`]'s** `pv[ply].clear()`. ⚠️ Not [`Self::negamax`]'s —
+    /// that copy has no observable effect, which PROGRESS.md records.
     ///
     /// ⚠️ **The replay is the part with teeth; the head comparison at the end
     /// is nearly free.** `best` is `self.pv[0][0]` and the printed line is

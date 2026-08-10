@@ -26,7 +26,7 @@ carries the rule.
   lives.
 - **`Depth` is signed whole plies.** No fractional `ONE_PLY` scheme. Signed
   because quiescence runs at negative depth, counting down from zero towards
-  `QS_MAX_CHECK_PLIES`.
+  `-QS_MAX_CHECK_PLIES` — note the sign; the constant itself is positive.
 - **`MAX_PLY = 128`**, sizing the search stack, the mate band and the move
   buffer together.
 

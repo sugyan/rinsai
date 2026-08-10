@@ -34,10 +34,11 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
 
-      # The doc comments here carry the design record, and they link into it
-      # with intra-doc links. A link that no longer resolves — a renamed item, a
-      # moved module — is exactly the kind of quiet drift between comment and
-      # code this project cannot afford, and `cargo test` does not see it.
+      # Doc comments link into each other and into the design record. A link
+      # that no longer resolves — a renamed item, a moved module — is quiet
+      # drift `cargo test` does not see. ⚠️ This is the *only* prose defect CI
+      # can catch: a false claim is not a broken link, which is why CLAUDE.md
+      # §4 makes the rule "write less" rather than "check harder".
       - name: Docs build with no broken links
         run: cargo doc --workspace --no-deps --all-features --locked
         env:
@@ -57,6 +58,30 @@ jobs:
             echo "::error::A shunsai feature is enabled. slider-naive wins shunsai's backend priority order and silently selects a 5-8x slower generator, which would make every SPRT number afterwards noise; bench-internals is explicitly not public API. Never enable either from here."
             exit 1
           fi
+
+      # A "§N" citation is prose, so nothing else in this pipeline looks at
+      # it — and the project has now shipped two families of stale ones: three
+      # citations to a CLAUDE.md section that never existed, and three to a
+      # DESIGN.md section that had been moved out. Both were repaired by hand,
+      # one instance at a time. This is the gate that stops the third family.
+      - name: Every "FILE.md §N" citation resolves
+        run: |
+          bad=0
+          # Field separator is the citation itself, so a line with two of them
+          # yields both. `|| true` for the same reason as the steps below: a
+          # file with no citations must not kill the step.
+          grep -rhoE '[A-Za-z_]+\.md §[0-9]+' \
+               --include='*.md' --include='*.rs' --include='*.toml' \
+               --include='*.yml' . 2>/dev/null | sort -u > /tmp/cites || true
+          while read -r file section; do
+            [ -f "$file" ] || { echo "::error::citation names a file that does not exist: $file $section"; bad=1; continue; }
+            n=${section#§}
+            grep -qE "^#{2,3} ${n}\. " "$file" || {
+              echo "::error::$file has no section ${n}, but something cites '$file $section'"
+              bad=1
+            }
+          done < /tmp/cites
+          exit $bad
 
       - name: Exactly one shogi_core in the graph
         run: |

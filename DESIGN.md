@@ -10,7 +10,7 @@ A shogi engine that places well on **floodgate** and in the **世界コンピュ
 
 **Premises, confirmed with the author (2026-07-31):**
 
-- **Licence**: engine *and* training pipeline stay **`MIT OR Apache-2.0`, clean-room**. GPL work may be read and reimplemented, never ported. **Running** GPL software as a separate process carries no obligation — see §7, run-vs-link.
+- **Licence**: engine *and* training pipeline stay **`MIT OR Apache-2.0`, clean-room**. GPL work may be read and reimplemented, never ported. **Running** GPL software as a separate process carries no obligation — see [CLAUDE.md](./CLAUDE.md) §2, run-vs-link.
 - **Compute**: a cloud GPU budget on the order of tens of thousands of yen per month. The development machine is an Apple Silicon Mac.
 - **Time**: no deadline. Milestones are feature-based. WCSC entry waits until the engine is strong enough (entry is usually Feb–Mar, the tournament in May; 電竜戦 in November is the dress rehearsal).
 
@@ -26,7 +26,7 @@ A shogi engine that places well on **floodgate** and in the **世界コンピュ
 
 **The dependency is a released version, not a git pin.** rinsai depends on `shunsai = "0.1"` from crates.io. Prototyping an API addition uses `[patch.crates-io]` with a path override; adopting it means **releasing shunsai** and raising rinsai's requirement. The loop is: try it on a shunsai branch → measure it on shunsai's own bench → adopt → release → bump. rinsai's own crates are `publish = false` — nothing depends on a search engine as a library, and its artifact is a binary.
 
-> ⚠️ **Not true yet.** shunsai v0.1.0 is not on crates.io, so E0 builds against a git rev — a knowing, temporary deviation from the paragraph above, recorded in §9 (2026-08-05) and tracked as an E0 exit criterion in [PROGRESS.md](./PROGRESS.md). `git grep 'TODO(shunsai-0.1-release)'`.
+> ⚠️ **Not true yet.** shunsai v0.1.0 is not on crates.io, so E0 builds against a git rev — a knowing, temporary deviation from the paragraph above, recorded in [DECISIONS.md](./DECISIONS.md) (2026-08-05) and tracked as an E0 exit criterion in [PROGRESS.md](./PROGRESS.md). `git grep 'TODO(shunsai-0.1-release)'`.
 
 ## 3. Route: NNUE + αβ first, DL/MCTS conditional
 
@@ -108,7 +108,7 @@ Numbered **E0–E6** so as not to collide with shunsai's M0–M7. Rating targets
 ### E0 — baseline: play legal moves and don't hang pieces (size M)
 
 - USI shell (`position` / `go` / `stop` / `gameover`), iterative-deepening negamax αβ, **TT and quiescence search from the start** (material evaluation without qsearch fails on the horizon effect), simple time management, material evaluation.
-  - ⚠️ "From the start" means from the start of *E0*, not of every sub-step. The split ships step 2 without them, knowingly: step 2's engine is horizon-effect-prone and is supposed to be, step 3a is the fix, and separating them is what makes step 3a's diff attributable. §9, 2026-08-06, amended 2026-08-07 when step 3 became 3a (quiescence) and 3b (the transposition table and `bench`), taking the split from seven sub-steps to eight.
+  - ⚠️ "From the start" means from the start of *E0*, not of every sub-step. The split ships step 2 without them, knowingly: step 2's engine is horizon-effect-prone and is supposed to be, step 3a is the fix, and separating them is what makes step 3a's diff attributable. [DECISIONS.md](./DECISIONS.md), 2026-08-06, amended 2026-08-07 when step 3 became 3a (quiescence) and 3b (the transposition table and `bench`), taking the split from seven sub-steps to eight.
   - ⚠️ Likewise "simple time management": step 2 honours only the budgets it is *told* (`movetime`, `byoyomi`), and deciding a per-move allowance from `btime` is step 5.
 - **Repetition (千日手) is mandatory at E0 and lives here, not in shunsai.** Stack `(key(), Hand, in_check())` per ply; use `key()` as the first filter and hand equality to confirm. Perpetual check — where the checking side loses — is decided from the `in_check()` history. shunsai holds no game history by design, so this is the engine's responsibility.
 - Harness: **Ayane (Apache-2.0) adopted immediately**, plus SPRT scripts. Sparring by running GPL binaries: Lesserkai → node-limited YaneuraOu → 技巧2.
@@ -120,7 +120,7 @@ Numbered **E0–E6** so as not to collide with shunsai's M0–M7. Rating targets
 
 Introduction order, with the shogi-specific caveats that differ from chess:
 
-1. ~~TT move ordering~~ — **moved to E0 step 3b, with the table itself** (§9, 2026-08-06). A transposition table whose move nobody tries first is half a table, and leaving it here would run steps 3–7, SPRT bring-up included, on a search with no ordering at all.
+1. ~~TT move ordering~~ — **moved to E0 step 3b, with the table itself** ([DECISIONS.md](./DECISIONS.md), 2026-08-06). A transposition table whose move nobody tries first is half a table, and leaving it here would run steps 3–7, SPRT bring-up included, on a search with no ordering at all.
 2. MVV-LVA for captures, promotion-aware. **Baseline: E0 step 3a's quiescence is deliberately unordered**, so this is measured against it.
 3. Killers — **drops can be killers**
 4. History — **butterfly boards are impossible, because drops have no `from`**. Index by (piece kind × side, `to`) to unify board moves and drops. Countermove and continuation history later.
@@ -203,6 +203,10 @@ What belongs to the *plan* rather than to the rules is the consequence: **there 
 2. **Strength ladder**: Lesserkai → node-limited YaneuraOu (1k / 10k / 100k / 1M, giving evenly spaced grades from one binary) → 技巧2 → full YaneuraOu → floodgate rating.
 3. **Correctness**: mate suites, repetition and declaration scenario tests, USI conformance dialogue tests. On the shunsai side the existing differential tests against `shogi_legality_lite` keep holding the movegen layer.
 
-## 9. Decision log
+---
 
-Moved to [DECISIONS.md](./DECISIONS.md) — it had grown to two thirds of this file and was burying the plan. The numbering is kept so that existing references to §1–§8 still resolve.
+**The decision log used to be §9 here.** It is now
+[DECISIONS.md](./DECISIONS.md) — it had grown to two thirds of this file and was
+burying the plan. There is deliberately no `## 9.` heading any more, so that
+CI's citation guard can catch anything that still cites section nine; cite
+DECISIONS.md and the entry's date instead.
