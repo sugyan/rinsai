@@ -35,18 +35,22 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
 
-      # ⚠️ Read what this buys before trusting it. It catches a *future*
-      # unguarded `std::fs`, `std::net` or `std::arch::x86_64`, and a dependency
-      # that will not build for the web. It catches **none of today's three
-      # runtime traps**: `thread::spawn`, `Instant::now` and `Condvar::wait` all
-      # compile for this target and panic when reached, so this step passes on a
-      # binary whose entire search has been dead-code-eliminated behind the
-      # first of them. PROGRESS.md's table measures that binary; CONVENTIONS.md
-      # carries the rule this defends, which is that the search core stays
-      # callable on one thread with no clock. A green check here is not a
-      # supported target and must not be reported as one.
-      - name: The search core still compiles for the web
-        run: cargo check --workspace --all-targets --all-features --locked --target wasm32-unknown-unknown
+      # Guards CONVENTIONS.md's Portability rule at the only point CI can
+      # check it: `rinsai-search`'s library, which is the search core the rule
+      # is about, plus its whole dependency tree. The `rinsai` binary is
+      # deliberately out of scope — it is stdio and process handling, which is
+      # native by construction.
+      #
+      # ⚠️ This catches only what fails to *compile*: an `std::arch` intrinsic,
+      # or a dependency with no wasm build. It does **not** catch the std APIs
+      # that compile for this target and panic when reached, which is most of
+      # the ones that matter — `thread`, `Instant`, `Condvar`, `fs` and `net`
+      # all pass here today. PROGRESS.md's table measures a release binary,
+      # built separately, whose search has been eliminated behind the first of
+      # them; nothing in CI builds that. A green check is not a supported
+      # target and must not be reported as one.
+      - name: rinsai-search compiles for wasm32
+        run: cargo check -p rinsai-search --lib --locked --target wasm32-unknown-unknown
 
       # Doc comments link into each other and into the design record. A link
       # that no longer resolves — a renamed item, a moved module — is quiet

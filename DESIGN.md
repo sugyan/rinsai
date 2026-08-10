@@ -78,7 +78,7 @@ criterion target — see E0 step 3b.)
 | Crate | Split off at | Because |
 |---|---|---|
 | `rinsai-nnue` | E3 | SIMD backends (NEON / AVX2) and PyTorch-parity tests want their own test surface. **Draw the boundary carefully**: the accumulator stack parallels the *search* stack, so `nnue` owns pure inference and the `Accumulator` type, while pushing and popping it stays in the search. |
-| `rinsai-protocol` | E2 | when the CSA client arrives and wants to share the **session layer** with USI: both drive the same `SearchDriver`, `Game` and time management, and both need "one answer per turn, structurally" to hold. **Not** the line-oriented loop, which is about twenty lines, and **not** a USI codec — the two protocols share no grammar, no move notation (`+7776FU` against `7g7f`) and no state machine. See DECISIONS.md, 2026-08-10. |
+| `rinsai-protocol` | E2 | when the CSA client arrives and wants to share the **session layer** with USI: both drive the same `SearchDriver`, `Game` and time management, and both need "one answer per turn, structurally" to hold. **Not** the line-oriented loop, and **not** a codec — the two protocols share no grammar, no move notation (`+7776FU` against `7g7f`) and no state machine. Recorded in DECISIONS.md's 2026-08-10 entry on sharing the USI layer. |
 | `rinsai-selfplay` | E3 | data generation drives the search library in-process rather than over USI, so it needs its own binary |
 
 **One binary, not two.** USI on stdio is the default mode — that is what a GUI and [Ayane](https://github.com/yaneurao/Ayane) do: launch the executable and speak USI — and `--csa` selects the floodgate client. Two binaries would each embed the network and duplicate the time-management and search-driver glue.
@@ -93,7 +93,7 @@ criterion target — see E0 step 3b.)
 | Self-play data | **Object storage** | the shard manifest: generator rev, seed, position count, opening set, label depth, checksum |
 | Game records, SPRT logs | local + object storage | positions the engine misplayed, as test fixtures |
 
-A `halfkp_256x2-32-32` network is about **64 MB in its feature transformer alone** (125,388 × 256 × int16), and E3–E4 produce dozens across generations; self-play data runs to tens of GB per generation. Neither belongs in git. The registry and the manifests do: they are the provenance chain that §7's pre-release scan and a WCSC appeal document both need. **The ledger is the artifact that has to be version-controlled — the weights are not.**
+A `halfkp_256x2-32-32` network is almost entirely its feature transformer (125,388 × 256 × int16 — PROGRESS.md carries the size), and E3–E4 produce dozens across generations; self-play data runs to tens of GB per generation. Neither belongs in git. The registry and the manifests do: they are the provenance chain that §7's pre-release scan and a WCSC appeal document both need. **The ledger is the artifact that has to be version-controlled — the weights are not.**
 
 ### Sparring opponents, and the run-vs-link boundary
 
