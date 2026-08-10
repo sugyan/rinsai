@@ -1,11 +1,10 @@
 //! One end-to-end run of the real binary.
 //!
-//! The dialogue suite drives `usi::run` in-process, which is faster and far
-//! more precise. This exists so that the parts it cannot reach stay covered:
-//! `main`'s argument handling, the real stdin/stdout wiring, and — the one that
-//! actually bites — **whether output is flushed when stdout is a pipe rather
-//! than a terminal**. An unflushed `bestmove` is the classic USI engine hang,
-//! and it is invisible to every in-process test.
+//! The dialogue suite drives `usi::run` in-process. This covers what that
+//! cannot reach: `main`'s argument handling, the real stdin/stdout wiring, and
+//! ⚠️ **whether output is flushed when stdout is a pipe rather than a
+//! terminal** — an unflushed `bestmove` is the classic USI engine hang, and it
+//! is invisible to every in-process test.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
@@ -32,13 +31,12 @@ fn version_is_reported_and_exits_cleanly() {
 ///
 /// It also plays several plies the way a GUI does — waiting for each
 /// `bestmove` before sending the next `go` — and then requires stderr to be
-/// **empty**. That is the regression test for a bug this suite originally
-/// missed and a real game against YaneuraOu found: the protocol thread cannot
-/// see the worker finish, so an engine that clears its "searching" state only
-/// on `stop` believes every completed search is still running, and warns about
-/// a protocol violation on every move of every game. An in-process dialogue
-/// cannot catch it, because there the script is consumed faster than the worker
-/// answers and a real overlap is indistinguishable from the bug.
+/// **empty**. ⚠️ That is the regression test for a bug this suite originally
+/// missed and a real game against YaneuraOu found: an engine that clears its
+/// "searching" state only on `stop` believes every completed search is still
+/// running and warns about a protocol violation on every move. An in-process
+/// dialogue cannot catch it, because there the script is consumed faster than
+/// the worker answers and a real overlap is indistinguishable from the bug.
 #[test]
 fn a_scripted_game_over_real_pipes() {
     let mut child = engine()
@@ -130,14 +128,8 @@ fn a_scripted_game_over_real_pipes() {
 
 /// A non-UTF-8 byte on stdin must not end the engine.
 ///
-/// `BufRead::lines` yields `Err(InvalidData)` for a line that is not valid
-/// UTF-8, which is indistinguishable from a real I/O error — so treating it as
-/// "the GUI went away" made one stray byte exit the engine silently with status
-/// 0, no `bestmove`, nothing in the log. Not exotic input: a Japanese Windows
-/// GUI speaks CP932, and the bytes below are `将棋` in it, in exactly the shape
-/// of the `EvalFile` path E3 will ask for.
-///
-/// This has to be a process test — the bytes never survive a `&str` fixture.
+/// See `usi::run` for why. ⚠️ This has to be a process test — the bytes never
+/// survive a `&str` fixture.
 /// Sabotage: restore `for line in input.lines()` and the second `readyok`
 /// never arrives.
 #[test]

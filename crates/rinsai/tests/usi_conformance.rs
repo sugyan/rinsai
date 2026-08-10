@@ -9,16 +9,14 @@
 //! 2. The [`Searcher`] seam lets a test inject [`CapturingSearcher`], which
 //!    records the jobs it was handed and can be told to block until signalled.
 //!    "Did `go infinite` reach the search as `infinite`?" becomes a value
-//!    assertion rather than a timing one. Note what these do *not* cover: that
-//!    the searcher **honours** `infinite` — `CapturingSearcher` blocks on its
-//!    own flag and never reads `limits` — which is tested where it lives, in
-//!    `rinsai-search`'s `negamax` tests.
+//!    assertion rather than a timing one. ⚠️ They do *not* cover whether the
+//!    searcher **honours** `infinite` — `CapturingSearcher` blocks on its own
+//!    flag and never reads `limits` — which is tested in `rinsai-search`.
 //!
-//! Note what is *never* asserted: which move the engine chose. shunsai's public
-//! documentation says nothing about generation order, so it is an unspecified
-//! implementation detail and naming a move here would be a false regression
-//! waiting for the next shunsai bump. [`assert_legal_after`] asserts the
-//! property that actually matters.
+//! ⚠️ Which move the engine chose is *never* asserted: shunsai's public
+//! documentation says nothing about generation order, so naming a move here
+//! would be a false regression waiting for the next shunsai bump.
+//! [`assert_legal_after`] asserts the property that actually matters.
 
 use std::io::{Cursor, Write};
 use std::sync::{Arc, Mutex};
@@ -275,8 +273,12 @@ fn every_go_field_reaches_the_search() {
     assert!(sfen.starts_with("lnsgkgsnl"));
 }
 
-/// Sabotage: stop honouring `infinite` in the searcher and the `bestmove` lands
-/// before `stop` — which is precisely how an analysis GUI sees a broken engine.
+/// ⚠️ This asserts that `go infinite` *reaches the searcher* and that exactly
+/// one `bestmove` comes back — not that the searcher honours it. `drive`
+/// injects [`CapturingSearcher`], which blocks on its own flag and never reads
+/// `limits`, so deleting the wait loop from `NegamaxSearcher::finish` leaves
+/// this green; the test that goes red is
+/// `negamax::tests::go_infinite_waits_for_stop_even_with_nothing_to_search`.
 #[test]
 fn go_infinite_waits_for_stop() {
     let (lines, recorded) =
@@ -417,24 +419,16 @@ fn crlf_line_endings_work() {
 /// What goes on the wire has to be a well-formed `info` line, in the order USI
 /// readers expect, with a principal variation the protocol layer could replay.
 ///
-/// **Depth is not available here, and that is a property of this harness rather
-/// than an oversight.** `drive` hands `usi::run` the whole script at once, so
-/// `quit` is read microseconds after `go` and `shutdown` stops the search
-/// before it has deepened — every dialogue in this file, `go movetime 1`
-/// included, is really answered from the depth-1 iteration. Anything that needs
-/// a search of a stated size therefore lives in `rinsai-search`'s own tests
-/// (`negamax::tests::the_reported_pv_is_playable`) or over real pipes
-/// (`usi_process::a_scripted_game_over_real_pipes`).
+/// ⚠️ **No depth is available here, and it is a property of this harness.**
+/// `drive` hands `usi::run` the whole script at once, so `quit` is read
+/// microseconds after `go` and every dialogue in this file — `go movetime 1`
+/// included — is answered from the depth-1 iteration. Anything needing a search
+/// of a stated size lives in `rinsai-search`'s own tests or over real pipes.
 ///
-/// ⚠️ The same property is why no *exact* `seldepth` can be asserted here: what
-/// the line reports is a race between the search and `quit`, not a fixed value.
-/// It is emphatically **not** that it reads 1 — this fixture's own depth-1
-/// iteration goes deeper than that, because after `7g7f 3c3d` both bishop
-/// diagonals are open and quiescence has captures to resolve. What is assertable
-/// here is the token's presence, its shape and its slot; the value belongs in
-/// `rinsai-search`'s tests
-/// (`negamax::tests::seldepth_reaches_past_the_nominal_depth_where_captures_exist`).
-/// `hashfull` will be in the same position at step 3b.
+/// ⚠️ Same reason no *exact* `seldepth` can be asserted: the value is a race
+/// between the search and `quit`. It is emphatically **not** 1 — this fixture's
+/// depth-1 iteration goes deeper, because after `7g7f 3c3d` both bishop
+/// diagonals are open. Assertable here: the token's presence, shape and slot.
 #[test]
 fn the_info_line_is_well_formed_and_its_pv_is_playable() {
     let args = "startpos moves 7g7f 3c3d";

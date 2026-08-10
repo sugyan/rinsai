@@ -21,17 +21,13 @@ pub const MAX_LEGAL_MOVES: usize = 593;
 /// `MAX_LEGAL_MOVES * MAX_PLY`, sliced per ply, generation appending and the
 /// caller truncating back on the way out — is shunsai's own
 /// `perft_materialize` (`examples/perft.rs`), and the alternatives it was
-/// chosen over are argued in PROGRESS.md.
+/// chosen over are argued in DECISIONS.md.
 ///
 /// **The moves come out by value, one at a time, and that is load-bearing.**
 /// A `&[Move]` handed back here would borrow the buffer for as long as the
 /// caller iterates, and the caller wants to recurse through `&mut self` in the
 /// middle of that loop. Indexing copies a `Move` — small and [`Copy`] — and
 /// ends the borrow on the same line.
-///
-/// E1 makes the element scored. That lands as a parallel array filled by
-/// [`Self::generate`] plus a selection step, and [`Self::get`] keeps its
-/// signature, so the search's loop does not change shape.
 #[derive(Debug)]
 pub(crate) struct MoveBuf {
     moves: Vec<Move>,
@@ -62,33 +58,30 @@ impl MoveBuf {
     /// Appends every legal move whose destination holds an enemy piece, and
     /// returns the index the caller must [`truncate`](Self::truncate) back to.
     ///
-    /// This is quiescence search's generator. shunsai has no captures-only
-    /// generation — staged generation is E1, DESIGN.md §6 — so the full legal
-    /// walk still runs. What does **not** run is materialisation: a [`MoveSet`]
-    /// hands over its destinations as [`Bitboard`](shunsai::Bitboard)s, so this
-    /// intersects two boards per set and builds a [`Move`] only for the
-    /// captures. [`MoveSet::Drop`] is skipped whole, because a drop can never
-    /// capture — and drops are most of what a shogi move list is. What that
-    /// leaves on the table is measured in PROGRESS.md, and it is the size of
-    /// the prize DESIGN.md §6 assigns to E1's staged generation.
+    /// Quiescence's generator. shunsai has no captures-only generation
+    /// (DESIGN.md §6 assigns it to E1), so the full legal walk still runs; what
+    /// does **not** run is materialisation, since a [`MoveSet`] hands over its
+    /// destinations as [`Bitboard`](shunsai::Bitboard)s. PROGRESS.md measures
+    /// what the walk costs.
     ///
     /// The result is a subset of [`Self::generate`]'s, so one ply still cannot
     /// exceed [`MAX_LEGAL_MOVES`].
     pub(crate) fn generate_captures(&mut self, position: &Position) -> usize {
         let base = self.moves.len();
-        // Read before any move is made. Reading the captured piece *after*
-        // `do_move` — or intersecting with our own board — makes every move
-        // look like a capture, and quiescence would then never terminate.
+        // ⚠️ Read before any move is made: after `do_move` the side to move
+        // has flipped, so `them` becomes *our* pieces including the one just
+        // moved, and every move looks like a capture — quiescence would never
+        // terminate. Intersecting with our own board fails the other way: a
+        // legal move never lands on our own piece, so nothing is generated and
+        // quiescence stands pat everywhere, silently restoring the horizon
+        // effect. Both are silent; neither is a crash.
         let them = position.player_bb(position.side_to_move().flip());
         let moves = &mut self.moves;
         let _ = position.generate_moves(|set| {
-            // Exhaustive rather than `if let`, and the discarded arm is spelled
-            // out. A `MoveSet` variant added upstream would otherwise be
-            // silently missing captures — a strength bug with no symptom — where
-            // this makes it a compile error naming the place to decide. Same
-            // argument as `usi::options::Slot`, where it caught a real one at
-            // step 1; a new variant is a semver-major bump and so would be
-            // noticed anyway, but being told exactly where costs nothing.
+            // Exhaustive rather than `if let`, with the discarded arm spelled
+            // out: a `MoveSet` variant added upstream would otherwise silently
+            // go uncaptured — a strength bug with no symptom — instead of a
+            // compile error naming the place to decide.
             match set {
                 MoveSet::Normal {
                     from,
@@ -97,11 +90,8 @@ impl MoveBuf {
                     ..
                 } => {
                     // The two boards overlap where promotion is optional, so a
-                    // capture that may promote is emitted both ways: both are
-                    // legal and both are captures. Where promotion is
-                    // compulsory the square is in `promotions` alone, so only
-                    // the promoting form is emitted. Choosing between the two
-                    // is ordering, which is E1's.
+                    // capture that may promote is emitted both ways. Where it
+                    // is compulsory the square is in `promotions` alone.
                     for to in promotions & them {
                         moves.push(Move::Normal {
                             from,
@@ -117,10 +107,9 @@ impl MoveBuf {
                         });
                     }
                 }
-                // A drop can never capture: shunsai masks drop targets with the
-                // empty squares, so the whole fan-out is discarded here rather
-                // than filtered move by move. That is also most of what a shogi
-                // move list is, which is why this is where the cost goes.
+                // A drop can never capture — shunsai masks drop targets with
+                // the empty squares — so the whole fan-out goes at once. That
+                // is most of what a shogi move list is.
                 MoveSet::Drop { .. } => {}
             }
             ControlFlow::Continue(())
@@ -129,12 +118,10 @@ impl MoveBuf {
         base
     }
 
-    /// Fails if the buffer has outgrown the reservation [`Self::new`] made.
-    ///
-    /// The reservation covers one full move list at every ply, so exceeding it
-    /// means a ply generated twice or the search ran past [`MAX_PLY`]. Either
-    /// way the symptom in release is a reallocation on the hot path rather than
-    /// a wrong answer, which is exactly the kind of thing that goes unnoticed.
+    /// Fails if the buffer has outgrown the reservation [`Self::new`] made,
+    /// which means a ply generated twice or the search ran past [`MAX_PLY`].
+    /// ⚠️ In release the symptom is a reallocation on the hot path, not a
+    /// wrong answer.
     fn debug_assert_reserved(&self) {
         debug_assert!(
             self.moves.len() <= MAX_LEGAL_MOVES * MAX_PLY,
@@ -143,12 +130,10 @@ impl MoveBuf {
         );
     }
 
-    /// One past the last move generated.
     pub(crate) fn len(&self) -> usize {
         self.moves.len()
     }
 
-    /// The move at `index`, by value.
     pub(crate) fn get(&self, index: usize) -> Move {
         self.moves[index]
     }
@@ -158,20 +143,17 @@ impl MoveBuf {
         self.moves.truncate(base);
     }
 
-    /// Empties the buffer.
-    ///
-    /// Not the same as `truncate(0)` in intent: this is what a *new* search
-    /// calls, because a panic caught by `search::worker` unwinds past every
-    /// `truncate` and leaves the searcher — which the worker keeps alive —
-    /// holding a previous search's moves.
+    /// Empties the buffer. Not `truncate(0)` in intent: a *new* search calls
+    /// this, because a panic caught by `search::worker` unwinds past every
+    /// `truncate` and the worker keeps the searcher alive.
     pub(crate) fn clear(&mut self) {
         self.moves.clear();
     }
 }
 
 impl Default for MoveBuf {
-    /// Reserving, like [`MoveBuf::new`]. A default that did not reserve would
-    /// silently reintroduce the per-node allocation the type exists to avoid.
+    /// ⚠️ Reserving, like [`MoveBuf::new`] — a default that did not would
+    /// silently reintroduce the per-node allocation this type exists to avoid.
     fn default() -> Self {
         Self::new()
     }
@@ -180,14 +162,13 @@ impl Default for MoveBuf {
 /// Whether `mv` is legal in `position`, without allocating.
 ///
 /// shunsai has no `is_legal`: generation is always fully legal, so nothing
-/// inside it ever needs to ask. A search engine does. Two callers exist —
-/// moves arriving over USI (and, from E2, CSA), and from E0 step 3b a
-/// transposition-table move before it is played, since a 64-bit key collision
-/// would otherwise feed [`Position::do_move`] a move from a different position
-/// and trip its `expect`s.
+/// inside it ever needs to ask. The caller is moves arriving over USI, and from
+/// E2 over CSA. ⚠️ Step 3b validates its transposition move by scanning the
+/// list it has already generated, not through here — PROGRESS.md carries the
+/// reason.
 ///
-/// The obviously-correct version is `position.legal_moves().contains(&mv)`;
-/// that allocates, and is kept as the test oracle rather than used here.
+/// `position.legal_moves().contains(&mv)` is the obviously-correct version; it
+/// allocates, and is kept as the test oracle rather than used here.
 #[must_use]
 pub fn is_legal(position: &Position, mv: Move) -> bool {
     position
@@ -205,10 +186,9 @@ pub fn is_legal(position: &Position, mv: Move) -> bool {
                     promote,
                 },
             ) if from == want_from => {
-                // The two boards overlap where promotion is optional: a square
-                // in `promotions` alone is a compulsory promotion and one in
-                // `non_promotions` alone cannot promote, so selecting by the
-                // flag is exactly the legality question.
+                // A square in `promotions` alone is a compulsory promotion and
+                // one in `non_promotions` alone cannot promote, so selecting by
+                // the flag is exactly the legality question.
                 let board = if promote { promotions } else { non_promotions };
                 if board.contains(to) {
                     ControlFlow::Break(())
@@ -224,19 +204,17 @@ pub fn is_legal(position: &Position, mv: Move) -> bool {
                 },
             ) if piece == want_piece => {
                 // Both `Piece`s carry their colour, so this also rejects a drop
-                // by the side that is not to move — which is the safety net
-                // under USI drop notation carrying no colour of its own.
+                // by the side not to move — the safety net under USI drop
+                // notation carrying no colour of its own.
                 if to.contains(want_to) {
                     ControlFlow::Break(())
                 } else {
                     ControlFlow::Continue(())
                 }
             }
-            // Continue rather than reporting failure, so the walk stays correct
-            // even if shunsai ever emits two `MoveSet`s sharing a `from`.
-            // Nothing in shunsai's public documentation says how moves are
-            // grouped into sets — one per origin is what it does today, but it
-            // does not promise that — so this makes no assumption either way.
+            // ⚠️ Continue rather than fail: nothing in shunsai's public
+            // documentation says how moves are grouped into sets. One per
+            // origin is what it does today and it does not promise that.
             _ => ControlFlow::Continue(()),
         })
         .is_break()
@@ -317,15 +295,16 @@ mod tests {
         agrees_with_oracle(&position);
     }
 
-    /// Sabotage: swap the `promotions` / `non_promotions` selection and this is
-    /// the assertion that fires — the two boards overlap almost everywhere, so
-    /// only a compulsory promotion tells them apart.
+    /// Sabotage: swap the `promotions` / `non_promotions` selection. ⚠️ This
+    /// is not the only test that fires — the oracle tests do too, because the
+    /// boards differ for any move outside the promotion zone. What this one
+    /// adds is the *compulsory* case, where `non_promotions` is empty.
     #[test]
     fn a_compulsory_promotion_cannot_be_declined() {
-        // A black pawn on 5b can only move to 5a, where an unpromoted pawn
-        // would have no move for the rest of the game. The white king is on 1a
-        // rather than 5a so that the pawn's one destination is empty — a king
-        // capture is never generated, which would make the fixture vacuous.
+        // A black pawn on 5b can only move to 5a, where unpromoted it would
+        // have no move ever again. ⚠️ The white king is on 1a, not 5a, so the
+        // destination is empty — a king capture is never generated, which
+        // would make the fixture vacuous.
         let position = position("sfen 8k/4P4/9/9/9/9/9/9/4K4 b - 1");
         let from = Square::new(5, 2).expect("5b");
         let to = Square::new(5, 1).expect("5a");
@@ -381,12 +360,10 @@ mod tests {
     /// A ply generating into the buffer must leave the ply above it alone, and
     /// truncating must give that ply back exactly what it had.
     ///
-    /// This is the property that lets one allocation serve the whole search.
-    /// Note what it does *not* check: that the search remembers to truncate at
-    /// all. Forgetting is a leak rather than a wrong answer — the base is read
-    /// before each generation, so every ply still sees only its own moves — so
-    /// it needs a test on the search itself, and has one
-    /// (`negamax::tests::the_move_buffer_comes_back_empty`).
+    /// ⚠️ It does *not* check that the search remembers to truncate at all.
+    /// That is covered by `negamax::tests::the_move_buffer_comes_back_empty`
+    /// and, before it can even get that far, by the `debug_assert_eq!`s in
+    /// `NegamaxSearcher::child` and `NegamaxSearcher::qsearch`.
     #[test]
     fn a_ply_does_not_disturb_the_ply_above_it() {
         let mut buf = MoveBuf::new();
@@ -428,10 +405,10 @@ mod tests {
     }
 
     /// Sabotage: intersect with `player_bb(side_to_move())` instead of its
-    /// flip, and every quiet move reads as a capture — quiescence then never
-    /// terminates. Drop the `promotions` board and every capture-promotion
-    /// silently disappears from quiescence, which no score assertion would
-    /// notice. Let `MoveSet::Drop` through and drops appear as captures.
+    /// flip and **zero** captures are generated (`left: 0, right: 3`) — a legal
+    /// move never lands on our own piece — so quiescence stands pat everywhere.
+    /// Drop the `promotions` board and every capture-promotion silently
+    /// disappears. Let `MoveSet::Drop` through and drops appear as captures.
     #[test]
     fn the_capture_filter_is_exactly_the_captures() {
         for sfen in [
@@ -442,8 +419,7 @@ mod tests {
             "sfen 4k4/9/4+R4/9/9/9/9/9/4K4 w - 1",
             // A capture into the promotion zone, where promoting is optional.
             "sfen 4k4/9/6p2/6S2/9/9/9/9/4K4 b - 1",
-            // Two lone kings: no capture is reachable, so the answer is empty.
-            // The case a filter that returns everything would fail loudest on.
+            // Two lone kings: no capture reachable, so the answer is empty.
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b - 1",
         ] {
             captures_agree_with_the_oracle(&position(sfen));
@@ -455,9 +431,9 @@ mod tests {
     /// squares, so pushing only one board loses half of them.
     #[test]
     fn an_optional_promotion_capture_is_generated_both_ways() {
-        // A black silver on 3d taking the white pawn on 3c enters the promotion
-        // zone, where a silver may decline — the one minor piece for which
-        // declining is a real choice rather than a mistake.
+        // A black silver on 3d taking on 3c enters the promotion zone, where a
+        // silver may decline — the one minor piece for which declining is a
+        // real choice rather than a mistake.
         let board = position("sfen 4k4/9/6p2/6S2/9/9/9/9/4K4 b - 1");
         let mut buf = MoveBuf::new();
         let base = buf.generate_captures(&board);

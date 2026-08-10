@@ -17,9 +17,9 @@ use shogi_core::ToUsi;
 /// harness, which is the classic USI engine hang. Lock poisoning is absorbed
 /// rather than propagated, so a panic somewhere else cannot silence the engine.
 ///
-/// Write errors — a broken pipe means the GUI is gone — are dropped. stdin will
-/// be at EOF anyway and the loop is about to end; panicking on the way out
-/// would only turn a tidy exit into a crash report.
+/// Write errors are dropped: a broken pipe means the GUI is gone, stdin is
+/// about to hit EOF, and panicking on the way out turns a tidy exit into a
+/// crash report.
 pub struct Output<W: Write + Send>(Arc<Mutex<W>>);
 
 impl<W: Write + Send> Output<W> {
@@ -27,7 +27,6 @@ impl<W: Write + Send> Output<W> {
         Self(Arc::new(Mutex::new(sink)))
     }
 
-    /// Writes one line and flushes it.
     pub fn line(&self, line: &str) {
         let mut sink = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let _ = writeln!(sink, "{line}");

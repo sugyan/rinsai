@@ -17,11 +17,8 @@
 //!   good for whoever is to move at that node, and a parent takes `-child`.
 //! * Scores are **centipawns**, pawn = 100.
 
-// Re-exported so a consumer *can* reach the shared vocabulary through one path
-// — `crates/rinsai` in fact takes `shogi_core` directly, which is fine, since
-// the rule is that rinsai-search is the only crate depending on **shunsai**.
-// What this does buy: the version is stated once, in `[workspace.dependencies]`,
-// so a future major bump is a single-line change.
+// Re-exported so the shared vocabulary is reachable through one path, and so
+// the version is stated once in `[workspace.dependencies]`.
 pub use shogi_core;
 pub use shunsai;
 

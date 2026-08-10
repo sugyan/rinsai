@@ -30,17 +30,15 @@ use crate::moves::is_legal;
 /// position, moves played), as distinct from [`Position`], which throughout
 /// rinsai means `shunsai::Position`, the board a search actually walks.
 ///
-/// Aliased rather than imported under its own name because three types called
-/// `Position` in one file would be unreadable, and because the alias says which
-/// of the two jobs this one does.
+/// Aliased rather than imported under its own name, because the alias says
+/// which of the two jobs this one does.
 type Record = shogi_core::Position;
 
 /// What repetition detection needs to know about a position that has occurred.
 ///
-/// Recorded from E0 step 1 and first *queried* at step 4. It is not speculative
-/// building: CLAUDE.md makes 千日手 mandatory from E0 and names this exact
-/// triple — `key()` filters, hand equality confirms, and the `in_check` run
-/// decides the perpetual-check case, where the checking side loses.
+/// First *queried* at step 4. CLAUDE.md names this exact triple: `key()`
+/// filters, hand equality confirms, and the `in_check` run decides the
+/// perpetual-check case, where the checking side loses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct HistoryEntry {
     /// shunsai's incremental Zobrist key: board, hands and side to move, but
@@ -111,12 +109,11 @@ pub struct Game {
     /// asks: shunsai is the only one of the two with unmake and an incremental
     /// Zobrist key.
     board: Position,
-    /// The record, advanced in lockstep with `board`. It is what lets the game
-    /// emit SFEN — shunsai deliberately cannot — and hand a fresh root to a
-    /// search thread. It also *is* the `position` command's own semantics: the
-    /// root plus the moves played, which step 4 needs, because the plies before
-    /// a mid-game `sfen` root are unknowable and `initial_position()` is what
-    /// says so.
+    /// The record, advanced in lockstep with `board`. It lets the game emit
+    /// SFEN — shunsai deliberately cannot — and it *is* the `position`
+    /// command's own semantics: the root plus the moves played. ⚠️ The plies
+    /// before a mid-game `sfen` root are unknowable, and `initial_position()`
+    /// is what says so.
     record: Record,
     /// One entry per position *reached*, including the root, so
     /// `history.len() == moves().len() + 1`.
@@ -133,14 +130,13 @@ impl Game {
 
     /// A game rooted at `partial`, no moves played.
     ///
-    /// **Fallible on purpose.** `PartialPosition` is only a container: nothing
-    /// stops it holding nineteen pawns, and `shogi_usi_parser` will build one
-    /// from `sfen … b 19P 1` without complaint, because its hand grammar
-    /// accepts a two-digit count and `Hand::added` has no cap. Handing that to
-    /// shunsai is fatal — its Zobrist table is `[u64; 19]` per piece kind and
-    /// it indexes by held count, so the nineteenth piece is an out-of-bounds
-    /// panic on whatever thread got there. A GUI or a server could end the
-    /// process with one line.
+    /// ⚠️ **Fallible on purpose, and this is a crash the wire can reach.**
+    /// `PartialPosition` is only a container: `shogi_usi_parser` builds one from
+    /// `sfen … b 19P 1` without complaint, because its hand grammar accepts a
+    /// two-digit count and `Hand::added` has no cap. Handing that to shunsai is
+    /// fatal — its Zobrist table is `[u64; 19]` per piece kind, indexed by held
+    /// count, so the nineteenth piece is an out-of-bounds panic. A GUI or a
+    /// server could end the process with one line.
     pub fn from_partial(partial: PartialPosition) -> Result<Self, PositionError> {
         check_piece_counts(&partial)?;
         let board = Position::new(partial.clone());
@@ -157,20 +153,18 @@ impl Game {
     ///
     /// Every move is parsed *and checked for legality* before it is played.
     ///
-    /// The obvious alternative, `shogi_core::Position::from_usi`, does the whole
-    /// thing in one call. It is not used, for two reasons — narrower than "it
-    /// does not report errors", since a *malformed* token does produce one.
-    /// A move that is well-formed but cannot be made (nothing on the from
-    /// square, wrong side to move) is **silently dropped** and success is
-    /// reported, so the engine's board and the GUI's move list part company;
-    /// and a move that is structurally fine but illegal — 二歩, moving into
-    /// check — is **applied**, because `make_move` documents that it never
-    /// checks legality. Either way the search would run on a position nobody
-    /// described. `tests/shogi_core_from_usi.rs` pins both down, so the day
-    /// `shogi_core` changes, that test fails and this decision is revisited.
+    /// ⚠️ **`shogi_core::Position::from_usi` does this in one call and is not
+    /// used**, for two reasons narrower than "it does not report errors" — a
+    /// *malformed* token does produce one. A move that is well-formed but
+    /// cannot be made (nothing on the from square, wrong side to move) is
+    /// **silently dropped** and success reported; a move that is structurally
+    /// fine but illegal (二歩, moving into check) is **applied**, because
+    /// `make_move` documents that it never checks legality. Either way the
+    /// search runs on a position nobody described.
+    /// `tests/shogi_core_from_usi.rs` pins both down, so the day `shogi_core`
+    /// changes, that test fails and this decision is revisited.
     ///
-    /// What *is* used is its SFEN half: the prefix goes to
-    /// `PartialPosition::from_usi`, which reports errors properly.
+    /// Its SFEN half *is* used: the prefix goes to `PartialPosition::from_usi`.
     pub fn from_usi_position(args: &str) -> Result<Self, PositionError> {
         let tokens: Vec<&str> = args.split_whitespace().collect();
         let (root_src, rest) = split_root(&tokens)?;
@@ -242,10 +236,9 @@ impl Game {
         Ok(())
     }
 
-    /// The board. There is deliberately no `&mut` counterpart: the search is
-    /// handed a [`Game`] of its own (see [`Clone`]), so "the search must leave
-    /// the position balanced" is not an invariant anyone here can violate. A
-    /// search that needs to move pieces takes [`Self::search_board`].
+    /// The board. Deliberately no `&mut` counterpart: a search that needs to
+    /// move pieces takes [`Self::search_board`], so "the search must leave the
+    /// position balanced" is not an invariant anyone here can violate.
     #[must_use]
     pub fn position(&self) -> &Position {
         &self.board
@@ -254,20 +247,16 @@ impl Game {
     /// A board of the search's own, **rebuilt from the record** rather than
     /// copied — the board a searcher does its do/undo on.
     ///
-    /// [`Position::clone`] would deep-copy shunsai's undo stack. Rebuilding
+    /// ⚠️ [`Position::clone`] would deep-copy shunsai's undo stack. Rebuilding
     /// hands the search an *empty* one, so a search that unwinds past its own
     /// root trips `undo_move`'s `expect` loudly instead of quietly walking into
     /// a position nobody described.
     ///
-    /// It matters that this is a method rather than a `position().clone()` at
-    /// the call site. Today's one caller reaches the searcher through
-    /// `SearchJob`, whose game the protocol layer has already `clone`d — so its
-    /// undo stack happens to be empty and a copy would cost the same. That is a
-    /// property of *that caller*, not of the type: `SearchJob` is public, E3's
-    /// self-play driver is its second caller, and a job built straight from a
-    /// game with fifty moves played would both copy fifty undo entries and lose
-    /// the unwind guarantee. Asking for the board this way makes the search's
-    /// requirement independent of how the job was assembled.
+    /// A method rather than a `position().clone()` at the call site, because
+    /// today's caller only *happens* to hold an already-cloned game with an
+    /// empty stack. `SearchJob` is public and E3's self-play driver is its
+    /// second caller; a job built straight from a game fifty moves in would
+    /// both copy fifty undo entries and lose the unwind guarantee.
     #[must_use]
     pub fn search_board(&self) -> Position {
         let board = Position::new(self.record.inner().clone());
@@ -307,7 +296,6 @@ impl Game {
         &self.history
     }
 
-    /// The side to move.
     #[must_use]
     pub fn side_to_move(&self) -> Color {
         self.board.side_to_move()
@@ -335,17 +323,13 @@ impl HistoryEntry {
 /// argument.
 ///
 /// The rebuild also cross-checks the from-scratch key against the
-/// incrementally maintained one, which is what makes the lockstep record a
-/// checked property rather than a hope. This is E2's Lazy SMP shape too: each
-/// helper thread takes its own copy from the same source.
+/// incrementally maintained one, which makes the lockstep record a checked
+/// property rather than a hope.
 ///
-/// **The cross-check is `debug_assert`, so it runs in tests and in a debug
-/// build and is compiled out of the release binary that actually plays.** That
-/// is the right trade — it is on the path of every `go`, and a release build
-/// has no business paying for it — but it means the guarantee is "the test
-/// suite would have caught a drift", not "a live game will". Making it
-/// unconditional is a decision for step 3b, where the transposition table gives
-/// a key mismatch somewhere far worse to go.
+/// ⚠️ **It is a `debug_assert`, compiled out of the release binary that
+/// actually plays**, so the guarantee is "the test suite would have caught a
+/// drift", not "a live game will". Step 3b revisits it, where a key mismatch
+/// has somewhere far worse to go.
 impl Clone for Game {
     fn clone(&self) -> Self {
         Self {
@@ -372,9 +356,9 @@ impl fmt::Debug for Game {
 /// How many of each kind a shogi set contains, promoted pieces counting as the
 /// kind they were promoted from.
 ///
-/// The king is **not** here: it is the one kind whose bound is per colour rather
-/// than per set, and [`check_piece_counts`] handles it separately. A total of
-/// two admits two black kings and no white one, which no set can produce.
+/// ⚠️ The king is **not** here: its bound is per colour rather than per set —
+/// a total of two admits two black kings and no white one — so
+/// [`check_piece_counts`] handles it separately.
 const PIECE_TOTALS: [(PieceKind, u8); 7] = [
     (PieceKind::Pawn, 18),
     (PieceKind::Lance, 4),
@@ -387,21 +371,17 @@ const PIECE_TOTALS: [(PieceKind, u8); 7] = [
 
 /// Rejects a root that could not come from a real shogi set.
 ///
-/// One check covers two routes to the same crash. The direct one is a hand
-/// count the parser accepted but no set contains (`19P`). The indirect one
-/// needs no malformed field at all — 18 pawns in hand plus a pawn on the board
-/// is nineteen pawns, and capturing that pawn is what tips shunsai's hand
-/// counter over. Bounding the *total* per kind at the root closes both, because
-/// no legal move can create a piece.
+/// One check covers two routes to the same crash: a hand count the parser
+/// accepted but no set contains (`19P`), and — with no malformed field at all —
+/// 18 pawns in hand plus one on the board, where capturing that pawn tips
+/// shunsai's hand counter over. Bounding the *total* per kind at the root
+/// closes both, because no legal move can create a piece.
 ///
-/// The king is bounded **per colour**, and at *most* one rather than exactly
-/// one. Per colour because a king is never captured and never enters a hand, so
-/// unlike every other kind it cannot change sides — a per-set total of two would
-/// admit two black kings and no white one. At most rather than exactly because a
-/// 詰将棋 diagram routinely omits the attacking king, and a GUI sending one for
-/// analysis is asking an ordinary question; rejecting it would be a regression
-/// for no safety gained. shunsai's `king_square` returns `Option` and documents
-/// `None` as legal, so the king-less case is one it already handles.
+/// ⚠️ The king is bounded **per colour** — it never changes sides, so a per-set
+/// total of two would admit two black kings and no white one — and at *most*
+/// one rather than exactly one, because a 詰将棋 diagram routinely omits the
+/// attacking king. shunsai's `king_square` returns `Option` and documents
+/// `None` as legal.
 fn check_piece_counts(partial: &PartialPosition) -> Result<(), PositionError> {
     let mut seen = [0u16; PieceKind::NUM];
     let mut kings = [0u16; 2];
@@ -456,13 +436,10 @@ fn split_root<'a>(tokens: &'a [&'a str]) -> Result<(String, &'a [&'a str]), Posi
                 });
             }
             let (fields, rest) = rest.split_at(field_count);
-            // The move number is checked here rather than left to
-            // `PartialPosition::from_usi`, which saturates and discards: it
-            // turns `0` into 1 and anything from 65536 upwards into 65535,
-            // reporting success either way, while rejecting a *non-numeric*
-            // field. Silently rewriting one kind of bad input and refusing
-            // another is the inconsistency; both are the GUI being wrong about
-            // the game, and both should be said out loud.
+            // ⚠️ Checked here rather than left to
+            // `PartialPosition::from_usi`, which **saturates and discards**:
+            // `0` becomes 1 and 65536+ becomes 65535, reporting success either
+            // way, while a *non-numeric* field is rejected.
             if let Some(ply) = fields.get(3) {
                 match ply.parse::<u16>() {
                     Ok(n) if n >= 1 => {}
@@ -571,13 +548,11 @@ mod tests {
         );
     }
 
-    /// Note this asserts the *error*, not the surviving board — it cannot do
-    /// otherwise: `from_usi_position` is a constructor, so on the error path no
-    /// `Game` escapes at all. The property that a rejected command leaves the
-    /// engine's own board untouched lives one layer up, in `usi::set_position`,
-    /// and is covered by `usi_conformance::an_illegal_move_rejects_the_whole_position_command`,
-    /// which re-checks the surviving board. Do not attach a "build into a
-    /// scratch game" sabotage note here: there is no live game here to damage.
+    /// ⚠️ It asserts the *error*, not the surviving board, and cannot do
+    /// otherwise: `from_usi_position` is a constructor, so no `Game` escapes on
+    /// the error path. That a rejected command leaves the engine's own board
+    /// untouched is `usi::set_position`'s property, covered by
+    /// `usi_conformance::an_illegal_move_rejects_the_whole_position_command`.
     #[test]
     fn an_illegal_move_fails_the_whole_command() {
         // 5e is empty in every position reachable from startpos in two moves.
@@ -605,13 +580,15 @@ mod tests {
         );
     }
 
-    /// A GUI or a server could end the process with one line before this
-    /// existed: `shogi_usi_parser` accepts a two-digit hand count, and shunsai
-    /// indexes a `[u64; 19]` Zobrist table by held count, so the nineteenth
-    /// pawn was an out-of-bounds panic on the protocol thread.
+    /// ⚠️ A GUI or a server could end the process with one line before this
+    /// existed — see [`Game::from_partial`].
     ///
-    /// Sabotage: delete the `check_piece_counts` call in `from_partial` and
-    /// every case here panics instead of returning an error.
+    /// Sabotage: delete the `check_piece_counts` call in `from_partial`. ⚠️
+    /// Only the three two-digit-hand cases panic (shunsai's `zobrist.rs`
+    /// indexes `[u64; 19]` by held count); the other four are silently
+    /// **accepted** and fail the assertion below instead. Those four are the
+    /// indirect route — no malformed field anywhere — that this check exists
+    /// for.
     #[test]
     fn a_position_no_shogi_set_could_reach_is_rejected() {
         for sfen in [
@@ -658,13 +635,19 @@ mod tests {
     }
 
     /// The king is the one kind that cannot change sides, so its bound is per
-    /// colour. A per-*set* total of two admits the first case below.
+    /// colour.
+    ///
+    /// ⚠️ **The first fixture is the only one that discriminates.** The other
+    /// two hold *three* kings, which a per-set total of two rejects on the
+    /// total alone; two black kings and no white one is the position only a
+    /// per-colour bound catches.
     ///
     /// Sabotage: put `(PieceKind::King, 2)` back into `PIECE_TOTALS` and drop
-    /// the per-colour loop, and both of these are accepted.
+    /// the per-colour loop, and the first case is accepted.
     #[test]
     fn two_kings_of_one_colour_are_rejected() {
         for sfen in [
+            "sfen 9/9/9/9/9/9/9/9/3KK4 b - 1",
             "sfen 4k4/9/9/9/9/9/9/9/3KK4 b - 1",
             "sfen 3kk4/9/9/9/9/9/9/9/4K4 b - 1",
         ] {
@@ -678,10 +661,7 @@ mod tests {
         }
     }
 
-    /// …but *at most* one, not exactly one. A 詰将棋 diagram routinely omits the
-    /// attacking king, and a GUI sending one for analysis is asking an ordinary
-    /// question. shunsai's `king_square` returns `Option` and documents `None`
-    /// as legal, so nothing downstream needs the king to be there.
+    /// …but *at most* one, not exactly one — see [`check_piece_counts`].
     #[test]
     fn a_position_with_no_king_for_one_side_is_accepted() {
         for sfen in [
@@ -697,10 +677,8 @@ mod tests {
         }
     }
 
-    /// `PartialPosition::from_usi` saturates and discards the move number — `0`
-    /// becomes 1, anything from 65536 up becomes 65535 — while rejecting a
-    /// *non-numeric* field. Rewriting one kind of bad input and refusing
-    /// another is the inconsistency; both mean the GUI is wrong about the game.
+    /// See `split_root`: `PartialPosition::from_usi` saturates and discards
+    /// this field rather than rejecting it.
     #[test]
     fn an_out_of_range_move_number_is_rejected_rather_than_clamped() {
         let board = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b -";
@@ -765,8 +743,7 @@ mod tests {
 
         let entries = game.history();
         assert!(!entries[0].in_check);
-        // 8h3c+ gives check to the white king on 5a? No — but the entry for the
-        // final position must at least agree with the live board.
+        // The entry for the final position must agree with the live board.
         assert_eq!(entries[3].in_check, game.in_check());
         assert_eq!(entries[3].key, game.position().key());
         assert_eq!(
@@ -778,10 +755,8 @@ mod tests {
         );
     }
 
-    /// The record's *root* must not move while its current position does —
-    /// that is the half `Game` delegates rather than reimplements, and step 4
-    /// needs it to know where the recorded history begins, since the plies
-    /// before a mid-game `sfen` root are unknowable.
+    /// The record's *root* must not move while its current position does. Step
+    /// 4 needs it to know where the recorded history begins.
     #[test]
     fn the_record_keeps_its_root_while_the_board_advances() {
         let mut game = Game::from_usi_position("startpos").expect("startpos parses");

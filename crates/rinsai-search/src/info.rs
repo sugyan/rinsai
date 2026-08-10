@@ -1,11 +1,8 @@
 //! The `info` line a search sends while it is thinking.
 //!
-//! Kept apart from the search so that the wire format has tests that do not
-//! need a search to run, and apart from `search.rs` so that the seam stays
-//! protocol-agnostic. The search builds one of these per completed iteration
-//! and hands its `Display` to the [`InfoSink`](crate::search::InfoSink); it is
-//! the sink's owner — the USI layer, or nobody — that decides where the text
-//! goes.
+//! Apart from the search so the wire format has tests that do not need a
+//! search to run, and apart from `search.rs` so that seam stays
+//! protocol-agnostic.
 
 use core::fmt;
 use core::time::Duration;
@@ -22,9 +19,7 @@ use crate::score::{Depth, Score};
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SearchInfo<'a> {
     pub(crate) depth: Depth,
-    /// The deepest ply this *iteration* reached, quiescence included. It became
-    /// a number worth printing when quiescence arrived; before that it could
-    /// only ever have equalled `depth`.
+    /// The deepest ply this *iteration* reached, quiescence included.
     pub(crate) seldepth: usize,
     pub(crate) score: Score,
     pub(crate) nodes: u64,
@@ -36,10 +31,10 @@ pub(crate) struct SearchInfo<'a> {
 
 impl fmt::Display for SearchInfo<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // `seldepth` sits immediately after `depth`, the slot a GUI expects it
-        // in, and `hashfull` joins before `score` at step 3b. Every field is
-        // printed unconditionally, including when it is uninteresting: a token
-        // that comes and goes makes the line's shape depend on the position.
+        // `seldepth` sits immediately after `depth`, where a GUI expects it;
+        // `hashfull` joins before `score` at step 3b. ⚠️ Every field is printed
+        // unconditionally, including when uninteresting: a token that comes and
+        // goes makes the line's shape depend on the position.
         write!(
             f,
             "info depth {} seldepth {} time {} nodes {} nps {}",
@@ -53,18 +48,14 @@ impl fmt::Display for SearchInfo<'_> {
         // USI reports mate distance in **plies**, which is exactly what
         // `mate_plies` returns — positive when the side to move mates.
         //
-        // The two sentinels are excluded rather than trusted to stay out: both
-        // sit above the mate floor, so `INFINITE` prints as `score mate -1` and
-        // `NONE` as `score mate -2` — the engine announcing it is being mated
-        // next move. Nothing reaches this with either today (the search returns
-        // only real scores), and a wrong `mate` on the wire is the kind of thing
-        // a GUI believes.
+        // ⚠️ The two sentinels are excluded rather than trusted to stay out:
+        // both sit above the mate floor, so `INFINITE` prints as
+        // `score mate -1` and `NONE` as `score mate -2` — the engine announcing
+        // it is being mated next move, which a GUI believes.
         //
-        // An assertion inside a `Display` impl is unusual enough to say why it
-        // is here: it makes a formatter that can panic. It earns the place
-        // because it is `debug_assert`, so the engine that plays does not carry
-        // it, and because the condition is a genuine bug rather than a caller's
-        // bad input — there is no sentinel a caller is entitled to print.
+        // An assertion inside a `Display` makes a formatter that can panic. It
+        // earns the place by being a `debug_assert` on a genuine bug rather
+        // than on a caller's input: no sentinel is a caller's to print.
         debug_assert!(
             !matches!(self.score, Score::INFINITE | Score::NONE),
             "a sentinel reached the wire: {:?}",
@@ -90,10 +81,9 @@ impl fmt::Display for SearchInfo<'_> {
 impl SearchInfo<'_> {
     /// Nodes per second, or zero when no time has passed.
     ///
-    /// Computed from nanoseconds rather than the millisecond figure printed
-    /// beside it: the first iterations of a search routinely finish inside one
-    /// millisecond, and dividing by the rounded-down millisecond count would
-    /// divide by zero on exactly those.
+    /// ⚠️ From nanoseconds, not the millisecond figure printed beside it: the
+    /// first iterations routinely finish inside one millisecond, and the
+    /// rounded-down count would be zero on exactly those.
     fn nps(&self) -> u128 {
         match self.elapsed.as_nanos() {
             0 => 0,
@@ -146,9 +136,7 @@ mod tests {
     }
 
     /// Sabotage: make the `seldepth` token conditional on it exceeding `depth`
-    /// and this fires. A token that appears only in tactical positions makes
-    /// the line's shape depend on the board, which turns a reader's bug into
-    /// one that reproduces on some positions and not others.
+    /// and this fires.
     #[test]
     fn seldepth_is_printed_even_when_it_equals_depth() {
         let line = SearchInfo {
