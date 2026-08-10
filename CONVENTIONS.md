@@ -168,6 +168,29 @@ carries the rule.
   selective depth *of that iteration*. `nodes` accumulates for an unrelated
   reason — resetting it starves the poll, above.
 
+## Portability
+
+- **Threads and the wall clock may not become the only way to run a search.**
+  Both may be used, and are. Two things this forbids, each true of the code
+  today:
+  1. **A search must be reachable without `std::thread`.** `Searcher::search`
+     takes a job and returns a `BestMove`; `SearchDriver` is a caller of it, not
+     its interface. Threads may make the search stronger; they may not be what
+     makes it work.
+  2. **The engine always accepts at least one budget with no clock in it.**
+     `depth` and `nodes` are that budget — `Budget` honours them without
+     consulting `Instant` at all. This is *not* the claim that every budget has
+     a clock-free form: `movetime` and `byoyomi` are wall-clock by definition
+     (see Time control above), and nothing here asks them to be otherwise.
+
+  ⚠️ **This is a constraint on what may become load-bearing, not a claim that
+  the engine runs on `wasm32-unknown-unknown`. It does not** — it compiles and
+  traps, and PROGRESS.md's table says where. In particular rule 2 holds of the
+  *budget vocabulary* and not yet of the call path: `NegamaxSearcher::search`
+  reads `Instant::now()` unconditionally for the `info` line's `time` and `nps`,
+  so a clock-free caller still needs the injectable clock step 5 owns. The
+  condition that retires the whole rule is in DECISIONS.md.
+
 ## Tests
 
 - **No test may name a move the engine chose.** shunsai's public documentation

@@ -16,6 +16,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
       # Caches ~/.cargo/registry, ~/.cargo/git and target/, so the rev-pinned
       # shunsai clone is cached like any registry crate. The key derives from
       # Cargo.lock — one more reason the lock is committed.
@@ -33,6 +34,23 @@ jobs:
       # that premise true.
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
+
+      # Guards CONVENTIONS.md's Portability rule at the only point CI can
+      # check it: `rinsai-search`'s library, which is the search core the rule
+      # is about, plus its whole dependency tree. The `rinsai` binary is
+      # deliberately out of scope — it is stdio and process handling, which is
+      # native by construction.
+      #
+      # ⚠️ This catches only what fails to *compile*: an `std::arch` intrinsic,
+      # or a dependency with no wasm build. It does **not** catch the std APIs
+      # that compile for this target and panic when reached, which is most of
+      # the ones that matter — `thread`, `Instant`, `Condvar`, `fs` and `net`
+      # all pass here today. PROGRESS.md's table measures a release binary,
+      # built separately, whose search has been eliminated behind the first of
+      # them; nothing in CI builds that. A green check is not a supported
+      # target and must not be reported as one.
+      - name: rinsai-search compiles for wasm32
+        run: cargo check -p rinsai-search --lib --locked --target wasm32-unknown-unknown
 
       # Doc comments link into each other and into the design record. A link
       # that no longer resolves — a renamed item, a moved module — is quiet
