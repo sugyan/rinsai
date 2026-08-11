@@ -137,8 +137,9 @@ carries the rule.
   of the game.
 
 - **The repetition path is extended at interior nodes only, and quiescence is a
-  deliberate hole in it.** Quiescence is 91–99% of all nodes, so keeping the
-  push and the scan out of it is most of what the rule costs. The hole is
+  deliberate hole in it.** Quiescence is the overwhelming majority of all
+  nodes, so keeping the push and the scan out of it is most of what the rule
+  costs. The hole is
   narrow rather than closed: a quiescence subtree's *entry* position is one its
   interior parent pushed, and a quiescence line cannot return to that entry —
   every ply but at most `QS_MAX_CHECK_PLIES` is a capture, and the only move

@@ -501,8 +501,8 @@ mod tests {
         );
     }
 
-    /// A panic *outside* the searcher — here in `new_game`, at step 3b a
-    /// transposition table being cleared — must not take the worker with it.
+    /// A panic *outside* the searcher — here in `new_game`, where the
+    /// transposition table is cleared — must not take the worker with it.
     ///
     /// The inner `catch_unwind` only covers `search`. Sabotage: remove the
     /// outer catch and the `go` below is never answered.

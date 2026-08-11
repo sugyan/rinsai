@@ -150,7 +150,7 @@ impl Neg for Score {
 }
 
 // Callers for the four impls below: E1's aspiration windows (`alpha - delta`,
-// `beta + delta`) and step 3b's mate-score-by-ply adjustment.
+// `beta + delta`) and the transposition table's mate-score-by-ply adjustment.
 
 impl Add<i32> for Score {
     type Output = Self;

@@ -334,8 +334,9 @@ impl HistoryEntry {
 ///
 /// ⚠️ **It is a `debug_assert`, compiled out of the release binary that
 /// actually plays**, so the guarantee is "the test suite would have caught a
-/// drift", not "a live game will". Step 3b revisits it, where a key mismatch
-/// has somewhere far worse to go.
+/// drift", not "a live game will". Kept that way deliberately: promoting it
+/// would put a panic on the protocol thread once per `go`. DECISIONS.md
+/// carries the trade and what would reopen it.
 impl Clone for Game {
     fn clone(&self) -> Self {
         Self {

@@ -246,8 +246,9 @@ pub struct NegamaxSearcher {
     /// [`repetition::verdict`] reads.
     ///
     /// ⚠️ **Extended at interior nodes only, and [`Self::qsearch`] is a hole in
-    /// it on purpose.** Quiescence is 91–99% of all nodes, so keeping the push
-    /// and the scan out of it is most of what the feature costs. Two things
+    /// it on purpose.** Quiescence is the overwhelming majority of all nodes,
+    /// so keeping the push and the scan out of it is most of what the feature
+    /// costs — PROGRESS.md carries the share. Two things
     /// make the hole narrow: the position a quiescence subtree *starts* from is
     /// one its interior parent already pushed, and a quiescence line cannot
     /// come back to that starting position — every ply but at most
@@ -453,7 +454,7 @@ impl NegamaxSearcher {
         budget: &Budget<'_>,
     ) -> Score {
         // Above every early return: one node per entry, including a node that
-        // turns straight round. Step 3b's `bench` freezes these counts.
+        // turns straight round. `bench` freezes these counts.
         self.nodes += 1;
         self.pv[ply].clear();
         self.seldepth = self.seldepth.max(ply);
@@ -570,7 +571,7 @@ impl NegamaxSearcher {
     ///   is the known lie [`QS_MAX_CHECK_PLIES`]'s own doc admits, and it fires
     ///   far more often than the first.
     ///
-    /// Both are step 2's depth-zero imprecision narrowed, not removed.
+    /// Both are the depth-zero imprecision narrowed, not removed.
     fn qsearch(
         &mut self,
         board: &mut Position,
