@@ -740,8 +740,17 @@ impl Searcher for NegamaxSearcher {
         self.tt.clear();
     }
 
+    /// ⚠️ **Says so when the table is not the size that was asked for**, which
+    /// happens both by rounding (`key & mask` needs a power of two) and by the
+    /// allocator refusing. A declared option is a promise, and an engine
+    /// running on a quarter of the memory its operator configured, silently, is
+    /// how an SPRT result stops meaning anything.
     fn set_hash_mb(&mut self, mb: usize) {
         self.tt.resize(mb);
+        let got = self.tt.mib();
+        if got != mb {
+            eprintln!("rinsai: USI_Hash {mb} MiB is not available; using {got} MiB");
+        }
     }
 }
 

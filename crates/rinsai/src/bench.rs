@@ -154,10 +154,7 @@ pub fn run(depth: u32) -> bool {
 
     let nodes: u64 = rows.iter().map(|row| row.nodes).sum();
     let elapsed: Duration = rows.iter().map(|row| row.elapsed).sum();
-    let nps = match elapsed.as_nanos() {
-        0 => 0,
-        nanos => u128::from(nodes) * 1_000_000_000 / nanos,
-    };
+    let nps = rinsai_search::nps(nodes, elapsed);
     println!();
     println!(
         "total {nodes} nodes in {} ms ({nps} nps)",
@@ -188,7 +185,11 @@ mod tests {
     /// …and it reproduces. The counts are a regression test only because the
     /// search is deterministic, and nothing else in the suite says so.
     ///
-    /// Sabotage: drop the `new_game` between positions.
+    /// ⚠️ **No sabotage note, because none of the obvious mutations reach it.**
+    /// `measure` builds a fresh searcher per call, so anything that changes both
+    /// runs alike — dropping the `new_game`, resizing the table — leaves the two
+    /// vectors equal; that one is caught by the frozen counts above. What this
+    /// covers is a search seeded from something outside its inputs.
     #[test]
     fn the_bench_is_deterministic() {
         let first: Vec<u64> = measure(3)

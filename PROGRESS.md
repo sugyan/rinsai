@@ -478,12 +478,12 @@ Three measurements of allocating a 256 MiB table alone, in one process: **20.6
 ms, 12.1 ms, 6.3 ms** — the spread is the usual first-touch effect, not noise
 between runs. A whole depth-6 search from the initial position is 13–20 ms on
 the same machine and in the same session, which is what makes the two
-comparable despite neither being a certified-quiet figure. The table is
-allocated **once per searcher**, not per `go`,
-and the USI specification lets `isready` take arbitrarily long — which is where
-step 1 already put slow initialisation. Recorded because the two figures being
-the same order is not obvious, and because a future change that moved allocation
-onto the `go` path would look harmless and would not be.
+comparable despite neither being a certified-quiet figure. It is paid **once per
+searcher**: in `main`, before the protocol loop starts, and again on the worker
+for a `setoption name USI_Hash`. ⚠️ Not at `isready`, whatever that method's
+comment used to say. Recorded because the two figures being the same order is
+not obvious, and because a future change that moved allocation onto the `go`
+path would look harmless and would not be.
 
 ### `hashfull` is honest and, at E0 depths, uninformative
 
@@ -596,6 +596,13 @@ below and still unfalsifiable with a transposition table in the search. The one
 with no test was the transposition move being searched first — deleting the
 `swap` left the suite green, and `the_transposition_move_is_searched_first` is
 what closed that. The other three are each a different failure mode:
+
+⚠️ **This sweep mutated the two mate-adjustment *functions* and not their call
+sites, and missed the largest hole in the step because of it.** A review
+afterwards deleted the `to_table` call from `store` and the `from_table` call
+from `probe` and found the whole suite green — DECISIONS.md, 2026-08-11. A
+mutation has to be made where the note is attached, not merely somewhere the
+note's subject appears.
 
 - **A note naming a mutation the test cannot see.** "Store a `Move` instead of a
   `CompactMove` and the size assertion fires" — it does not. `Option<Move>`

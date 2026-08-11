@@ -552,6 +552,7 @@ mod tests {
             "reported success after the worker was gone"
         );
         assert!(!driver.new_game());
+        assert!(!driver.set_hash(1));
     }
 
     /// Dropping the driver with a search in flight must not block forever.

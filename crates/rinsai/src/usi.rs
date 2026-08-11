@@ -187,8 +187,9 @@ impl<W: Write + Send + 'static> Engine<W> {
 
     fn ready(&self) {
         // The specification lets an engine take arbitrarily long here, which is
-        // where slow initialisation belongs: the transposition table at step 3b,
-        // the evaluation network at E3.
+        // where slow initialisation belongs. ⚠️ Nothing uses that yet: the
+        // transposition table is allocated in `main`, and a resize goes to the
+        // worker rather than through here.
         for (name, planned) in self.options.unhonoured_changes() {
             self.out.info_string(&format!(
                 "warning: option {name} is accepted but not yet used (planned: {planned})"

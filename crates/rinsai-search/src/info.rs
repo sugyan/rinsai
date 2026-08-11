@@ -43,23 +43,22 @@ impl fmt::Display for SearchInfo<'_> {
             self.seldepth,
             self.elapsed.as_millis(),
             self.nodes,
-            self.nps(),
+            nps(self.nodes, self.elapsed),
             self.hashfull,
         )?;
 
         // USI reports mate distance in **plies**, which is exactly what
         // `mate_plies` returns — positive when the side to move mates.
         //
-        // ⚠️ The two sentinels are excluded rather than trusted to stay out:
-        // both sit above the mate floor, so `INFINITE` prints as
-        // `score mate -1` and `NONE` as `score mate -2` — the engine announcing
-        // it is being mated next move, which a GUI believes.
+        // ⚠️ The sentinel is excluded rather than trusted to stay out: it sits
+        // above the mate floor, so `INFINITE` prints as `score mate -1` — the
+        // engine announcing it is being mated next move, which a GUI believes.
         //
         // An assertion inside a `Display` makes a formatter that can panic. It
         // earns the place by being a `debug_assert` on a genuine bug rather
         // than on a caller's input: no sentinel is a caller's to print.
         debug_assert!(
-            !matches!(self.score, Score::INFINITE | Score::NONE),
+            self.score != Score::INFINITE,
             "a sentinel reached the wire: {:?}",
             self.score
         );
@@ -80,17 +79,19 @@ impl fmt::Display for SearchInfo<'_> {
     }
 }
 
-impl SearchInfo<'_> {
-    /// Nodes per second, or zero when no time has passed.
-    ///
-    /// ⚠️ From nanoseconds, not the millisecond figure printed beside it: the
-    /// first iterations routinely finish inside one millisecond, and the
-    /// rounded-down count would be zero on exactly those.
-    fn nps(&self) -> u128 {
-        match self.elapsed.as_nanos() {
-            0 => 0,
-            nanos => u128::from(self.nodes) * 1_000_000_000 / nanos,
-        }
+/// Nodes per second, or zero when no time has passed.
+///
+/// ⚠️ From nanoseconds, not the millisecond figure printed beside it: the first
+/// iterations routinely finish inside one millisecond, and the rounded-down
+/// count would be zero on exactly those.
+///
+/// Public because `rinsai bench` reports the same figure and there is no reason
+/// for it to be computed twice.
+#[must_use]
+pub fn nps(nodes: u64, elapsed: Duration) -> u128 {
+    match elapsed.as_nanos() {
+        0 => 0,
+        nanos => u128::from(nodes) * 1_000_000_000 / nanos,
     }
 }
 

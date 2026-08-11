@@ -181,6 +181,11 @@ carries the rule.
 - **Table size is an input to every node count.** A bigger table evicts less, so
   a count quoted without a size is not a result, and `bench` fixes its own size
   rather than reading `USI_Hash`.
+- **The allocation is fallible, and a shortfall is reported.** `USI_Hash`
+  advertises sizes most machines cannot give; an infallible `vec![_; len]`
+  answers a refusal by aborting the process, from the worker thread, on a value
+  the engine itself offered. A smaller table plus a diagnostic is the only
+  answer compatible with "bad input never stops the loop".
 
 ## `bench`
 

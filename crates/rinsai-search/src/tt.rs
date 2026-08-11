@@ -82,6 +82,11 @@ struct Entry {
 /// How many slots fit in one MiB.
 const ENTRIES_PER_MB: usize = (1 << 20) / size_of::<Entry>();
 
+/// What [`Table::allocate`] falls back to when the allocator refuses. The
+/// smallest size `USI_Hash` admits, so it is a size the engine already claims
+/// to work at.
+const FALLBACK_MB: usize = 1;
+
 /// What a probe found.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Hit {
@@ -117,9 +122,9 @@ impl Table {
     /// A cleared table of `mb` MiB, or as close below it as a power of two
     /// gets — see [`Self::entries_for_mb`].
     pub(crate) fn new(mb: usize) -> Self {
-        let len = Self::entries_for_mb(mb);
+        let (entries, len) = Self::allocate(Self::entries_for_mb(mb));
         Self {
-            entries: vec![Entry::default(); len],
+            entries,
             mask: len - 1,
             generation: 0,
         }
@@ -129,15 +134,39 @@ impl Table {
     ///
     /// ⚠️ **A table can therefore be nearly half the size that was asked for**,
     /// because `key & mask` needs a power of two. What must not follow is the
-    /// engine reporting the size it was *asked* for: [`Self::hashfull`]
-    /// describes the table that exists.
+    /// engine reporting the size it was *asked* for: [`Self::mib`] and
+    /// [`Self::hashfull`] describe the table that exists.
     ///
     /// Separate from [`Self::new`] so its test need not allocate.
     fn entries_for_mb(mb: usize) -> usize {
         // Never zero, so `mask` is meaningful and `probe` always has somewhere
         // to look.
         let wanted = mb.saturating_mul(ENTRIES_PER_MB).max(1);
-        1usize << (usize::BITS - 1 - wanted.leading_zeros())
+        1usize << wanted.ilog2()
+    }
+
+    /// `len` cleared slots, or [`FALLBACK_MB`] worth if the allocator refuses.
+    ///
+    /// ⚠️ **Fallible on purpose.** `USI_Hash` advertises 64 GiB as its maximum,
+    /// which almost no machine can give, and `vec![_; len]` answers a refusal by
+    /// aborting the process — from the worker thread, mid-tournament, on a value
+    /// the engine itself offered. Returning a smaller table keeps the promise
+    /// `usi.rs` opens with: bad input never stops the loop.
+    fn allocate(len: usize) -> (Vec<Entry>, usize) {
+        let mut entries = Vec::new();
+        if entries.try_reserve_exact(len).is_ok() {
+            // Cannot reallocate: the capacity was just reserved.
+            entries.resize(len, Entry::default());
+            return (entries, len);
+        }
+        let fallback = FALLBACK_MB * ENTRIES_PER_MB;
+        (vec![Entry::default(); fallback], fallback)
+    }
+
+    /// The table's real size in MiB, which is what an operator has to be told
+    /// when it is not the size they asked for.
+    pub(crate) fn mib(&self) -> usize {
+        self.entries.len() / ENTRIES_PER_MB
     }
 
     /// Reallocates to `mb` MiB, dropping everything stored.
@@ -153,7 +182,8 @@ impl Table {
         // The old allocation goes back before the new one is asked for: held at
         // once, a resize would need both.
         self.entries = Vec::new();
-        self.entries = vec![Entry::default(); len];
+        let (entries, len) = Self::allocate(len);
+        self.entries = entries;
         self.mask = len - 1;
         self.generation = 0;
     }
@@ -209,7 +239,7 @@ impl Table {
         mv: Option<Move>,
     ) {
         debug_assert!(
-            !matches!(score, Score::INFINITE | Score::NONE),
+            score != Score::INFINITE,
             "a sentinel reached the table: {score:?}"
         );
         let (Ok(score), Ok(depth)) = (i16::try_from(to_table(score, ply)), i8::try_from(depth))
@@ -388,44 +418,56 @@ mod tests {
         assert_eq!(tt.probe(1, 0).and_then(|hit| hit.mv), Some(expected));
     }
 
-    /// A mate stored at one ply has to come back as the same mate seen from
-    /// wherever it is read.
+    /// A mate `distance` plies beyond a position must read as the same mate
+    /// from any node, each in its own frame.
     ///
-    /// Sabotage: drop either half of the adjustment.
+    /// ⚠️ **It goes through [`Table::store`] and [`Table::probe`], not through
+    /// `to_table`/`from_table`.** Testing the two functions directly leaves the
+    /// *call sites* uncovered: deleting either one from the table's own methods
+    /// then passes the whole suite, `bench` included, and the engine announces
+    /// mate distances it cannot play.
+    ///
+    /// Sabotage: drop the `to_table` call from `store`, or the `from_table`
+    /// call from `probe`.
     #[test]
     fn a_mate_score_survives_being_read_at_another_ply() {
-        for (stored_at, read_at) in [(0, 0), (3, 3), (5, 1), (1, 5), (MAX_PLY, MAX_PLY)] {
-            for score in [Score::mate_in(stored_at), Score::mated_in(stored_at)] {
-                // The distance the score describes, measured from the node that
-                // stored it, must be what it describes from the node that reads
-                // it — i.e. the two differ by exactly the change of frame.
-                let round_tripped = from_table(
-                    i16::try_from(to_table(score, stored_at)).expect("fits"),
-                    read_at,
-                );
-                let shift = read_at as i32 - stored_at as i32;
-                let expected = if score.get() > 0 {
-                    score - shift
-                } else {
-                    score + shift
-                };
-                assert_eq!(
-                    round_tripped, expected,
-                    "{score:?} stored at {stored_at}, read at {read_at}"
-                );
-                assert!(round_tripped.is_mate());
+        let mut tt = table();
+        for (stored_at, read_at) in [(0, 0), (3, 3), (5, 1), (1, 5), (100, 20), (20, 100)] {
+            for distance in [0, 1, 7] {
+                for mating in [true, false] {
+                    let (stored, expected) = if mating {
+                        (
+                            Score::mate_in(stored_at + distance),
+                            Score::mate_in(read_at + distance),
+                        )
+                    } else {
+                        (
+                            Score::mated_in(stored_at + distance),
+                            Score::mated_in(read_at + distance),
+                        )
+                    };
+                    tt.store(7, stored_at, 1, Bound::Exact, stored, None);
+                    let hit = tt.probe(7, read_at).expect("the entry is there");
+                    assert_eq!(
+                        hit.score, expected,
+                        "mate {distance} away, stored at {stored_at}, read at {read_at}"
+                    );
+                    assert!(hit.score.is_mate());
+                }
             }
         }
     }
 
     /// An ordinary evaluation must not be touched by the mate adjustment, or
-    /// every score in the table drifts by its ply.
+    /// every score in the table drifts by its ply. Through the table, for the
+    /// reason above.
     #[test]
     fn an_ordinary_score_is_stored_unchanged() {
+        let mut tt = table();
         for cp in [0, 1, -1, 215, -2_500, 30_000, -30_000] {
             let score = Score::cp(cp);
-            assert_eq!(to_table(score, 17), cp);
-            assert_eq!(from_table(cp as i16, 17), score);
+            tt.store(7, 17, 1, Bound::Exact, score, None);
+            assert_eq!(tt.probe(7, 42).expect("stored").score, score);
         }
     }
 
@@ -545,6 +587,37 @@ mod tests {
         // The option table's `min 1` is a commitment that this works, and the
         // floor keeps `mask` meaningful whatever is asked for.
         assert_eq!(Table::entries_for_mb(0), 1);
+    }
+
+    /// A size the allocator cannot give must produce a smaller table, not a
+    /// dead process. `USI_Hash`'s advertised maximum is 64 GiB.
+    ///
+    /// The request below overflows `isize` bytes, so `try_reserve_exact` refuses
+    /// on arithmetic alone and no allocator is troubled — the same branch a
+    /// genuine out-of-memory takes, reached deterministically.
+    ///
+    /// Sabotage: go back to `vec![Entry::default(); len]` and this fails on a
+    /// `capacity overflow` panic from inside `Vec`. ⚠️ That is the *polite* half
+    /// of what is being fixed — a size that overflows nothing and merely exceeds
+    /// free memory takes the `handle_alloc_error` path instead, which aborts the
+    /// process rather than panicking, and no test can catch that.
+    #[test]
+    fn a_table_too_large_to_allocate_falls_back_instead_of_aborting() {
+        let (entries, len) = Table::allocate(1 << 60);
+        assert_eq!(len, FALLBACK_MB * ENTRIES_PER_MB);
+        assert_eq!(entries.len(), len);
+        assert!(entries.iter().all(|entry| *entry == Entry::default()));
+    }
+
+    /// …and the size an operator is told about is the size that exists.
+    #[test]
+    fn mib_reports_the_table_that_exists() {
+        for mb in [1, 2, 4] {
+            assert_eq!(Table::new(mb).mib(), mb);
+        }
+        // Rounded down to a power of two, so three MiB buys two — and `mib`
+        // says two rather than three.
+        assert_eq!(Table::new(3).mib(), 2);
     }
 
     /// `hashfull` counts this search's entries, in permille, and an empty table
