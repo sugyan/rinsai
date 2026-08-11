@@ -62,9 +62,9 @@ const HAND: [i32; PieceKind::NUM] = [
 ///
 /// Positive is good for whoever is to move; a parent negates its child. ⚠️ No
 /// `clamp_to_eval` here on purpose: the largest balance a legal position can
-/// hold is far below the mate band, and
-/// `no_material_balance_can_reach_the_mate_band` asserts it. A clamp would turn
-/// a broken value table into a quietly plausible score.
+/// hold is far below the lowest band above it, and
+/// `no_material_balance_can_reach_the_bands_above_it` asserts it. A clamp would
+/// turn a broken value table into a quietly plausible score.
 pub(crate) fn evaluate(position: &Position) -> Score {
     let us = position.side_to_move();
     let ours = position.player_bb(us);
@@ -98,8 +98,8 @@ pub(crate) fn evaluate(position: &Position) -> Score {
 
     let score = Score::cp(total);
     debug_assert!(
-        !score.is_mate(),
-        "material evaluation reached the mate band: {score:?}"
+        score.get().abs() < Score::REPETITION.get(),
+        "material evaluation reached a band above the evaluations: {score:?}"
     );
     score
 }
@@ -111,7 +111,6 @@ mod tests {
 
     use super::*;
     use crate::moves::is_legal;
-    use crate::score::MAX_PLY;
 
     fn position(sfen: &str) -> Position {
         Position::new(PartialPosition::from_usi(sfen).expect("test SFEN parses"))
@@ -229,9 +228,11 @@ mod tests {
     /// The bound that makes `Score::clamp_to_eval` unnecessary here.
     ///
     /// Every piece, counted at whichever of its three prices is highest, on one
-    /// side and none on the other — a balance no legal position can exceed.
+    /// side and none on the other — a balance no legal position can exceed. The
+    /// comparison is against the *lowest* band above the evaluations, which is
+    /// the repetition band rather than the mate band; clearing that clears both.
     #[test]
-    fn no_material_balance_can_reach_the_mate_band() {
+    fn no_material_balance_can_reach_the_bands_above_it() {
         let set = [
             (PieceKind::Pawn, 18),
             (PieceKind::Lance, 4),
@@ -250,17 +251,21 @@ mod tests {
             most += dearest * count;
         }
         assert!(
-            !Score::cp(most).is_mate() && !Score::cp(-most).is_mate(),
-            "the largest material balance ({most} cp) reaches the mate band, \
-             which starts at {} cp",
-            Score::MATE.get() - MAX_PLY as i32
+            most < Score::REPETITION.get(),
+            "the largest material balance ({most} cp) reaches the repetition \
+             band at {} cp",
+            Score::REPETITION.get()
         );
     }
 
     /// Same board, opposite side to move: the balance flips sign.
     ///
-    /// Sabotage: drop the `us`/`us.flip()` distinction in either loop and this
-    /// is the assertion that fires.
+    /// Sabotage: drop the `us`/`us.flip()` distinction in the **hand** loop.
+    ///
+    /// ⚠️ **Not "either loop"** — the fixture holds a rook in hand and nothing
+    /// but the two kings on the board, so the board loop's copy of the same
+    /// mistake is invisible here. What catches that one is the oracle
+    /// comparison below, on positions with pieces on the board.
     #[test]
     fn evaluation_is_from_the_side_to_move() {
         let black = evaluate(&position("sfen 4k4/9/9/9/9/9/9/9/4K4 b R 1"));

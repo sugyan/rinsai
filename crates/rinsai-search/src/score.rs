@@ -46,6 +46,22 @@ impl Score {
     /// The lowest absolute value that still means mate.
     const MATE_FLOOR: i32 = Self::MATE.0 - MAX_PLY as i32;
 
+    /// A game won by 連続王手の千日手 — the opponent checked its way into a
+    /// fourfold repetition and loses. Negated, the same repetition lost.
+    ///
+    /// It sits in a band of its own between the evaluations and the mates, so
+    /// [`Self::is_mate`] answers `false` and the deepening loop does not break
+    /// on it. Two consequences worth knowing:
+    ///
+    /// * ⚠️ **`info` spells it `score cp`**, because USI has no vocabulary for
+    ///   a win that is not a mate. Reporting it as `score mate` would announce
+    ///   a mate whose principal variation does not deliver one.
+    /// * ⚠️ **It carries no distance to the root**, unlike a mate score. A
+    ///   repetition verdict is a property of the *path*, so it is never stored
+    ///   in the transposition table, and a flat value keeps the table's
+    ///   mate-by-ply adjustment the only ply-relative score there is.
+    pub const REPETITION: Self = Self(30_000);
+
     /// A score in centipawns, where a pawn is 100.
     #[inline]
     #[must_use]
@@ -104,8 +120,9 @@ impl Score {
     }
 
     /// Clamps into the ordinary-evaluation band, so a static evaluation can
-    /// never masquerade as a mate. Caller: E3's inference boundary, where the
-    /// network's own scale makes the conversion unbounded by construction.
+    /// never masquerade as a mate or as a repetition. Caller: E3's inference
+    /// boundary, where the network's own scale makes the conversion unbounded
+    /// by construction.
     ///
     /// ⚠️ Material evaluation deliberately does **not** use it: `eval` asserts
     /// its own range instead, because a clamp there would hide a broken value
@@ -113,7 +130,7 @@ impl Score {
     #[inline]
     #[must_use]
     pub const fn clamp_to_eval(self) -> Self {
-        let limit = Self::MATE_FLOOR - 1;
+        let limit = Self::REPETITION.0 - 1;
         if self.0 > limit {
             Self(limit)
         } else if self.0 < -limit {
@@ -169,6 +186,10 @@ impl fmt::Debug for Score {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::INFINITE => f.write_str("Score::INFINITE"),
+            s if s.0.abs() == Self::REPETITION.0 => {
+                let outcome = if s.0 > 0 { "won" } else { "lost" };
+                write!(f, "Score(repetition {outcome})")
+            }
             s => match s.mate_plies() {
                 Some(plies) => write!(f, "Score(mate {plies})"),
                 None => write!(f, "Score({} cp)", s.0),
@@ -188,7 +209,26 @@ mod tests {
         assert!(Score::INFINITE > Score::MATE);
         assert!(-Score::INFINITE < -Score::MATE);
         assert!(Score::INFINITE.get().checked_neg().is_some());
-        assert!(Score::mate_in(MAX_PLY) > Score::cp(30_000));
+    }
+
+    /// Three bands, in order: evaluations, then a repetition won or lost, then
+    /// the mates. Every rule that reads a score reads one of the boundaries, so
+    /// they are asserted as one chain rather than one at a time.
+    ///
+    /// Sabotage: raise `REPETITION` into the mate band and `is_mate` starts
+    /// answering `true` for it, which makes the deepening loop break on a
+    /// repetition as though it were a proof of mate.
+    #[test]
+    fn the_three_bands_do_not_overlap() {
+        let repetition = Score::REPETITION;
+        assert!(Score::cp(0).clamp_to_eval() < repetition);
+        assert!(Score::cp(i32::MAX).clamp_to_eval() < repetition);
+        assert!(repetition < Score::mate_in(MAX_PLY));
+        assert!(Score::mate_in(MAX_PLY) < Score::INFINITE);
+
+        assert!(!repetition.is_mate());
+        assert!(!(-repetition).is_mate());
+        assert_eq!(repetition.mate_plies(), None);
     }
 
     /// A nearer mate must score higher, or the search has no reason to prefer
@@ -222,12 +262,14 @@ mod tests {
         }
     }
 
-    /// A static evaluation must never be able to claim mate, however extreme
-    /// the material count gets.
+    /// A static evaluation must never be able to claim a mate *or* a
+    /// repetition, however extreme the material count gets.
     #[test]
-    fn clamping_keeps_evaluations_out_of_the_mate_band() {
+    fn clamping_keeps_evaluations_below_both_upper_bands() {
         assert!(!Score::cp(999_999).clamp_to_eval().is_mate());
         assert!(!Score::cp(-999_999).clamp_to_eval().is_mate());
+        assert!(Score::cp(999_999).clamp_to_eval() < Score::REPETITION);
+        assert!(Score::cp(-999_999).clamp_to_eval() > -Score::REPETITION);
         assert_eq!(Score::cp(120).clamp_to_eval(), Score::cp(120));
     }
 
@@ -236,5 +278,10 @@ mod tests {
         assert_eq!(format!("{:?}", Score::cp(-42)), "Score(-42 cp)");
         assert_eq!(format!("{:?}", Score::mate_in(3)), "Score(mate 3)");
         assert_eq!(format!("{:?}", Score::INFINITE), "Score::INFINITE");
+        assert_eq!(format!("{:?}", Score::REPETITION), "Score(repetition won)");
+        assert_eq!(
+            format!("{:?}", -Score::REPETITION),
+            "Score(repetition lost)"
+        );
     }
 }

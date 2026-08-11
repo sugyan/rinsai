@@ -127,11 +127,12 @@ Introduction order, with the shogi-specific caveats that differ from chess:
 5. **Null-move pruning — safer than in chess**, because drops make zugzwang effectively absent. Exclude only when in check, plus endgame verification.
 6. LMR — checks, evasions and capture-promotions exempt
 7. Check extension — **more important than in chess**; watch its interference with perpetual-check repetition, which is a search-explosion risk
-8. SEE in qsearch — and with it the two things E0 step 3a's quiescence leaves out: **non-capture promotions** (歩→と is a 500 cp event in rinsai's own table, so a capture-only quiescence is blind to と金作り — a shogi-specific gap with no chess analogue) and **checks**, which also need `gives_check`
+8. SEE in qsearch — and with it the two things E0 step 3a's quiescence leaves out: **non-capture promotions** (歩→と is a 500 cp event in rinsai's own table, so a capture-only quiescence is blind to と金作り — a shogi-specific gap with no chess analogue) and **checks**, which also need `gives_check`. ⚠️ **This item also owns extending the repetition path into quiescence.** E0 step 4 leaves quiescence out of it, on an argument that holds only while a quiescence line's non-capture plies are bounded by `QS_MAX_CHECK_PLIES` — which is exactly what generating checks and quiet promotions ends. CONVENTIONS.md carries the rule and the condition.
 9. Futility / razoring — hand value belongs in the margin. **Baseline: E0 step 3a's quiescence is deliberately unpruned.** Also owns `QS_MAX_CHECK_PLIES`, which E0 set to 2 by measurement and without an instrument
 10. Aspiration windows
 11. **Quiescence probes and stores in the transposition table.** Measured at E0 step 3b and **not** shipped there — PROGRESS.md carries the numbers. It halves the tree on every fixture tried, which is the opposite of what the conventional argument predicts, and it arrives here because it is a separable search change and because node count is not an instrument for strength. ⚠️ It also rebaselines every `bench` count, so it wants a pull request of its own whatever else is going on.
-12. Singular extensions, and the rest
+12. **Scoring the first repetition on the search path as a draw**, rather than the fourth occurrence the rule names. Standard practice, it prunes cycles, and it is a search heuristic rather than the rule — which is why E0 step 4 implements the rule and leaves this here, where an SPRT can decide it. ⚠️ It rebaselines every `bench` count, unlike step 4's version, which moved none
+13. Singular extensions, and the rest
 
 **SPRT discipline** — the parameters are in [CLAUDE.md](./CLAUDE.md) and are not restated here. What is specific to E1 is the pacing: **one item on this list is one SPRT**, in list order, and an item that fails to pass is recorded in DECISIONS.md with its numbers rather than retried until it does.
 
@@ -182,7 +183,7 @@ Each addition is prototyped on a shunsai branch, measured on shunsai's own bench
 | staged generation (captures / evasions / quiets) | E1 | **the `MoveSet` 48-byte question** — this is the caller that finally *collects* move sets. **Measured demand from E0 step 3a**: every quiescence node runs full legal generation and keeps a handful — PROGRESS.md carries the generated-to-kept ratios |
 | `gives_check` | E1 | — |
 | `do_null_move` / `undo_null_move` | E1 | — |
-| expose `checkers` / `pinned` | E1 | "expose rather than recompute" (shunsai, 2026-07-29). **Its E0 consumer arrived at step 3a**: every quiescence node calls `in_check()`, which recomputes `attackers_to(king)` that `generate_moves` computes internally one line later and does not expose |
+| expose `checkers` / `pinned` | E1 | "expose rather than recompute" (shunsai, 2026-07-29). **Its E0 consumer arrived at step 3a**: every quiescence node calls `in_check()`, which recomputes `attackers_to(king)` that `generate_moves` computes internally one line later and does not expose. **A second arrived at step 4**: every interior node's `do_move` now records an `in_check()` for the repetition path, which the 連続王手 half of the rule reads |
 | (optional) a `DirtyPieces`-returning `do_move` | judged E3 → E4 | the incremental-AttackInfo trade family |
 | (measurement only) magic vs qugiy vs `pext` | E1 once a TT-backed bench exists, and E4 on x86 | shunsai 2026-07-27 / 07-29 |
 | (measurement only) lifting the `king_danger` neighbourhood filter | only if a demand appears | shunsai 2026-07-30 |

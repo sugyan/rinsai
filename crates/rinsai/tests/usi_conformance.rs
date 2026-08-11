@@ -252,7 +252,7 @@ fn an_unparseable_sfen_keeps_the_previous_position() {
 }
 
 /// A lone king with no pieces and an empty hand has no legal move — no mate
-/// geometry needed. A hand-verified mate fixture arrives with step 4's suite.
+/// geometry needed.
 #[test]
 fn no_legal_move_yields_bestmove_resign() {
     let lines = dialogue("position sfen 4k4/9/9/9/9/9/9/9/9 b - 1\ngo movetime 1\nquit\n");
@@ -534,6 +534,32 @@ fn a_search_reports_progress_before_it_moves() {
         .position(|l| l.starts_with("bestmove"))
         .expect("a bestmove");
     assert!(first_info < bestmove, "{lines:?}");
+}
+
+/// The history a repetition is counted over arrives on this wire and nowhere
+/// else, so it is worth one dialogue that the whole route carries it: twelve
+/// move tokens in, `position` replaying each one, and a 連続王手の千日手
+/// verdict out.
+///
+/// ⚠️ **The one search property this harness can assert**, and only because
+/// the verdict is decided where a root child is dispatched rather than inside
+/// the interior node — every dialogue here is answered from the depth-1
+/// iteration, whose root children are all quiescence nodes. The score is a
+/// value no material balance reaches, and the side reporting it is a rook
+/// down; `rinsai-search`'s own tests carry the fixture's geometry.
+#[test]
+fn a_repetition_in_the_position_command_reaches_the_search() {
+    let lines = dialogue(
+        "position sfen 4k4/9/9/9/4R4/9/9/9/K8 w - 1 moves \
+         5a4a 5e4e 4a5a 4e5e 5a4a 5e4e 4a5a 4e5e 5a4a 5e4e 4a5a 4e5e\n\
+         go depth 1\nquit\n",
+    );
+    let info = lines
+        .iter()
+        .rfind(|l| l.starts_with("info depth "))
+        .unwrap_or_else(|| panic!("no info line: {lines:?}"));
+    assert!(info.contains(" score cp 30000 "), "{info}");
+    assert_eq!(bestmoves(&lines).len(), 1, "{lines:?}");
 }
 
 /// The converse, and the reason the test above is scoped: with no legal move
