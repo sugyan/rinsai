@@ -26,6 +26,40 @@ fn version_is_reported_and_exits_cleanly() {
     );
 }
 
+/// `bench` is a subcommand of the same binary, so `main` has to route it and
+/// report its verdict in the exit status — what a CI job or a bisect script
+/// reads. ⚠️ **The plumbing, not the counts**: those have their own test beside
+/// the table they are frozen in.
+#[test]
+fn bench_runs_from_the_command_line_and_reports_its_verdict() {
+    let output = engine().arg("bench").output().expect("the engine runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "bench failed:\n{stdout}");
+    assert!(stdout.contains("counts match"), "{stdout}");
+
+    // A depth with no baseline still runs and still succeeds — there is
+    // nothing for it to disagree with.
+    let output = engine()
+        .args(["bench", "2"])
+        .output()
+        .expect("the engine runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("no frozen counts"), "{stdout}");
+
+    // …and a depth that is not a number is refused rather than guessed at.
+    let output = engine()
+        .args(["bench", "deep"])
+        .output()
+        .expect("the engine runs");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("is not a depth"),
+        "{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Reads the answers *as they arrive*, so an engine that only flushed at exit
 /// would hang here rather than passing.
 ///

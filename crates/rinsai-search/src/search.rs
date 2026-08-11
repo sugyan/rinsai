@@ -167,11 +167,19 @@ pub trait Searcher: Send {
 
     /// Clears whatever carries between games. Called on `usinewgame`.
     fn new_game(&mut self) {}
+
+    /// Resizes whatever the searcher caches between searches, in MiB. Called on
+    /// `setoption name USI_Hash`.
+    ///
+    /// ⚠️ **The no-op default is only defensible for a searcher that caches
+    /// nothing** — it exists for the test searchers with no table at all.
+    fn set_hash_mb(&mut self, _mb: usize) {}
 }
 
 enum Command {
     Go(Box<SearchJob>),
     NewGame,
+    SetHash(usize),
 }
 
 /// Owns the search thread.
@@ -247,6 +255,20 @@ impl SearchDriver {
         }
     }
 
+    /// Queues a hash resize, in order with the searches around it. `false` if
+    /// the worker is gone.
+    ///
+    /// ⚠️ **Queued, never acknowledged, and the difference is a deadlock rather
+    /// than a delay**: waiting blocks the protocol thread behind whatever the
+    /// worker is doing, which may be a `go infinite` that ends only on a `stop`
+    /// arriving on the thread now blocked.
+    pub fn set_hash(&self, mb: usize) -> bool {
+        match &self.tx {
+            Some(tx) => tx.send(Command::SetHash(mb)).is_ok(),
+            None => false,
+        }
+    }
+
     /// Stops every search that has not yet answered, then waits for the worker
     /// to drain the queue and exit.
     ///
@@ -308,6 +330,7 @@ fn worker<S: Searcher>(
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             match command {
                 Command::NewGame => searcher.new_game(),
+                Command::SetHash(mb) => searcher.set_hash_mb(mb),
                 Command::Go(job) => {
                     // The inner catch: "one answer per job" when a search goes
                     // wrong. Resigning beats hanging, and the panic message is
@@ -529,6 +552,7 @@ mod tests {
             "reported success after the worker was gone"
         );
         assert!(!driver.new_game());
+        assert!(!driver.set_hash(1));
     }
 
     /// Dropping the driver with a search in flight must not block forever.

@@ -43,22 +43,6 @@ impl Score {
     /// `-INFINITE` is representable without overflow.
     pub const INFINITE: Self = Self(32_001);
 
-    /// "No score recorded" — an empty transposition-table slot. Caller: step
-    /// 3b's transposition table.
-    ///
-    /// ⚠️ **Not a "nothing found yet" seed for a maximum.** It compares as
-    /// +32_002, above every real score and above [`Self::INFINITE`], so
-    /// `best = Score::NONE; if score > best { … }` never fires and the search
-    /// keeps its first candidate forever, with nothing asserting. Use
-    /// `Option<Score>`, as the search does.
-    ///
-    /// ⚠️ **Not printable.** Above the mate floor, so [`Self::mate_plies`]
-    /// answers `Some(-2)` for it and `Some(-1)` for [`Self::INFINITE`] — either
-    /// one reaching an `info` line therefore spells the engine announcing a
-    /// loss it never found, `score mate -2` and `score mate -1` respectively.
-    /// `info.rs` asserts against both.
-    pub const NONE: Self = Self(32_002);
-
     /// The lowest absolute value that still means mate.
     const MATE_FLOOR: i32 = Self::MATE.0 - MAX_PLY as i32;
 
@@ -94,9 +78,9 @@ impl Score {
 
     /// Whether this is a mate score rather than an ordinary evaluation.
     ///
-    /// [`Self::NONE`] and [`Self::INFINITE`] answer `true` as well; neither is
-    /// ever compared as an evaluation, so distinguishing them here would only
-    /// invite a caller to rely on it.
+    /// [`Self::INFINITE`] answers `true` as well; it is never compared as an
+    /// evaluation, so distinguishing it here would only invite a caller to rely
+    /// on it.
     #[inline]
     #[must_use]
     pub const fn is_mate(self) -> bool {
@@ -185,7 +169,6 @@ impl fmt::Debug for Score {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::INFINITE => f.write_str("Score::INFINITE"),
-            Self::NONE => f.write_str("Score::NONE"),
             s => match s.mate_plies() {
                 Some(plies) => write!(f, "Score(mate {plies})"),
                 None => write!(f, "Score({} cp)", s.0),

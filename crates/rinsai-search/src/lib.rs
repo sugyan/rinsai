@@ -29,11 +29,14 @@ mod moves;
 mod negamax;
 mod score;
 mod search;
+mod tt;
 
 pub use game::{Game, HistoryEntry, IllegalMove, PositionError};
+pub use info::nps;
 pub use moves::{MAX_LEGAL_MOVES, is_legal};
 pub use negamax::NegamaxSearcher;
 pub use score::{Depth, MAX_PLY, Score};
 pub use search::{
     BestMove, InfoSink, Limits, SearchDriver, SearchJob, SearchSignals, Searcher, SilentSink,
 };
+pub use tt::DEFAULT_HASH_MB;

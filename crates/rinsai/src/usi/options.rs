@@ -48,19 +48,20 @@ pub(crate) struct OptionSpec {
 /// `BookFile` at E4. An option we do not declare but that someone sends is
 /// still accepted silently, so nothing breaks in the meantime.
 ///
-/// The spin bounds are **conventional, not measured**. ⚠️ Step 3b has to
-/// honour whatever is advertised here, so `min 1` in particular is a commitment
-/// that the transposition table works at 1 MB.
+/// The spin bounds are **conventional, not measured**, but they are honoured:
+/// `min 1` is a commitment that the transposition table works at 1 MiB, and the
+/// default is read from `rinsai_search` rather than written twice, so the size
+/// advertised is the size allocated.
 pub(crate) const OPTIONS: &[OptionSpec] = &[
     OptionSpec {
         name: "USI_Hash",
         kind: OptionKind::Spin {
-            default: 256,
+            default: rinsai_search::DEFAULT_HASH_MB as i64,
             min: 1,
             max: 65_536,
         },
         slot: Slot::HashMb,
-        planned: Some("E0 step 3b, with the transposition table"),
+        planned: None,
     },
     OptionSpec {
         name: "USI_Ponder",
@@ -91,9 +92,12 @@ pub(crate) struct Options {
 }
 
 impl Default for Options {
+    /// ⚠️ **Every field here must equal what [`OPTIONS`] advertises**, or a GUI
+    /// that sends no `setoption` gets an engine configured differently from the
+    /// one its dialog shows.
     fn default() -> Self {
         Self {
-            hash_mb: 256,
+            hash_mb: rinsai_search::DEFAULT_HASH_MB as i64,
             ponder: false,
         }
     }
@@ -125,7 +129,10 @@ impl fmt::Display for OptionError {
 }
 
 impl Options {
-    pub(crate) fn set(&mut self, name: &str, value: Option<&str>) -> Result<(), OptionError> {
+    /// Applies a `setoption`, answering **which slot moved** so the caller can
+    /// act on the ones that reach past this table. Nothing is written on an
+    /// error.
+    pub(crate) fn set(&mut self, name: &str, value: Option<&str>) -> Result<Slot, OptionError> {
         let spec = OPTIONS
             .iter()
             .find(|spec| spec.name == name)
@@ -137,7 +144,13 @@ impl Options {
             Slot::HashMb => self.hash_mb = spin(spec, value)?,
             Slot::Ponder => self.ponder = check(spec, value)?,
         }
-        Ok(())
+        Ok(spec.slot)
+    }
+
+    /// The table size to allocate, in MiB. Total rather than fallible: [`spin`]
+    /// has already bounded the value against the spec's `min`/`max`.
+    pub(crate) fn hash_mb(&self) -> usize {
+        usize::try_from(self.hash_mb).unwrap_or(rinsai_search::DEFAULT_HASH_MB)
     }
 
     /// Options an operator has changed that the engine does not act on yet.
@@ -218,12 +231,34 @@ mod tests {
         );
     }
 
+    /// Three copies of one number — advertised, held before any `setoption`, and
+    /// allocated by `NegamaxSearcher::new` — so all three read one const.
+    ///
+    /// Sabotage: give the spin above a literal default.
+    #[test]
+    fn the_advertised_default_is_what_gets_allocated() {
+        let spec = OPTIONS
+            .iter()
+            .find(|spec| spec.name == "USI_Hash")
+            .expect("USI_Hash is declared");
+        let OptionKind::Spin { default, min, .. } = spec.kind else {
+            panic!("USI_Hash is a spin");
+        };
+        assert_eq!(default, rinsai_search::DEFAULT_HASH_MB as i64);
+        assert_eq!(Options::default().hash_mb, default);
+        assert_eq!(Options::default().hash_mb(), rinsai_search::DEFAULT_HASH_MB);
+        // `min 1` is a promise that the table works at one MiB, which
+        // `rinsai-search`'s own tests are what actually exercise.
+        assert_eq!(min, 1);
+    }
+
     #[test]
     fn known_options_are_stored() {
         let mut options = Options::default();
-        assert_eq!(options.set("USI_Hash", Some("512")), Ok(()));
+        assert_eq!(options.set("USI_Hash", Some("512")), Ok(Slot::HashMb));
         assert_eq!(options.hash_mb, 512);
-        assert_eq!(options.set("USI_Ponder", Some("true")), Ok(()));
+        assert_eq!(options.hash_mb(), 512);
+        assert_eq!(options.set("USI_Ponder", Some("true")), Ok(Slot::Ponder));
         assert!(options.ponder);
     }
 
@@ -303,10 +338,25 @@ mod tests {
         let mut options = Options::default();
         assert!(options.unhonoured_changes().is_empty());
 
-        assert!(options.set("USI_Hash", Some("512")).is_ok());
+        assert!(options.set("USI_Ponder", Some("true")).is_ok());
         assert_eq!(
             options.unhonoured_changes(),
-            vec![("USI_Hash", "E0 step 3b, with the transposition table")]
+            vec![("USI_Ponder", "E2, with ponder")]
+        );
+    }
+
+    /// …and an option the engine *does* act on must stop disclosing itself, or
+    /// the disclosure stops meaning anything.
+    ///
+    /// Sabotage: leave `planned` set on `USI_Hash`.
+    #[test]
+    fn an_honoured_option_no_longer_discloses_itself() {
+        let mut options = Options::default();
+        assert!(options.set("USI_Hash", Some("512")).is_ok());
+        assert!(
+            options.unhonoured_changes().is_empty(),
+            "{:?}",
+            options.unhonoured_changes()
         );
     }
 }

@@ -13,9 +13,8 @@ use crate::score::{Depth, Score};
 
 /// One iteration's worth of progress.
 ///
-/// The fields are the ones a search at E0 step 3a can honestly fill.
-/// **Deliberately absent**: `hashfull`, which needs the transposition table
-/// (step 3b), and `multipv` / `currmove`, which have no consumer at all.
+/// The fields are the ones the search can honestly fill. **Deliberately
+/// absent**: `multipv` and `currmove`, which have no consumer at all.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SearchInfo<'a> {
     pub(crate) depth: Depth,
@@ -23,6 +22,8 @@ pub(crate) struct SearchInfo<'a> {
     pub(crate) seldepth: usize,
     pub(crate) score: Score,
     pub(crate) nodes: u64,
+    /// How much of the transposition table this search has used, in permille.
+    pub(crate) hashfull: u32,
     pub(crate) elapsed: Duration,
     /// The principal variation, best move first. May be empty — a search
     /// stopped before it finished a single root move has nothing to show.
@@ -31,33 +32,33 @@ pub(crate) struct SearchInfo<'a> {
 
 impl fmt::Display for SearchInfo<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // `seldepth` sits immediately after `depth`, where a GUI expects it;
-        // `hashfull` joins before `score` at step 3b. ⚠️ Every field is printed
+        // `seldepth` sits immediately after `depth` and `hashfull` immediately
+        // before `score`, where a GUI expects each. ⚠️ Every field is printed
         // unconditionally, including when uninteresting: a token that comes and
         // goes makes the line's shape depend on the position.
         write!(
             f,
-            "info depth {} seldepth {} time {} nodes {} nps {}",
+            "info depth {} seldepth {} time {} nodes {} nps {} hashfull {}",
             self.depth,
             self.seldepth,
             self.elapsed.as_millis(),
             self.nodes,
-            self.nps(),
+            nps(self.nodes, self.elapsed),
+            self.hashfull,
         )?;
 
         // USI reports mate distance in **plies**, which is exactly what
         // `mate_plies` returns — positive when the side to move mates.
         //
-        // ⚠️ The two sentinels are excluded rather than trusted to stay out:
-        // both sit above the mate floor, so `INFINITE` prints as
-        // `score mate -1` and `NONE` as `score mate -2` — the engine announcing
-        // it is being mated next move, which a GUI believes.
+        // ⚠️ The sentinel is excluded rather than trusted to stay out: it sits
+        // above the mate floor, so `INFINITE` prints as `score mate -1` — the
+        // engine announcing it is being mated next move, which a GUI believes.
         //
         // An assertion inside a `Display` makes a formatter that can panic. It
         // earns the place by being a `debug_assert` on a genuine bug rather
         // than on a caller's input: no sentinel is a caller's to print.
         debug_assert!(
-            !matches!(self.score, Score::INFINITE | Score::NONE),
+            self.score != Score::INFINITE,
             "a sentinel reached the wire: {:?}",
             self.score
         );
@@ -78,17 +79,19 @@ impl fmt::Display for SearchInfo<'_> {
     }
 }
 
-impl SearchInfo<'_> {
-    /// Nodes per second, or zero when no time has passed.
-    ///
-    /// ⚠️ From nanoseconds, not the millisecond figure printed beside it: the
-    /// first iterations routinely finish inside one millisecond, and the
-    /// rounded-down count would be zero on exactly those.
-    fn nps(&self) -> u128 {
-        match self.elapsed.as_nanos() {
-            0 => 0,
-            nanos => u128::from(self.nodes) * 1_000_000_000 / nanos,
-        }
+/// Nodes per second, or zero when no time has passed.
+///
+/// ⚠️ From nanoseconds, not the millisecond figure printed beside it: the first
+/// iterations routinely finish inside one millisecond, and the rounded-down
+/// count would be zero on exactly those.
+///
+/// Public because `rinsai bench` reports the same figure and there is no reason
+/// for it to be computed twice.
+#[must_use]
+pub fn nps(nodes: u64, elapsed: Duration) -> u128 {
+    match elapsed.as_nanos() {
+        0 => 0,
+        nanos => u128::from(nodes) * 1_000_000_000 / nanos,
     }
 }
 
@@ -121,6 +124,7 @@ mod tests {
             seldepth: 11,
             score,
             nodes: 123_456,
+            hashfull: 42,
             elapsed: Duration::from_millis(200),
             pv,
         }
@@ -131,24 +135,29 @@ mod tests {
     fn an_info_line_reads_as_usi() {
         assert_eq!(
             info(Score::cp(-42), &pv()),
-            "info depth 7 seldepth 11 time 200 nodes 123456 nps 617280 score cp -42 pv 7g7f S*5b"
+            "info depth 7 seldepth 11 time 200 nodes 123456 nps 617280 hashfull 42 \
+             score cp -42 pv 7g7f S*5b"
         );
     }
 
-    /// Sabotage: make the `seldepth` token conditional on it exceeding `depth`
-    /// and this fires.
+    /// Sabotage: make either token conditional — `seldepth` on it exceeding
+    /// `depth`, `hashfull` on the table having anything in it — and this fires.
+    /// Both are the ordinary case at the start of a search, which is exactly
+    /// when a reader is most likely to be parsing its first line.
     #[test]
-    fn seldepth_is_printed_even_when_it_equals_depth() {
+    fn every_token_is_printed_even_when_it_is_uninteresting() {
         let line = SearchInfo {
             depth: 4,
             seldepth: 4,
             score: Score::ZERO,
             nodes: 1,
+            hashfull: 0,
             elapsed: Duration::from_millis(1),
             pv: &[],
         }
         .to_string();
         assert!(line.starts_with("info depth 4 seldepth 4 time "), "{line}");
+        assert!(line.contains(" hashfull 0 score "), "{line}");
     }
 
     #[test]
@@ -162,8 +171,8 @@ mod tests {
         let line = info(Score::ZERO, &[]);
         assert!(line.ends_with(" score cp 0"), "{line}");
         // A substring check, and it stays sound only while no other token
-        // contains "pv" — re-checked when `seldepth` joined the line, and to be
-        // re-checked again when `hashfull` does at step 3b.
+        // contains "pv" — re-checked as each of `seldepth` and `hashfull`
+        // joined the line, and to be re-checked again by whatever joins next.
         assert!(!line.contains("pv"), "{line}");
     }
 
@@ -176,13 +185,14 @@ mod tests {
             seldepth: 1,
             score: Score::ZERO,
             nodes: 31,
+            hashfull: 0,
             elapsed: Duration::ZERO,
             pv: &[],
         }
         .to_string();
         assert_eq!(
             line,
-            "info depth 1 seldepth 1 time 0 nodes 31 nps 0 score cp 0"
+            "info depth 1 seldepth 1 time 0 nodes 31 nps 0 hashfull 0 score cp 0"
         );
     }
 }

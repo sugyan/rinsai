@@ -40,7 +40,7 @@ use rinsai_search::{BestMove, Game, SearchDriver, SearchJob, SearchSignals, Sear
 
 use crate::output::Output;
 use command::{GuiCommand, parse_line};
-use options::{OPTIONS, Options};
+use options::{OPTIONS, Options, Slot};
 
 /// Runs the protocol until `quit` or end of input.
 ///
@@ -187,8 +187,9 @@ impl<W: Write + Send + 'static> Engine<W> {
 
     fn ready(&self) {
         // The specification lets an engine take arbitrarily long here, which is
-        // where slow initialisation belongs: the transposition table at step 3b,
-        // the evaluation network at E3.
+        // where slow initialisation belongs. ⚠️ Nothing uses that yet: the
+        // transposition table is allocated in `main`, and a resize goes to the
+        // worker rather than through here.
         for (name, planned) in self.options.unhonoured_changes() {
             self.out.info_string(&format!(
                 "warning: option {name} is accepted but not yet used (planned: {planned})"
@@ -198,9 +199,17 @@ impl<W: Write + Send + 'static> Engine<W> {
     }
 
     fn set_option(&mut self, name: &str, value: Option<&str>) {
-        // Not state-affecting from the GUI's point of view, so stderr only.
-        if let Err(e) = self.options.set(name, value) {
-            warn(&format!("setoption: {e}"));
+        match self.options.set(name, value) {
+            // Queued behind whatever the worker is doing, never waited on —
+            // `SearchDriver::set_hash` carries why.
+            Ok(Slot::HashMb) => {
+                if !self.driver.set_hash(self.options.hash_mb()) {
+                    warn("the search thread is gone; `USI_Hash` was not delivered");
+                }
+            }
+            Ok(Slot::Ponder) => {}
+            // Not state-affecting from the GUI's point of view, so stderr only.
+            Err(e) => warn(&format!("setoption: {e}")),
         }
     }
 

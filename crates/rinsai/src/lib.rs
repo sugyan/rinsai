@@ -5,5 +5,6 @@
 //! dialogue test that spawns a process per case is slower, and — because it has
 //! to guess when the engine has finished writing — far less precise.
 
+pub mod bench;
 pub mod output;
 pub mod usi;
