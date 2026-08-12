@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rinsai-game", "crates/rinsai-search", "crates/rinsai"]
+members = ["crates/rinsai-game", "crates/rinsai-search", "crates/rinsai", "crates/xtask"]
 
 # Crates are split when there is a reason, not up front — DESIGN.md §4 names
 # the phases the remaining ones arrive at.

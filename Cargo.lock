@@ -71,3 +71,10 @@ source = "git+https://github.com/sugyan/shunsai?rev=e58c16fc073f07ae79f6a94b3bcd
 dependencies = [
  "shogi_core",
 ]
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "shogi_core",
+]
