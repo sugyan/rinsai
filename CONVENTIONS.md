@@ -29,6 +29,12 @@ carries the rule.
   `-QS_MAX_CHECK_PLIES` — note the sign; the constant itself is positive.
 - **`MAX_PLY = 128`**, sizing the search stack, the mate band and the move
   buffer together.
+- **Three score bands, in this order: evaluations, then a repetition won or
+  lost, then the mates.** `clamp_to_eval` clamps below the *lowest* of the two
+  upper bands, so clearing it clears both. ⚠️ A repetition value is **flat** —
+  it carries no distance to the root, unlike a mate score — which keeps the
+  transposition table's mate-by-ply adjustment the only ply-relative score in
+  the engine.
 
 ## Evaluation
 
@@ -117,6 +123,39 @@ carries the rule.
   recursive `&mut self` call. **The root move list lives outside the buffer**,
   because it persists across iterations and gets reordered, which is not what a
   ply-threaded buffer is for.
+
+- **千日手 is decided where a child is dispatched, not at the top of the
+  interior node.** Two things depend on the site: the depth-1 iteration
+  dispatches straight into quiescence, so a check inside the interior node
+  leaves the one iteration that always completes blind to the move that ends
+  the game; and a cut-off that enters neither node function leaves the
+  node-counting convention above untouched. ⚠️ The child's line has to be
+  cleared on that path, or a parent that raises alpha on the verdict publishes
+  a variation running past the end of the game.
+
+- ⚠️ **A repetition verdict does reach the transposition table, by way of the
+  parent.** The verdict node's own key is never probed or stored — it returns
+  before either node function is entered — but the parent takes the returned
+  score as its `best` and stores it under a key that carries no path. So a
+  later probe can hand back a draw or a 連続王手 score for a position that no
+  repetition reached. This is the accepted imprecision, not a guarantee;
+  DECISIONS.md carries it and names the unbuilt fix.
+
+- **The repetition path is extended at interior nodes only, and quiescence is a
+  deliberate hole in it.** Quiescence is the overwhelming majority of all
+  nodes, so keeping the push and the scan out of it is most of what the rule
+  costs. The hole is
+  narrow rather than closed: a quiescence subtree's *entry* position is one its
+  interior parent pushed, and a quiescence line cannot return to that entry —
+  every ply but at most `QS_MAX_CHECK_PLIES` is a capture, and the only move
+  quiescence has that puts a piece back on the board is a drop from an evasion.
+  ⚠️ **What that argument does not cover is a quiescence position coinciding
+  with one from the game's own history**, which would be a fourth occurrence
+  the search does not see — a known imprecision of the same family as the ones
+  quiescence already carries, not a proof of impossibility. ⚠️ **E1's item 8
+  ends the bound too**: once quiescence generates checks and non-capture
+  promotions a quiescence node can play a quiet move, so that item owns
+  extending the path into quiescence.
 
 - **A child gives the move buffer back exactly as it found it, asserted at the
   boundary rather than left to a test.** Forgetting a `truncate` is a leak, not
@@ -244,7 +283,13 @@ carries the rule.
   implementation detail. Assert "this is legal here" by replaying the move into
   a position the test builds itself.
 - **A sabotage note is only worth writing if the mutation was made and the test
-  went red**, and it has to sit on the test it describes. ⚠️ **Re-run every
+  went red**, and it has to sit on the test it describes. ⚠️ **It may state
+  what that run showed and no more.** "In either run", "in both loops",
+  "every row but the first" are generalisations past the mutation actually
+  applied, and each has shipped as a false note while satisfying the sentence
+  above — the mutation was made, a test did go red, and the note then claimed
+  a second site nobody touched. Name the site mutated and the test that fired;
+  if a neighbouring site was not tried, try it or say so. ⚠️ **Re-run every
   sabotage after a change, including the ones a previous step already
   verified** — a note is trusted exactly because it was verified once, and a
   note that cannot fire is worse than none.
@@ -277,3 +322,10 @@ committed bench position set, which is where the licensing rule bites hardest.
   standing.
 - **`the_first_iteration_is_never_abandoned`'s fixture** is two plies on from
   the matsuri position, reached by rinsai's own search.
+- **The mate-in-1..5 ladder and both repetition fixtures are our own
+  construction**, built for these tests and verified by searching them. ⚠️ A
+  composed 詰将棋 is not covered by the argument above: the argument is that a
+  *position* is a fact about a board rather than an expression, and a problem
+  set is exactly the case where that stops being true. So the suite constructs
+  its own, the way CLAUDE.md §2 requires tables and books to be generated
+  rather than pasted.

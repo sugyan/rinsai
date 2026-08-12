@@ -330,8 +330,8 @@ mod tests {
     use crate::score::MAX_PLY;
 
     /// A 1 MiB table — what every test here wants, and what the rest of the
-    /// suite wants too. ⚠️ Nothing in a test may take [`DEFAULT_HASH_MB`]:
-    /// `usi_conformance.rs` alone drives thirty-one dialogues.
+    /// suite wants too. ⚠️ Nothing in a test may take [`DEFAULT_HASH_MB`]: the
+    /// suite builds a table per test.
     fn table() -> Table {
         Table::new(1)
     }

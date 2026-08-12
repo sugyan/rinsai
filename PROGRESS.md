@@ -19,8 +19,8 @@ conventions and rebaselines every committed node count (DECISIONS.md).
 | 2 | Material evaluation + iterative-deepening negamax αβ — PV, `info` output, mate scoring | **done** |
 | 3a | Quiescence search — captures only, `seldepth` | **done** |
 | 3b | TT + transposition-move ordering — `hashfull`, `USI_Hash`, `rinsai bench` | **done** |
-| 4 | Repetition (千日手) + 連続王手 — history *queries*, mate-in-1..5 suite | next |
-| 5 | Time management — byoyomi / Fischer / movetime, `stop` responsiveness | |
+| 4 | Repetition (千日手) + 連続王手 — history *queries*, mate-in-1..5 suite | **done** |
+| 5 | Time management — byoyomi / Fischer / movetime, `stop` responsiveness | next |
 | 6 | `openings-v1` extractor — floodgate CSA → balanced opening SFENs (`crates/xtask` arrives here) | |
 | 7 | Match harness + SPRT — Ayane vendored, `tools/opponents.toml.example` | |
 
@@ -517,8 +517,11 @@ that cannot **pass**.
 - **The test suite must not allocate 256 MB per searcher** — held.
   `NegamaxSearcher::with_hash_mb` exists for it and every test uses 1 MiB.
 - **`shogi_core`'s `hash` and `ord` features are off in this graph** — still
-  true, and still step 4's first obstacle. The table needed neither: it compares
-  keys as `u64` and moves by `PartialEq`.
+  true. The table needed neither: it compares keys as `u64` and moves by
+  `PartialEq`. ⚠️ **It was also named as step 4's first obstacle, and it was not
+  one.** Repetition compares keys as `u64` and hands by the `PartialEq`
+  `HistoryEntry` derives, so nothing wanted `Hash` or `Ord` either. Two steps
+  have now been predicted to need those features and neither did.
 
 ### It still plays
 
@@ -529,6 +532,137 @@ is checked rather than assumed; no protocol stall, nothing on stderr from either
 side. Step 3a's game ran 84 plies, step 2's 70 and step 1's 22, and **the
 comparison still means nothing** — one game each, and E0 has no instrument for
 strength. Recorded as "it plays", which is all it is.
+
+## What step 4 delivered
+
+千日手 and 連続王手の千日手 — the first thing in the project to *read* the
+history `Game` has been recording since step 1 — and the mate-in-1..5 suite.
+The protocol layer is unchanged: USI has no draw claim, the GUI or the server
+adjudicates 千日手, and what the engine owes is a score that stops it walking
+into a repetition it loses. That score is the whole feature.
+
+### The rule, and the one place it is asked
+
+`repetition.rs` holds it as a pure function over `&[HistoryEntry]` — no board,
+no shunsai call — so the rule is testable without a search. Four occurrences of
+one position, `key` filtering and hands confirming; the perpetual-check window
+is the four occurrences themselves, and the side whose every move left the
+opponent in check loses.
+
+The searcher carries the game's history and extends it as it descends, and the
+verdict is asked for **once, where a child is dispatched**. CONVENTIONS.md
+carries why that site and not the top of the interior node; the short version is
+that the depth-1 iteration dispatches straight into quiescence, and depth 1 is
+the iteration that always completes.
+
+⚠️ **One end-to-end case is not covered: the engine declining the check that
+loses.** The verdict's *win* direction is asserted through a search
+(`score cp 30000` from a side that is a rook down), and both directions are
+asserted on the rule itself; the sign at the search seam is pinned by the
+offset-swap sabotage. What has no search-level test is the behaviour that
+actually loses games — the perpetual checker refusing the move that makes the
+fourth occurrence.
+
+The obstacle is fixture construction rather than effort, and it is worth writing
+down because it will be met again. To discriminate, the repeating check must be
+**strictly** best without the verdict and refused with it. Material cannot
+supply that: a check forces the reply, so any threat the alternatives run into
+is postponed by the check rather than avoided, and every quiet alternative
+scores the same. Making the alternatives *lose* needs the losing side to be
+otherwise mated — but a mate scores below the repetition band, so the engine
+prefers the repetition either way, which is correct and non-discriminating. A
+drawing alternative would do it, and that needs two four-fold repetitions
+reachable from one position, which one line of history cannot offer. Left
+undone rather than written weakly: a version that passes without the verdict is
+the failure mode this log records more often than any other.
+
+### Reading the history costs 1–8%, and it shrinks with depth
+
+The same position searched two ways — through its whole 121-ply move list, and
+from its own SFEN with no history at all. Node counts are identical on every
+row, so this is the scan and nothing else. Release, three runs each:
+
+| Depth | Nodes | With a 121-ply history | From a bare SFEN | Cost |
+|---|---|---|---|---|
+| 4 | 16 300 | 1.58 / 1.60 / 1.61 ms | 1.47 / 1.49 / 1.47 ms | **+8%** |
+| 5 | 103 912 | 11.46 / 11.54 / 11.62 ms | 11.14 / 11.20 / 11.24 ms | **+3%** |
+| 6 | 2 019 944 | 208.4 / 208.6 / 210.0 ms | 205.4 / 205.8 / 206.7 ms | **+1.5%** |
+
+**The cost falls as the search deepens, which is the opposite of the shape a
+per-node overhead usually has.** The reason is that the path is extended and
+scanned at interior nodes only: quiescence is 91–99% of all nodes and pays
+nothing, so the deeper the search the smaller the fraction of it that scans.
+
+⚠️ **`bench` cannot see this and is not evidence about it.** Its seven positions
+carry histories one to seven plies long, which is a scan of about three
+comparisons. A position set with real game histories would be `bench-v2`, and
+there is no consumer asking for one yet.
+
+### `bench` did not move, and the prediction that it would was wrong
+
+This file's step-4 note said to expect `the_frozen_counts_are_what_the_search_produces`
+to fire. It did not — every per-position count is identical and so is the total,
+`counts match`, in debug and release alike. It could not have fired: a depth-4
+search from a history of at most seven plies cannot reach a fourth occurrence.
+DECISIONS.md carries what the non-event is evidence *for*.
+
+The time either side of the change, on one machine in one session, alternating
+the two binaries so that drift cannot masquerade as a difference:
+
+| | step 3b | step 4 |
+|---|---|---|
+| total nodes | 4 133 205 | **4 133 205** |
+| alternating pairs, ms | 427 / 435 / 432 | 431 / 443 / 430 |
+| runs of three, ms | 437 / 434 / 431 | 444 / 435 / 432 |
+
+⚠️ **Not a result, and the machine was not certified quiet** — this session had
+been building and running tests throughout. One of the three alternating pairs
+goes the other way, which is the honest summary: the `in_check()` per interior
+`do_move` and the three-comparison scan are below what this instrument can
+separate from noise.
+
+### The mate suite reaches five, and the estimate that said it would not was out by two orders of magnitude
+
+The plan reasoned from branching — nine plies of full-width search with only
+transposition-move ordering — and expected mate-in-4 and mate-in-5 to be too
+expensive for `cargo test`. Measured, in the **dev** profile:
+
+| Mate in | Depth limit | Nodes | Iteration that found it |
+|---|---|---|---|
+| 1 | 1 | 20 | 1 |
+| 2 | 3 | 31 | 1 |
+| 3 | 5 | 130 | 2 |
+| 4 | 7 | 1 678 | 4 |
+| 5 | 9 | **18 924** | 6 |
+
+Depth 9 costs under six milliseconds. **The last column is why**: the mate is
+found several iterations before the depth that nominally contains it — mate 3
+at depth 1, mate 9 at depth 6 — because quiescence resolves a forced checking
+sequence, and a forced sequence is the input alpha-beta prunes best. The
+branching estimate was not wrong about full-width search; it was wrong about
+which tree this is.
+
+**The ladder built with golds in White's hand answered `mate 5` where `mate 9`
+was intended, at 8 443 nodes.** Black captures whatever is interposed and may
+drop it straight back, and a gold beside the bare king is mate at once. A pawn
+there is 打ち歩詰め and illegal, which is what makes the pawn version hold its
+length — recorded because it is a shogi rule doing load-bearing work in a test
+fixture, and because the collapse is what found it.
+
+### It still plays
+
+142 plies against the local material-only YaneuraOu (`NodesLimit 10000` against
+`go byoyomi 200` both ways), ending in rinsai being mated and answering
+`resign`. Every move was replayed through rinsai's own parser afterwards, so "no
+illegal move" is checked rather than assumed; no protocol stall, and nothing on
+stderr from either side. Step 3b's game ran 104 plies, step 3a's 84, step 2's 70
+and step 1's 22, and **the comparison still means nothing** — one game each, and
+E0 has no instrument for strength. Recorded as "it plays", which is all it is.
+
+⚠️ **This game reached no repetition, so it is not evidence about the feature.**
+That is the ordinary case and the reason the rule needed constructed fixtures:
+against an opponent playing to win, a fourfold repetition at these strengths is
+rare, and waiting for one to occur naturally is not a test.
 
 ## Measurements the conventions rest on
 
@@ -576,6 +710,54 @@ move scoring 1 590 cp below what the last completed iteration had chosen.
 
 **`a_stated_budget_deepens_past_the_default`'s 300 000-node budget reaches depth
 6**, so its `> DEFAULT_DEPTH` assertion is not on a knife edge.
+
+**The sabotage re-run at step 4: 59 mutations, three false notes and one with
+the wrong symptom.** Every note in the tree, applied at the site the note names
+— which is what step 3b's review said the rule had been missing — with the whole
+suite run against each and the failing tests recorded.
+
+| | |
+|---|---|
+| mutations applied | 59 |
+| fired on the test their note names | 55 |
+| expected not to fire, and did not | 1 |
+| notes that were **false** | 3 |
+| notes naming the wrong **symptom** | 1 |
+
+The one expected not to fire is `negamax`'s own `pv[ply].clear()`, still
+unfalsifiable and recorded below. The other four:
+
+- ⚠️ **`negamax`'s `mated_in(ply)` has no test at all, and three notes claimed
+  otherwise.** Scoring it `mated_in(0)` leaves the **entire suite green, `bench`
+  included**; the same mutation in `qsearch` fires all three tests the notes
+  name. The reason is structural and is the same one that makes the mate ladder
+  cheap: quiescence runs past the nominal depth, so a mate that reaches a
+  reported line is resolved there first, and the deepening loop stops at the
+  first iteration that returns a mate score. The interior arm still *runs* —
+  every refuted line with a mate in it enters it — but nothing surfaces whether
+  it used `ply` or `0`. **This is the second reachable-but-unfalsifiable line in
+  `negamax`, beside the `pv[ply].clear()` below, and both have the same cause.**
+- **"Make `generate_captures` return nothing and this falls back to exactly
+  `1 + N`" is false.** A check is reachable one ply into that fixture, and a
+  quiescence node in check takes the evasion branch, which generates every legal
+  move and recurses whatever the capture filter returns. The note's other half —
+  `child` evaluating instead of dispatching — does fire it.
+- **"Drop the `us`/`us.flip()` distinction in either loop" is false for one of
+  the two loops.** The fixture holds a rook in hand and nothing but kings on the
+  board, so only the *hand* loop's copy is reachable; the board loop's is caught
+  by the oracle comparison instead.
+- **"Drop the deadline arm and this hangs rather than failing" names the wrong
+  symptom.** It fails, in ten seconds, because that test searches off-thread
+  behind a `recv_timeout` precisely so it cannot wedge the suite. What *does*
+  wedge on that mutation is `the_first_iteration_is_never_abandoned`, which
+  searches on the calling thread and carries no note.
+
+⚠️ **Four of the sweep's own mutations were defective on the first pass**, and
+finding that out is the reason the tally is worth anything: two did not compile,
+and two were accidental no-ops — one replaced a constant with the literal it
+already equals, the other only added a comment. A no-op mutation reports GREEN
+and reads exactly like a false note. **The sweep needs its own check that the
+mutation changed the behaviour**, not only that it changed the text.
 
 **The sabotage re-run at step 3b: 35 mutations, three findings.** CONVENTIONS.md
 requires re-running every sabotage after a change, previously verified ones
@@ -636,6 +818,15 @@ and E1's aspiration windows give the root a real beta, which is exactly the
 condition this argument assumes away. Recorded so a future "delete the dead
 line" has something to check itself against.
 
+⚠️ **`negamax`'s `mated_in(ply)` is the second line of that kind, found at step
+4**, and both sit in the same node for related reasons. Scoring it `mated_in(0)`
+leaves the whole suite green including `bench`, while `qsearch`'s copy fires
+three tests. Here the cause is the deepening loop rather than the window:
+quiescence searches past the nominal depth, so a mate that reaches a reported
+line is proved there first and the loop breaks before any interior node meets an
+empty move list on the principal variation. Also reachable, also unfalsifiable,
+also kept.
+
 **Prose volume, as of this step.** The figures the 2026-08-09 DECISIONS.md entry
 rests on, measured over `crates/**/*.rs` by bytes of comment lines against bytes
 of non-blank non-comment lines:
@@ -688,32 +879,35 @@ attributed rather than measured here: `@mizarjp/yaneuraou.k-p` ships a playable
 browser shogi engine with a small net embedded in about 2.6 MB, which is the
 order a web build has to reach.
 
-## Step 4 — what to do next
+## Step 5 — what to do next
 
-Repetition (千日手) and 連続王手, plus the mate-in-1..5 suite. The history is
-already recorded — `Game::history()` has one `HistoryEntry` per position reached
-— and step 4 is the first thing to *read* it.
+Time management: turning `btime` / `wtime` / `binc` / `winc` into a per-move
+allowance, which CONVENTIONS.md currently records as *deliberately ignored* —
+"a budget the engine was told" against "a budget it would have to decide".
 
-1. **⚠️ `shogi_core`'s `hash` and `ord` features are off in this graph**, so
-   `Hand` is not `Hash` and `Move` is not `Ord`. Step 4 meets this first, and
-   the answer is not to enable a feature without checking what else it pulls
-   into a dependency tree that CLAUDE.md §2 makes provenance-scan surface.
-2. **`key()` filters, hand equality confirms, the `in_check` run decides.**
-   CLAUDE.md §5 prescribes the triple and `HistoryEntry` already carries it.
-   Perpetual check is the case where the *checking* side loses, which is a
-   shogi-specific rule with no chess analogue and needs its own scenario tests.
-3. **The search has to see repetition, not just the protocol layer.** A draw
-   score inside the tree is what stops the engine walking into one — and it
-   interacts with the transposition table, because a position's value now
-   depends on the path that reached it. That is the one place step 3b's work
-   makes step 4 harder rather than easier.
-4. **`bench` will need re-freezing** if the search's scores change, which a draw
-   score at a repetition does. Expect `the_frozen_counts_are_what_the_search_produces`
-   to fire; that is the test working.
+1. **The margin between stopping on time and moving on time is the subject, not
+   a detail.** CONVENTIONS.md's Time control rule says the deadline is
+   `search()`'s entry plus the stated budget exactly, with nothing reserved for
+   building and flushing `bestmove` or for the wire back. Locally that is
+   microseconds; over a network a byoyomi overrun is an immediate loss, which is
+   why that rule also forbids entering rinsai anywhere the clock is enforced
+   across a network until this step lands.
+2. **The 1024-node poll interval stops being inherited here.** It has been
+   conventional and untuned since step 2, and this is the first step with a
+   reason to move it.
+3. **`Budget` wants an injectable clock, and two other things are waiting on
+   the same seam.** A time-management SPRT cannot be written against a wall
+   clock. The same injection is what CONVENTIONS.md's Portability rule needs —
+   `NegamaxSearcher::search` reads `Instant::now()` unconditionally for the
+   `info` line's `time` and `nps`, which is what makes a clock-free caller
+   impossible today rather than merely unwritten.
+4. **The unclocked first iteration overruns by the whole of it**, not just by
+   root move 0, which is all the guarantee needs. Narrowing it is not hard and
+   it changes what the engine does with a clock — so it is this step's, and the
+   measured worst case is in the table below.
 
-Also waiting, and neither is urgent: whether `Game::clone`'s Zobrist cross-check
-should stop being a `debug_assert` (DECISIONS.md says weigh it here, where its
-consumers finally exist), and the unbounded input line above.
+Also waiting, and not urgent: the unbounded input line above, which E2's CSA
+client is the reason to bound and the phase that can choose the bound.
 
 ## The shunsai constraint sheet
 

@@ -20,7 +20,7 @@ pub(crate) enum GuiCommand {
     },
     UsiNewGame,
     /// Everything after `position`, unparsed — `Game` owns that grammar,
-    /// because CSA (E2) and `bench` (step 3b) need the same rules.
+    /// because CSA (E2) and `bench` need the same rules.
     Position(String),
     Go(Limits),
     /// `go mate …`. A different command, not a `go` with a flag: it answers

@@ -36,9 +36,9 @@ type Record = shogi_core::Position;
 
 /// What repetition detection needs to know about a position that has occurred.
 ///
-/// First *queried* at step 4. CLAUDE.md names this exact triple: `key()`
-/// filters, hand equality confirms, and the `in_check` run decides the
-/// perpetual-check case, where the checking side loses.
+/// CLAUDE.md names this exact triple: `key` filters, hand equality confirms,
+/// and the `in_check` run decides the perpetual-check case, where the checking
+/// side loses. The crate's `repetition` module is what reads it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct HistoryEntry {
     /// shunsai's incremental Zobrist key: board, hands and side to move, but
@@ -309,7 +309,13 @@ impl Game {
 }
 
 impl HistoryEntry {
-    fn of(board: &Position) -> Self {
+    /// The entry for the position `board` is in.
+    ///
+    /// ⚠️ **The search builds its own path with this too**, rather than with a
+    /// second constructor of its own: the game's history and the search's
+    /// continuation of it are compared against each other entry for entry, so
+    /// two ways of building one would be two ways for them to disagree.
+    pub(crate) fn of(board: &Position) -> Self {
         Self {
             key: board.key(),
             hands: [board.hand(Color::Black), board.hand(Color::White)],
@@ -328,8 +334,9 @@ impl HistoryEntry {
 ///
 /// ⚠️ **It is a `debug_assert`, compiled out of the release binary that
 /// actually plays**, so the guarantee is "the test suite would have caught a
-/// drift", not "a live game will". Step 3b revisits it, where a key mismatch
-/// has somewhere far worse to go.
+/// drift", not "a live game will". Kept that way deliberately: promoting it
+/// would put a panic on the protocol thread once per `go`. DECISIONS.md
+/// carries the trade and what would reopen it.
 impl Clone for Game {
     fn clone(&self) -> Self {
         Self {
@@ -734,7 +741,7 @@ mod tests {
     }
 
     /// The history is one entry per position reached, and it records the check
-    /// flag step 4 decides 連続王手の千日手 from.
+    /// flag 連続王手の千日手 is decided from.
     #[test]
     fn the_history_records_every_position_reached() {
         let game = Game::from_usi_position("startpos moves 7g7f 3c3d 8h3c+")

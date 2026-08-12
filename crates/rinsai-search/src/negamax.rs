@@ -15,6 +15,9 @@
 //! * The board is a **parameter**, never a field. `self.negamax(…)` while
 //!   `&mut self.board` is live does not compile, and the tempting repairs
 //!   (`RefCell`, `mem::take`) are all worse than passing it.
+//! * ⚠️ **The repetition path is extended at one of those two seams and not
+//!   the other**, which is the one asymmetry between them that is deliberate.
+//!   [`NegamaxSearcher::path`] carries the argument.
 
 use core::ops::{ControlFlow, Neg};
 use std::time::Instant;
@@ -23,8 +26,10 @@ use shogi_core::Move;
 use shunsai::Position;
 
 use crate::eval;
+use crate::game::HistoryEntry;
 use crate::info::SearchInfo;
 use crate::moves::{MAX_LEGAL_MOVES, MoveBuf};
+use crate::repetition;
 use crate::score::{Depth, MAX_PLY, Score};
 use crate::search::{BestMove, InfoSink, Limits, SearchJob, SearchSignals, Searcher};
 use crate::tt::{Bound, DEFAULT_HASH_MB, Hit, Table};
@@ -236,6 +241,30 @@ pub struct NegamaxSearcher {
     /// Survives between searches on purpose — a position's value does not stop
     /// being true because the clock moved. `usinewgame` is what clears it.
     tt: Table,
+    /// Every position on the way to the current node, oldest first: the game's
+    /// own history, then one entry per move the search has played. What
+    /// [`repetition::verdict`] reads.
+    ///
+    /// ⚠️ **Extended at interior nodes only, and [`Self::qsearch`] is a hole in
+    /// it on purpose.** Quiescence is the overwhelming majority of all nodes,
+    /// so keeping the push and the scan out of it is most of what the feature
+    /// costs — PROGRESS.md carries the share. Two things
+    /// make the hole narrow: the position a quiescence subtree *starts* from is
+    /// one its interior parent already pushed, and a quiescence line cannot
+    /// come back to that starting position — every ply but at most
+    /// [`QS_MAX_CHECK_PLIES`] of them is a capture, a capture takes a piece off
+    /// the board, and the only move quiescence has that puts one back is a drop
+    /// from an evasion.
+    ///
+    /// ⚠️ **What is left is a real gap, not a proof.** That argument bounds a
+    /// quiescence line against its own entry; it says nothing about a
+    /// quiescence position coinciding with one from the *game's* history, which
+    /// would be a fourth occurrence this search does not see. It is the same
+    /// family as the imprecisions [`Self::qsearch`]'s own doc lists, and E1
+    /// closes it with them — the item that gives quiescence checks and
+    /// non-capture promotions also ends the bound above, because a quiescence
+    /// node can then play a quiet move.
+    path: Vec<HistoryEntry>,
     nodes: u64,
     /// The deepest ply reached, quiescence included. Reset **per iteration**,
     /// unlike [`Self::nodes`], which accumulates across them — CONVENTIONS.md
@@ -250,8 +279,8 @@ impl NegamaxSearcher {
     /// A searcher whose table is the size `USI_Hash` advertises as its default.
     ///
     /// ⚠️ **Not what a test wants.** It allocates [`DEFAULT_HASH_MB`] MiB, and
-    /// `usi_conformance.rs` alone drives thirty-one dialogues — use
-    /// [`Self::with_hash_mb`] there.
+    /// the suite builds a searcher per dialogue — use [`Self::with_hash_mb`]
+    /// there.
     #[must_use]
     pub fn new() -> Self {
         Self::with_hash_mb(DEFAULT_HASH_MB)
@@ -276,6 +305,7 @@ impl NegamaxSearcher {
             buf: MoveBuf::new(),
             pv: (0..=MAX_PLY).map(|_| Vec::with_capacity(MAX_PLY)).collect(),
             tt: Table::new(mb),
+            path: Vec::with_capacity(MAX_PLY),
             nodes: 0,
             seldepth: 0,
             stopped: false,
@@ -318,7 +348,9 @@ impl NegamaxSearcher {
         for i in 0..self.root_moves.len() {
             let mv = self.root_moves[i];
             board.do_move(mv);
+            self.path.push(HistoryEntry::of(board));
             let score = self.child(board, window, depth - 1, 1, budget);
+            self.path.pop();
             board.undo_move(mv);
 
             // An abandoned subtree returns a placeholder, not a score.
@@ -357,6 +389,19 @@ impl NegamaxSearcher {
     /// correctly — and the parent frame's own `truncate` hides the evidence
     /// before a test can reach it, which is why the assertion is at the
     /// boundary rather than in a test.
+    ///
+    /// ⚠️ **It is also where 千日手 is decided.** Both callers push
+    /// [`Self::path`] immediately before calling this, so the position asked
+    /// about is the one just reached. Every node below the root is entered
+    /// through here, **the depth-1 iteration's children included** — that
+    /// iteration dispatches straight into [`Self::qsearch`], so a check at the
+    /// top of [`Self::negamax`] would leave the one search that always
+    /// completes unable to see the move that loses the game.
+    ///
+    /// ⚠️ **Returning here keeps the verdict node's own key out of the table,
+    /// and nothing more.** The caller takes the returned score as its `best`
+    /// and stores *that* under a key with no path in it — CONVENTIONS.md
+    /// carries the imprecision.
     #[inline]
     fn child(
         &mut self,
@@ -367,6 +412,19 @@ impl NegamaxSearcher {
         budget: &Budget<'_>,
     ) -> Score {
         let given = self.buf.len();
+        let given_path = self.path.len();
+
+        if let Some(rep) = repetition::verdict(&self.path) {
+            // ⚠️ Nothing was searched at `ply`, so its line is whatever a
+            // sibling left there. Without this the parent raises alpha and
+            // `update_pv` grafts that stale tail on, publishing a variation
+            // that runs past the end of the game.
+            self.pv[ply].clear();
+            // `rep` is from the side to move at the child, like every other
+            // score crossing this seam.
+            return -rep.score();
+        }
+
         let score = if depth > 0 && ply < MAX_PLY {
             -self.negamax(board, -window, depth, ply, budget)
         } else {
@@ -377,6 +435,11 @@ impl NegamaxSearcher {
             given,
             "a child left {} moves in the buffer",
             self.buf.len() - given
+        );
+        debug_assert_eq!(
+            self.path.len(),
+            given_path,
+            "a child left the repetition path unbalanced"
         );
         score
     }
@@ -392,7 +455,7 @@ impl NegamaxSearcher {
         budget: &Budget<'_>,
     ) -> Score {
         // Above every early return: one node per entry, including a node that
-        // turns straight round. Step 3b's `bench` freezes these counts.
+        // turns straight round. `bench` freezes these counts.
         self.nodes += 1;
         self.pv[ply].clear();
         self.seldepth = self.seldepth.max(ply);
@@ -446,8 +509,10 @@ impl NegamaxSearcher {
         for i in base..self.buf.len() {
             let mv = self.buf.get(i);
             board.do_move(mv);
+            self.path.push(HistoryEntry::of(board));
             let score = self.child(board, window, depth - 1, ply + 1, budget);
-            // Before every `break` below, without exception.
+            // Both of these come before every `break` below, without exception.
+            self.path.pop();
             board.undo_move(mv);
 
             if self.stopped {
@@ -507,7 +572,7 @@ impl NegamaxSearcher {
     ///   is the known lie [`QS_MAX_CHECK_PLIES`]'s own doc admits, and it fires
     ///   far more often than the first.
     ///
-    /// Both are step 2's depth-zero imprecision narrowed, not removed.
+    /// Both are the depth-zero imprecision narrowed, not removed.
     fn qsearch(
         &mut self,
         board: &mut Position,
@@ -664,6 +729,15 @@ impl Searcher for NegamaxSearcher {
             line.clear();
         }
 
+        // The game's own history is the front of the search's path — 千日手
+        // counts positions reached in the game, not positions visited in the
+        // tree, and at E0 depths the earlier occurrences are behind the root
+        // rather than inside the tree. Reserved past the seed so a deep line
+        // cannot reallocate mid-search.
+        self.path.clear();
+        self.path.extend_from_slice(job.game.history());
+        self.path.reserve(MAX_PLY);
+
         self.root_moves.clear();
         let root_moves = &mut self.root_moves;
         let _ = board.generate_moves(|set| {
@@ -791,9 +865,9 @@ mod tests {
     }
 
     /// ⚠️ **Never [`NegamaxSearcher::new`] in a test.** It allocates
-    /// [`DEFAULT_HASH_MB`] MiB, and this module builds a dozen searchers while
-    /// `usi_conformance.rs` drives thirty-one dialogues. One MiB is the smallest
-    /// `USI_Hash` admits, so it is also the size the engine has to work at.
+    /// [`DEFAULT_HASH_MB`] MiB, and the suite builds a searcher per `run` — of
+    /// which one test can make several. One MiB is the smallest `USI_Hash`
+    /// admits, so it is also the size the engine has to work at.
     fn searcher() -> NegamaxSearcher {
         NegamaxSearcher::with_hash_mb(1)
     }
@@ -840,6 +914,249 @@ mod tests {
             .nth(1)
             .map(|tail| tail.split_whitespace().collect())
             .unwrap_or_default()
+    }
+
+    /// The mate-in-1..5 suite's board, with White's hand left to the caller.
+    ///
+    /// The White king is alone on 1a. Three Black knights cover its three
+    /// flight squares — 3c covers 2a, 3d covers 2b, 2d covers 1b — and a Black
+    /// lance waits on 1i behind a White pawn on 1f. `1i1f` takes the pawn and
+    /// checks down the file; the king cannot move, cannot capture and has no
+    /// piece on the board to interpose, so White's every legal reply is a drop
+    /// onto 1b–1e. The lance takes the dropped piece, checking again from one
+    /// square nearer, until White runs out and the lance reaches 1b — where the
+    /// knight on 2d is what stops the king taking it.
+    ///
+    /// So **one pawn in White's hand is one more move of mate**, which is what
+    /// makes this a suite over *distances* rather than five unrelated
+    /// positions.
+    ///
+    /// ⚠️ **The interposing pieces are pawns, and that is load-bearing rather
+    /// than arbitrary.** Black captures whatever it interposes and may drop it
+    /// straight back — and a gold or a silver dropped on 1b is mate on the
+    /// spot, so with any other piece the ladder collapses to a shorter mate and
+    /// the distances stop being the ones the suite is named for. A *pawn*
+    /// dropped there would be 打ち歩詰め and is illegal, which is the one shogi
+    /// rule that makes a ladder like this hold its length. Verified rather than
+    /// argued: built with golds first, it answered mate 5 where mate 9 was
+    /// intended.
+    ///
+    /// ⚠️ **It is one geometry with a parameter**, so it establishes that the
+    /// search reports mate distances correctly and proves them, and it
+    /// establishes nothing about the variety of mating *shapes*.
+    /// `finds_the_mate_in_one`'s 頭金 is a drop mate and the only other shape
+    /// here; the movegen that decides the rest is shunsai's, and differentially
+    /// tested there.
+    const MATE_LADDER: &str = "sfen 8k/9/6N2/6NN1/9/8p/9/9/K7L b";
+
+    /// Mate in `plies` plies, reported and proved.
+    ///
+    /// Proving it is the second half and the one that can fail quietly: the
+    /// line is replayed into a game the test builds itself and the final
+    /// position must have no legal move. ⚠️ Naming a move instead would be
+    /// asserting shunsai's unspecified generation order — CONVENTIONS.md.
+    fn assert_mate_in(args: &str, plies: i64) {
+        let (_, lines) = run(args, depth(u32::try_from(plies).expect("a short mate")));
+        let last = lines.last().expect("the search reported something");
+        assert_eq!(field(last, "mate"), plies, "{last}");
+        assert_mate_is_real(args, last, plies);
+    }
+
+    /// The proving half: `line`'s principal variation is `plies` long, playable
+    /// from `args`, and ends with the loser having no move.
+    ///
+    /// ⚠️ Naming a move instead would be asserting shunsai's unspecified
+    /// generation order — CONVENTIONS.md.
+    fn assert_mate_is_real(args: &str, line: &str, plies: i64) {
+        let pv = pv_of(line);
+        assert_eq!(i64::try_from(pv.len()).expect("short pv"), plies, "{line}");
+
+        let mut replay = game(args);
+        for token in pv {
+            replay
+                .push_usi_move(token)
+                .unwrap_or_else(|e| panic!("the reported pv is not playable: {e}"));
+        }
+        assert!(
+            !replay.position().has_legal_moves(),
+            "the line the search called mate leaves legal moves: {line}"
+        );
+    }
+
+    /// The suite DESIGN.md's E0 verification list asks for: a mate at every
+    /// distance from one move to five, each found at exactly the depth it needs
+    /// and each proved by replay.
+    ///
+    /// ⚠️ **The distance is asserted, not merely reported.** The deepening
+    /// loop stops at the first iteration that returns a mate score, so a
+    /// fixture holding a shorter mate than its row claims announces the
+    /// shorter number and fails the equality below. The depth each row is
+    /// searched at is the depth it needs, not what makes the assertion bite.
+    ///
+    /// Sabotage: score a mated node `Score::mated_in(0)` rather than
+    /// `mated_in(ply)` **in [`Self::qsearch`]** — the **first** row fails, on
+    /// `mate 0` where 1 was expected, and the loop stops there.
+    ///
+    /// ⚠️ **The same mutation in [`Self::negamax`] leaves the whole suite
+    /// green, `bench` included** — no test here or anywhere reaches it. A mate
+    /// that surfaces in a reported line is always resolved in quiescence
+    /// first, because quiescence runs past the nominal depth and the deepening
+    /// loop stops at the first iteration that returns a mate score. PROGRESS.md
+    /// records the measurement beside the same asymmetry in `pv[ply].clear()`.
+    #[test]
+    fn finds_a_mate_at_every_distance_from_one_to_five() {
+        for (moves, hand) in [(1, "-"), (2, "p"), (3, "2p"), (4, "3p"), (5, "4p")] {
+            let args = format!("{MATE_LADDER} {hand} 1");
+            assert!(
+                !game(&args).in_check(),
+                "the attacker, not the defender, is to move at the root"
+            );
+            assert_mate_in(&args, 2 * moves - 1);
+        }
+    }
+
+    /// A four-fold repetition reached by shuffling a rook and a king, with
+    /// Black a rook up and White to move. Every White move but one leaves it a
+    /// rook down; the one returns to the position the root is the third
+    /// occurrence of.
+    ///
+    /// ⚠️ **The rook is what makes the tests below able to fail.** On a
+    /// material-equal shuffle — the initial position answers this description
+    /// too — a draw score and the evaluation are both zero, and the assertions
+    /// would hold with the verdict deleted. Each test asserts the imbalance
+    /// before it asserts anything else.
+    const SHUFFLE_TO_A_DRAW: &str = "sfen 4k4/9/9/9/R8/9/9/9/4K4 b - 1 moves \
+         9e8e 5a4a 8e9e 4a5a 9e8e 5a4a 8e9e 4a5a 9e8e 5a4a 8e9e";
+
+    /// The same shuffle one cycle short, so the returning move makes the
+    /// *third* occurrence rather than the fourth.
+    const SHUFFLE_ONE_CYCLE_SHORT: &str = "sfen 4k4/9/9/9/R8/9/9/9/4K4 b - 1 moves \
+         9e8e 5a4a 8e9e 4a5a 9e8e 5a4a 8e9e";
+
+    /// 連続王手: a Black rook checks the bare White king down a file, the king
+    /// steps aside, the rook checks down the next file, the king steps back.
+    ///
+    /// White is to move, in check, and a rook down — and its evasion makes the
+    /// fourth occurrence, so Black, who gave every check, loses. The root
+    /// position of the game is the one the repetition returns to, which is why
+    /// the history is a whole number of cycles and one longer than the two
+    /// above.
+    const PERPETUAL_CHECK: &str = "sfen 4k4/9/9/9/4R4/9/9/9/K8 w - 1 moves \
+         5a4a 5e4e 4a5a 4e5e 5a4a 5e4e 4a5a 4e5e 5a4a 5e4e 4a5a 4e5e";
+
+    /// [`PERPETUAL_CHECK`]'s root position on its own, with no history to
+    /// repeat.
+    const PERPETUAL_CHECK_ROOT: &str = "sfen 4k4/9/9/9/4R4/9/9/9/K8 w - 1";
+
+    /// The score of the last `info` line, in centipawns.
+    fn cp_of(lines: &[String]) -> i64 {
+        field(lines.last().expect("the search reported something"), "cp")
+    }
+
+    /// 千日手 is four occurrences of one position, counted over the game's own
+    /// history rather than only over the search's path — the fourth is three
+    /// quarters behind the root here.
+    ///
+    /// Sabotage: delete the `repetition::verdict` arm from `child` and the
+    /// score falls back to the material balance asserted below.
+    #[test]
+    fn the_fourth_occurrence_of_a_position_is_a_draw() {
+        let fixture = game(SHUFFLE_TO_A_DRAW);
+        assert!(
+            eval::evaluate(fixture.position()) < Score::cp(-900),
+            "the fixture must leave the side to move a rook down"
+        );
+        let (_, lines) = run(SHUFFLE_TO_A_DRAW, depth(4));
+        assert_eq!(cp_of(&lines), 0, "{lines:?}");
+    }
+
+    /// The third occurrence is not the fourth, so one cycle short of 千日手 the
+    /// same position is worth exactly what the material says.
+    ///
+    /// Sabotage: count occurrences against `OCCURRENCES - 2` and this position
+    /// starts reporting a draw the rules do not offer.
+    #[test]
+    fn the_third_occurrence_is_not_yet_a_repetition() {
+        let (_, lines) = run(SHUFFLE_ONE_CYCLE_SHORT, depth(4));
+        assert!(cp_of(&lines) < -900, "{lines:?}");
+    }
+
+    /// 連続王手の千日手 — the side that checked its way to the fourth
+    /// occurrence loses, so the side being checked wins without a mate.
+    ///
+    /// ⚠️ The score asserted here is the one number that cannot have come from
+    /// the evaluation: the side to move is a rook *down*, and it reports a win.
+    #[test]
+    fn the_side_that_gave_every_check_loses_the_repetition() {
+        let fixture = game(PERPETUAL_CHECK);
+        assert!(fixture.in_check(), "the fixture's side to move is in check");
+        assert!(
+            eval::evaluate(fixture.position()) < Score::ZERO,
+            "the fixture must leave the side to move behind on material"
+        );
+        let (_, lines) = run(PERPETUAL_CHECK, depth(4));
+        assert_eq!(
+            cp_of(&lines),
+            i64::from(Score::REPETITION.get()),
+            "{lines:?}"
+        );
+    }
+
+    /// The depth-1 iteration is the one that always completes, and every root
+    /// child in it is a quiescence node — so this is what says the verdict is
+    /// asked for at the dispatch rather than inside the interior node.
+    ///
+    /// Sabotage, verified on this fixture and impossible on a deeper one: move
+    /// the verdict from `child` to the top of `negamax` and depth 1 reports the
+    /// material balance, while every later iteration still reports the win.
+    #[test]
+    fn the_first_iteration_sees_the_repetition() {
+        let (_, lines) = run(PERPETUAL_CHECK, depth(1));
+        assert_eq!(field(&lines[0], "depth"), 1, "{lines:?}");
+        assert_eq!(
+            cp_of(&lines),
+            i64::from(Score::REPETITION.get()),
+            "{lines:?}"
+        );
+    }
+
+    /// A published line stops at the repeating move: there is no game after it.
+    ///
+    /// Sabotage: drop `pv[ply].clear()` from `child`'s repetition arm and the
+    /// line keeps whatever a sibling left below that ply, publishing a
+    /// variation that runs past the end of the game.
+    #[test]
+    fn the_published_line_stops_at_the_repeating_move() {
+        let (_, lines) = run(PERPETUAL_CHECK, depth(4));
+        let last = lines.last().expect("the search reported something");
+        assert_eq!(pv_of(last).len(), 1, "{last}");
+    }
+
+    /// The same position reached without the history that repeats it is an
+    /// ordinary position, and says so.
+    ///
+    /// ⚠️ **This does not establish that the table is clean.** It reads the
+    /// *root* score, and the root is the one node that neither probes nor
+    /// stores, so a verdict-derived entry left at ply 1 or below would not show
+    /// here. What it does catch is the verdict leaking through a shared
+    /// searcher's table all the way to a fresh root; CONVENTIONS.md carries the
+    /// leak that stays.
+    #[test]
+    fn a_repetition_verdict_does_not_survive_into_a_position_without_it() {
+        let mut searcher = searcher();
+
+        let sink = Lines::default();
+        let _ = searcher.search(&job(game(PERPETUAL_CHECK), depth(4)), &sink);
+        assert_eq!(
+            cp_of(&sink.take()),
+            i64::from(Score::REPETITION.get()),
+            "the first search must reach the verdict, or the second proves nothing"
+        );
+
+        let sink = Lines::default();
+        let _ = searcher.search(&job(game(PERPETUAL_CHECK_ROOT), depth(4)), &sink);
+        let lines = sink.take();
+        assert!(cp_of(&lines) < 0, "{lines:?}");
     }
 
     #[test]
@@ -1012,9 +1329,14 @@ mod tests {
     /// The counterpart: where captures *are* reachable the equation has to
     /// break upward, because quiescence went and looked.
     ///
-    /// Sabotage: make `generate_captures` return nothing, or have `child`
-    /// evaluate instead of dispatching to `qsearch`, and this falls back to
-    /// exactly `1 + N`.
+    /// Sabotage: have `child` evaluate instead of dispatching to `qsearch`.
+    ///
+    /// ⚠️ **Making `generate_captures` return nothing does *not* fire it**,
+    /// though it reads as the more direct mutation. A check is reachable one
+    /// ply into this fixture, and a quiescence node in check takes the evasion
+    /// branch — which generates every legal move and recurses whatever the
+    /// capture filter does. So the count stays above `1 + N` and only the
+    /// frozen `bench` counts move.
     #[test]
     fn quiescence_resolves_captures_the_horizon_would_have_hidden() {
         let args = "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
@@ -1214,11 +1536,12 @@ mod tests {
     /// kept because it costs nothing and the assertion is about the answer, not
     /// the route.
     ///
-    /// Sabotage: score a mated node `Score::mated_in(0)` instead of
-    /// `mated_in(ply)` and the announced distance is wrong; drop
-    /// **[`Self::qsearch`]'s** `pv[ply].clear()` and a stale line from an
-    /// earlier subtree hangs off the mate. ⚠️ Dropping [`Self::negamax`]'s
-    /// copy instead changes nothing here or anywhere — see PROGRESS.md.
+    /// Sabotage: in **[`Self::qsearch`]**, score a mated node
+    /// `Score::mated_in(0)` instead of `mated_in(ply)` and the announced
+    /// distance is wrong, or drop its `pv[ply].clear()` and a stale line from
+    /// an earlier subtree hangs off the mate. ⚠️ Making *either* mutation in
+    /// [`Self::negamax`] instead changes nothing here or anywhere — see
+    /// PROGRESS.md, which now records both halves of that asymmetry.
     #[test]
     fn finds_the_mate_in_one() {
         let (_, lines) = run("sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1", depth(4));
@@ -1272,7 +1595,9 @@ mod tests {
     /// scoring.
     ///
     /// Sabotage: score a mated node `Score::mated_in(0)` instead of
-    /// `mated_in(ply)` and the announced distance stops matching the line.
+    /// `mated_in(ply)` **in [`Self::qsearch`]** and the announced distance
+    /// stops matching the line. ⚠️ Not [`Self::negamax`]'s copy, which no test
+    /// reaches — see PROGRESS.md.
     #[test]
     fn a_reported_mate_is_a_real_mate() {
         let args = "sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1";
@@ -1280,26 +1605,18 @@ mod tests {
         let last = lines.last().expect("the search reported something");
         let plies = field(last, "mate");
         assert!(plies > 0, "{last}");
-
-        let pv = pv_of(last);
-        assert_eq!(i64::try_from(pv.len()).expect("short pv"), plies, "{last}");
-
-        let mut replay = game(args);
-        for token in pv {
-            replay
-                .push_usi_move(token)
-                .unwrap_or_else(|e| panic!("the reported pv is not playable: {e}"));
-        }
-        assert!(
-            !replay.position().has_legal_moves(),
-            "the line the search called mate leaves legal moves"
-        );
+        assert_mate_is_real(args, last, plies);
     }
 
     /// A depth nobody could reach, cut short by a deadline.
     ///
-    /// Sabotage: drop the deadline arm from `Budget::expired` and this hangs
-    /// rather than failing.
+    /// Sabotage: drop the deadline arm from `Budget::expired`.
+    ///
+    /// ⚠️ **It fails rather than hanging, and that is what the off-thread
+    /// `recv_timeout` above is for.** Something else in the suite does wedge on
+    /// that mutation — `the_first_iteration_is_never_abandoned` searches on the
+    /// calling thread — so a sweep that only watches the suite as a whole
+    /// attributes the hang to the wrong test.
     #[test]
     fn a_deep_search_still_answers_a_deadline() {
         let limits = Limits {
