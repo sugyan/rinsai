@@ -174,10 +174,12 @@ pub fn play_game(
 mod tests {
     use super::*;
 
-    /// Answers from a script; counts how often it was asked.
+    /// Answers from a script; records every position argument it was asked
+    /// about, which is the only place that string is observable.
     struct Scripted {
         answers: std::vec::IntoIter<Result<BestmoveAnswer, EngineError>>,
         asked: usize,
+        seen: Vec<String>,
     }
 
     impl Scripted {
@@ -189,6 +191,7 @@ mod tests {
                     .collect::<Vec<_>>()
                     .into_iter(),
                 asked: 0,
+                seen: Vec::new(),
             }
         }
 
@@ -196,13 +199,15 @@ mod tests {
             Self {
                 answers: vec![answer].into_iter(),
                 asked: 0,
+                seen: Vec::new(),
             }
         }
     }
 
     impl Seat for Scripted {
-        fn bestmove(&mut self, _args: &str) -> Result<BestmoveAnswer, EngineError> {
+        fn bestmove(&mut self, args: &str) -> Result<BestmoveAnswer, EngineError> {
             self.asked += 1;
+            self.seen.push(args.to_owned());
             self.answers.next().expect("the script covers the game")
         }
     }
@@ -316,6 +321,34 @@ mod tests {
         .expect("plays");
         assert_eq!(record.plies, 2);
         assert_eq!(record.moves_usi, "7g7f 3c3d");
+    }
+
+    /// The `position` argument is the only channel carrying game state to
+    /// both players, and it is built by string append rather than by asking
+    /// the board — so it is worth asserting literally, at every ply, from
+    /// both a bare root and one that already carries moves.
+    ///
+    /// Sabotage: change either the `" moves "` separator or the `' '` join in
+    /// `play_game` and this fails; nothing else in the workspace does,
+    /// because every other test discards the argument.
+    #[test]
+    fn each_seat_is_asked_about_the_game_so_far_in_usi() {
+        let (mut black, mut white) = interleave(&["7g7f", "2g2f"], &["3c3d", "8c8d"]);
+        play_game(&mut black, &mut white, "startpos", 4).expect("plays");
+        assert_eq!(
+            black.seen,
+            ["startpos", "startpos moves 7g7f 3c3d"],
+            "Black is asked from the bare root, then after two plies"
+        );
+        assert_eq!(
+            white.seen,
+            ["startpos moves 7g7f", "startpos moves 7g7f 3c3d 2g2f"]
+        );
+
+        let (mut black, mut white) = interleave(&["2g2f"], &["8c8d"]);
+        play_game(&mut black, &mut white, "startpos moves 7g7f 3c3d", 4).expect("plays");
+        assert_eq!(black.seen, ["startpos moves 7g7f 3c3d"]);
+        assert_eq!(white.seen, ["startpos moves 7g7f 3c3d 2g2f"]);
     }
 
     #[test]

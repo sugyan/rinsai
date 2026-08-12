@@ -380,10 +380,12 @@ fn play_pair(
         if record.detail.is_some() {
             // The offender's stderr is the post-mortem; attach the tail of
             // the side that lost abnormally.
-            let offender = match (record.winner, record.reason) {
-                (Winner::White, _) => Some(&black.engine),
-                (Winner::Black, _) => Some(&white.engine),
-                (Winner::Neither, _) => None,
+            // `detail` is only ever set on an ending the loser caused, so the
+            // side that did not win is the one whose stderr explains it.
+            let offender = match record.winner {
+                Winner::White => Some(&mut black.engine),
+                Winner::Black => Some(&mut white.engine),
+                Winner::Neither => None,
             };
             if let Some(engine) = offender {
                 let tail = engine.stderr_tail();

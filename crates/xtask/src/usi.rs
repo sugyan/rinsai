@@ -25,6 +25,10 @@ pub const USIOK_TIMEOUT: Duration = Duration::from_secs(10);
 pub const READYOK_TIMEOUT: Duration = Duration::from_secs(60);
 /// Lines of stderr kept per engine for the post-mortem of an abnormal end.
 const STDERR_TAIL_LINES: usize = 200;
+/// How long [`UsiEngine::stderr_tail`] waits for a dying engine to finish
+/// writing before it reads. Only ever paid on a game that ended abnormally.
+const STDERR_SETTLE_STEP: Duration = Duration::from_millis(20);
+const STDERR_SETTLE_POLLS: usize = 25;
 
 /// What a `bestmove` line said.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,9 +146,9 @@ impl UsiEngine {
         loop {
             let line = wait_line(&engine.lines, deadline, "usiok")?;
             if let Some(name) = option_name(&line) {
-                declared.push(name.to_owned());
+                declared.push(name);
             }
-            if line.trim() == "usiok" {
+            if line.split_whitespace().next() == Some("usiok") {
                 break;
             }
         }
@@ -165,12 +169,19 @@ impl UsiEngine {
 
     /// One move: `position …`, `go nodes N`, and the `bestmove` line, with
     /// everything else (`info` chatter included) ignored.
+    ///
+    /// ⚠️ Anything the engine left unread is discarded before the `go` is
+    /// sent. Without that, an engine emitting a second `bestmove` for one
+    /// `go` would have it returned as the answer to a position never asked
+    /// about, and every later move would be one behind — which reads as an
+    /// illegal move from a healthy engine.
     pub fn bestmove(
         &mut self,
         position_args: &str,
         nodes: u64,
         timeout: Duration,
     ) -> Result<BestmoveAnswer, EngineError> {
+        while self.lines.try_recv().is_ok() {}
         self.send(&format!("position {position_args}"))?;
         self.send(&format!("go nodes {nodes}"))?;
         let line = wait_for(&self.lines, Instant::now() + timeout, "bestmove")?;
@@ -183,8 +194,24 @@ impl UsiEngine {
         let _ = self.stdin.flush();
     }
 
-    #[must_use]
-    pub fn stderr_tail(&self) -> Vec<String> {
+    /// The last lines the engine wrote to stderr.
+    ///
+    /// ⚠️ Takes `&mut self` because it first gives a dying engine a moment to
+    /// finish writing: `Died` is raised the instant *stdout* closes, and the
+    /// stderr reader is a separate thread on a separate pipe, so reading the
+    /// tail straight away most often returns nothing — in exactly the case
+    /// the tail exists for, an engine that panicked and printed why.
+    pub fn stderr_tail(&mut self) -> Vec<String> {
+        for _ in 0..STDERR_SETTLE_POLLS {
+            match self.child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => std::thread::sleep(STDERR_SETTLE_STEP),
+                Err(_) => break,
+            }
+        }
+        // The child is gone, so its stderr pipe is closed; give the reader
+        // thread the last scheduling slot it needs to drain what is buffered.
+        std::thread::sleep(STDERR_SETTLE_STEP);
         self.stderr_tail
             .lock()
             .expect("no panics hold this lock")
@@ -251,11 +278,18 @@ fn wait_line(
 }
 
 /// The declared name in an `option name <N> type …` line.
-fn option_name(line: &str) -> Option<&str> {
+///
+/// ⚠️ The name runs to the `type` token, not to the first space: USI option
+/// names may contain spaces (`Move Overhead`, `Skill Level`). Taking one
+/// token instead would make the declared-options check warn on every launch
+/// for such an engine, which retires the check as a signal.
+fn option_name(line: &str) -> Option<String> {
     let mut tokens = line.split_whitespace();
-    (tokens.next() == Some("option") && tokens.next() == Some("name"))
-        .then(|| tokens.next())
-        .flatten()
+    if tokens.next() != Some("option") || tokens.next() != Some("name") {
+        return None;
+    }
+    let name: Vec<&str> = tokens.take_while(|t| *t != "type").collect();
+    (!name.is_empty()).then(|| name.join(" "))
 }
 
 fn parse_bestmove(line: &str) -> Result<BestmoveAnswer, EngineError> {
@@ -344,15 +378,26 @@ mod tests {
 
     #[test]
     fn declared_option_names_are_read_off_their_lines() {
+        let name = |line: &str| option_name(line);
         assert_eq!(
-            option_name("option name USI_Hash type spin default 256 min 1 max 65536"),
+            name("option name USI_Hash type spin default 256 min 1 max 65536").as_deref(),
             Some("USI_Hash")
         );
         assert_eq!(
-            option_name("option name NodesLimit type spin default 0"),
+            name("option name NodesLimit type spin default 0").as_deref(),
             Some("NodesLimit")
         );
-        assert_eq!(option_name("id name rinsai 0.1.0"), None);
-        assert_eq!(option_name("usiok"), None);
+        // A name with spaces in it runs to `type`, not to the first space.
+        assert_eq!(
+            name("option name Move Overhead type spin default 10").as_deref(),
+            Some("Move Overhead")
+        );
+        assert_eq!(
+            name("option name Skill Level type spin default 20 min 0 max 20").as_deref(),
+            Some("Skill Level")
+        );
+        assert_eq!(name("id name rinsai 0.1.0"), None);
+        assert_eq!(name("usiok"), None);
+        assert_eq!(name("option name type spin"), None, "an empty name is none");
     }
 }
