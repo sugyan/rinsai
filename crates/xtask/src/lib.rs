@@ -10,4 +10,5 @@
 
 pub mod csa;
 pub mod fetch;
+pub mod openings;
 pub mod rng;

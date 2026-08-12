@@ -82,10 +82,7 @@ fn usage() -> ExitCode {
 /// One day: fetch the index, then every record not already cached.
 /// Returns `(fetched, cached, failed)`.
 fn fetch_day(root: &Path, day: &Date) -> Result<(usize, usize, usize), String> {
-    let dir = root
-        .join(format!("{:04}", day.y))
-        .join(format!("{:02}", day.m))
-        .join(format!("{:02}", day.d));
+    let dir = day.cache_dir(root);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
 
     let index_url = format!("{HOST}/{:04}/{:02}/{:02}/", day.y, day.m, day.d);
@@ -176,10 +173,21 @@ fn hrefs(index_html: &str) -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Date {
+pub(crate) struct Date {
     y: u16,
     m: u8,
     d: u8,
+}
+
+impl Date {
+    /// Where this day's records live under the cache root. The layout is the
+    /// server's own (`YYYY/MM/DD/`), so a cache path can be read back into
+    /// the URL it came from.
+    pub(crate) fn cache_dir(&self, root: &Path) -> PathBuf {
+        root.join(format!("{:04}", self.y))
+            .join(format!("{:02}", self.m))
+            .join(format!("{:02}", self.d))
+    }
 }
 
 impl std::fmt::Display for Date {
@@ -189,7 +197,9 @@ impl std::fmt::Display for Date {
 }
 
 /// `YYYY-MM-DD` or `YYYY-MM-DD..YYYY-MM-DD`, both ends inclusive.
-fn parse_date_range(text: &str) -> Result<Vec<Date>, String> {
+/// Callers: this module's `run`, and `gen-openings`, which reads the days the
+/// fetch wrote.
+pub(crate) fn parse_date_range(text: &str) -> Result<Vec<Date>, String> {
     let (from, to) = match text.split_once("..") {
         Some((a, b)) => (parse_date(a)?, parse_date(b)?),
         None => {

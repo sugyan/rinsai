@@ -13,4 +13,6 @@ publish = false
 workspace = true
 
 [dependencies]
+rinsai-game.workspace = true
+rinsai-search.workspace = true
 shogi_core.workspace = true

@@ -76,5 +76,7 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "rinsai-game",
+ "rinsai-search",
  "shogi_core",
 ]
