@@ -516,7 +516,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut candidate = None;
     let mut baseline = None;
     let mut config_path = PathBuf::from("tools/opponents.toml");
-    let mut openings_path = PathBuf::from("positions/openings-v1.sfen");
+    let mut openings_path = PathBuf::from("positions/openings-v2.sfen");
     let mut nodes = None;
     let mut candidate_nodes = None;
     let mut baseline_nodes = None;
@@ -627,7 +627,7 @@ fn usage() -> ExitCode {
         "usage: cargo run --release -p xtask -- sprt --candidate <id> --baseline <id> \\\n\
          \x20   (--nodes N | --candidate-nodes N --baseline-nodes N) \\\n\
          \x20   (--gain | --non-regression | --elo0 E --elo1 E) \\\n\
-         \x20   [--config tools/opponents.toml] [--openings positions/openings-v1.sfen] \\\n\
+         \x20   [--config tools/opponents.toml] [--openings positions/openings-v2.sfen] \\\n\
          \x20   [--pairs N] [--max-pairs {DEFAULT_MAX_PAIRS}] [--alpha 0.05] [--beta 0.05] \\\n\
          \x20   [--seed 1] [--concurrency 1] [--move-timeout-ms 30000]"
     );

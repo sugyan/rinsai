@@ -45,10 +45,13 @@ impl<W: Write + Send> Output<W> {
     pub fn bestmove(&self, best: BestMove) {
         self.line(&match best {
             BestMove::Resign => "bestmove resign".to_owned(),
-            BestMove::Play { mv, ponder: None } => format!("bestmove {}", mv.to_usi_owned()),
+            BestMove::Play {
+                mv, ponder: None, ..
+            } => format!("bestmove {}", mv.to_usi_owned()),
             BestMove::Play {
                 mv,
                 ponder: Some(p),
+                ..
             } => format!("bestmove {} ponder {}", mv.to_usi_owned(), p.to_usi_owned()),
         });
     }

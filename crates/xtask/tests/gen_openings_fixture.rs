@@ -3,14 +3,20 @@
 //! must reproduce `tests/fixtures/expected-openings.sfen` byte for byte.
 //!
 //! The full-scale form of the same claim — regenerating
-//! `positions/openings-v1.sfen` from the local cache at the frozen rev and
+//! `positions/openings-v2.sfen` from the local cache at the frozen rev and
 //! seed leaves `git diff` empty — needs that cache and is run by hand;
 //! PROGRESS.md records each run. This test is the half CI can hold.
 
 use xtask::openings::{DayInput, PipelineConfig, generate};
 
 fn fixture_days() -> Vec<DayInput> {
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/floodgate");
+    days_under(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/floodgate"
+    ))
+}
+
+fn days_under(root: &str) -> Vec<DayInput> {
     let mut days: Vec<DayInput> = Vec::new();
     let mut labels: Vec<String> = std::fs::read_dir(root)
         .expect("fixture root exists")
@@ -51,7 +57,7 @@ fn fixture_config() -> PipelineConfig {
     PipelineConfig {
         target: 4,
         balance_depth: 3,
-        ..PipelineConfig::frozen_v1()
+        ..PipelineConfig::frozen_v2()
     }
 }
 
@@ -104,5 +110,49 @@ fn a_different_seed_selects_a_different_subset() {
         openings(&other),
         "a neighbouring seed picked the same four openings — the pool is too small \
          or the seed is unused"
+    );
+}
+
+/// ⚠️ **The corpus above exercises none of the balance filter's own rule.**
+/// Its searches reach the node cap often enough, but on every one of its
+/// candidates the interrupted iteration's score and the last completed one
+/// agree — so reading either gives the same file, and the golden test is
+/// blind to which is read. Divergence is rare (six of `openings-v1`'s 256
+/// lines at the frozen settings), so it has to be chosen rather than hoped
+/// for; this corpus is one floodgate game picked because its ply-12 position
+/// diverges, and the window is pinned to that ply so nothing else competes.
+///
+/// At depth 3 under a 5 000-node cap the position scores **0 on the depth-2
+/// iteration it completes** and **−1380 on the depth-3 iteration the cap
+/// interrupts** — one inside ±100 cp and one far outside, so the two rules
+/// disagree about whether to keep it at all.
+///
+/// Sabotage: score the candidate from the last line published instead of from
+/// `completed_depth`, and `generate` fails with "only 0 of the 1 unique
+/// candidates passed the balance filter".
+#[test]
+fn a_score_from_an_interrupted_iteration_does_not_decide_a_candidate() {
+    let cfg = PipelineConfig {
+        window: 12..=12,
+        target: 1,
+        balance_depth: 3,
+        balance_node_cap: 5_000,
+        ..PipelineConfig::frozen_v2()
+    };
+    let days = days_under(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/floodgate-capped"
+    ));
+    let generated = generate(&days, &cfg, "fixture").expect("the one candidate is kept");
+
+    let picked: Vec<&str> = generated
+        .lines()
+        .filter(|l| l.starts_with("# 2026-"))
+        .collect();
+    assert_eq!(picked.len(), 1, "{generated}");
+    assert!(
+        picked[0].ends_with("ply=12 eval=+0 d=2"),
+        "the line was kept, but not on the score this test is about: {}",
+        picked[0]
     );
 }
