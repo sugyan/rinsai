@@ -842,15 +842,14 @@ second corpus exists for.
 
 ## `openings-v2` — the balance score comes from an iteration that finished
 
-`positions/openings-v2.sfen`, 256 lines, replacing v1 as the harness's default
-before the first SPRT opens from either. The rule adopted, against the
-"reject a candidate whose balance search hit the cap" one this file had
-parked, is in DECISIONS.md; the engine change it needed is a `completed_depth`
-on `BestMove::Play`, and `rinsai bench` reproduces every frozen count either
-side of it.
+`positions/openings-v2.sfen`, 256 lines, the harness's default. The rule and
+the alternative it beat are in DECISIONS.md; the engine change it needed is
+`completed_depth` on `BestMove::Play`, and `rinsai bench` reproduces every
+frozen count either side of it.
 
-Re-scoring all 256 of **v1's** lines at the frozen settings — depth 6, a
-2 000 000-node cap, a 16 MiB table, one cleared searcher per line:
+All 256 of **v1's** lines re-scored at the frozen settings — depth 6, a
+2 000 000-node cap, a 16 MiB table, one cleared searcher per line. Completed
+depth: 1 line at 2, 48 at 3, 42 at 4, 141 at 5, 24 at 6.
 
 | | |
 |---|---|
@@ -859,15 +858,8 @@ Re-scoring all 256 of **v1's** lines at the frozen settings — depth 6, a
 | of those, whose ±100 cp verdict differs | **1** |
 
 ⚠️ **That middle figure is 6 where this file previously recorded 8**, against
-the same comparison. Both passes are recorded rather than one overwriting the
-other, which is this project's rule for a measurement that will not reconcile
-from the page. What the two passes *do* agree on: the interrupted count at
-150, the verdict-flip count at 1, and the line it names. The completed-depth
-histogram over the same run is 1 at depth 2, 48 at 3, 42 at 4, 141 at 5 and 24
-at 6 — the same 24 as the table above, and the same 232 that did not finish
-depth 6, re-partitioned by the depth each line's score actually came from.
-
-What the set actually changed:
+the same comparison; both stand, since neither reconciles from the page. The
+two passes agree on 150, on 1, and on the line it names.
 
 | | v1 | v2 |
 |---|---|---|
@@ -876,9 +868,8 @@ What the set actually changed:
 | lines shared with the other set | — | **252 of 256** |
 | regeneration at the recorded rev and seed | byte-identical | **byte-identical, twice** |
 
-⚠️ **Both directions of the error occur, and the one the sentence above denied
-is the more common.** Re-scoring the eight lines the two sets disagree about,
-at the frozen settings:
+The eight lines the sets disagree about, re-scored the same way — the four
+gained are the reverse direction, which v1's prose said could not happen:
 
 | | lines | completed verdict | partial verdict |
 |---|---|---|---|
@@ -886,33 +877,24 @@ at the frozen settings:
 | lost from v1 | 1 | reject — `+115` | keep — `0` |
 | lost from v1 | 3 | keep | keep — no verdict change at all |
 
-One line left because its verdict flipped in the direction v1's prose
-described. **Four entered because theirs flipped in the direction it said
-could not happen.** Three left with no verdict change: the pass is lazy and
-stops at 256, so four candidates being kept sooner ends the walk earlier and
-the tail v1 reached is never visited.
+The three that left with no verdict change are the lazy pass: four candidates
+kept sooner ends the walk at 305, so the tail v1 reached is never visited.
 
-The counts close on that account exactly. Over the first 305 candidates v2
-keeps 256 and rejects 49; v1 differs on five of them, so it keeps 253 and
-rejects 52, then takes four more candidates — keeping three, rejecting one —
-to reach 256 at 309 with 53 rejected.
+⚠️ **The committed fixture corpus cannot tell the two rules apart, at any cap
+tried** — the interrupted and completed scores are equal on every candidate it
+holds:
 
-⚠️ **The committed fixture corpus cannot tell the two rules apart, and no cap
-value tried fixes that.** On every candidate it holds, the interrupted
-iteration's score and the last completed one are equal:
+| candidates | nominal depth | node caps | divergent |
+|---|---|---|---|
+| 4 | 3 | 100 … 50 000, nine values | **0** |
+| 14 | 4, 5, 6 | 2 000 … 500 000, eight pairs | **0** |
 
-| candidates | nominal depth | node caps | interrupted | divergent |
-|---|---|---|---|---|
-| 4 | 3 | 100 … 50 000, nine values | — | **0** |
-| 14 | 4, 5, 6 | 2 000 … 500 000, eight pairs | 7–13 of 14 | **0** |
-
-Six of 256 real lines diverge, so eleven games will not contain one by
-chance. The gate is therefore a second corpus of **one** game,
+Six of 256 real lines diverge, so eleven games will not hold one by chance.
+The gate is a second corpus of **one** game,
 `crates/xtask/tests/fixtures/floodgate-capped/`, chosen for a position that
-diverges: at depth 3 under a 5 000-node cap it scores 0 on the depth-2
-iteration it completes and −1380 on the depth-3 iteration the cap interrupts.
-The two rules disagree about keeping it at all, so the test fires on the
-mutation — verified by applying it.
+scores 0 on the depth-2 iteration it completes and −1380 on the depth-3 one a
+5 000-node cap interrupts — inside and outside ±100 cp, so the two rules
+disagree about keeping it at all.
 
 ### What the balance searches measured about the engine
 
@@ -1184,29 +1166,27 @@ order a web build has to reach.
 
 ## After `openings-v2` — step 5 is E0's last, and it is two pull requests
 
-⚠️ **Step 5's gate needs an instrument that does not exist**, which is the one
-thing the plan for it did not account for. Its gate is fifty real-time games
-with zero flag falls, and **the harness has no notion of a clock at all**: it
-sends `go nodes N` and nothing else, `Seat::bestmove` takes no clock and
-returns no elapsed time, no per-game budget is tracked, and `EndReason`'s only
-timeout is the hang detector — which is classified *abnormal*, so a real flag
-fall would be reported as a degraded run rather than a loss. So step 5 lands
-as two pull requests, harness first, on the same reasoning that put steps 6+7
-ahead of it:
+⚠️ **Step 5's gate needs an instrument that does not exist.** Its gate is
+fifty real-time games with zero flag falls, and **the harness has no notion of
+a clock**: it sends `go nodes N` and nothing else, `Seat::bestmove` takes no
+clock and returns no elapsed time, no per-game budget is tracked, and
+`EndReason`'s only timeout is the hang detector — classified *abnormal*, so a
+real flag fall would be reported as a degraded run rather than a loss. So step
+5 lands as two pull requests, harness first, on the reasoning that put steps
+6+7 ahead of it:
 
 1. **The harness's byoyomi time control**, plus a normal-loss flag-fall
-   result. ⚠️ Verifiable with the engine untouched, because rinsai already
-   honours `byoyomi` — and ⚠️ **the steps 6+7 mirror gate does not carry
-   over**: a real-time game is not deterministic, so the exactly-50.00% check
-   becomes a statistical one plus unit tests on the clock bookkeeping.
-2. **The engine's time management** — the section below — now with a gate that
-   can actually be run.
+   result. Verifiable with the engine untouched, since rinsai already honours
+   `byoyomi`. ⚠️ **The steps 6+7 mirror gate does not carry over**: a
+   real-time game is not deterministic, so the exactly-50.00% check becomes a
+   statistical one plus unit tests on the clock bookkeeping.
+2. **The engine's time management** — the section below — with a gate that can
+   be run.
 
-With that in hand, the constants E0 inherited untuned — the poll interval, the
-allowance shape — get their SPRTs immediately after, as real-time patches on a
-quiet machine, and the harness's first real act is the **non-regression SPRT
-of the finished E0 against the step-3b engine** (elo0=−5, elo1=0) — the
-instrument that retroactively audits both batches.
+The constants E0 inherited untuned — the poll interval, the allowance shape —
+get their SPRTs immediately after, as real-time patches on a quiet machine,
+and the harness's first real act is the **non-regression SPRT of the finished
+E0 against the step-3b engine** (elo0=−5, elo1=0).
 
 Then the E0 exit criterion above, unchanged: the shunsai v0.1.0 release. No
 SPRT number may be attributed to a git rev that is not a release (CLAUDE.md

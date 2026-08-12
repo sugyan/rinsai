@@ -259,12 +259,10 @@ rules hold of both.
   rule** — it decides how deep each candidate is judged, so a set generated at
   another cap is a different set.
 - **A generated set's balance score comes from an iteration that finished.**
-  The last `info` line a search publishes may belong to an iteration its node
-  cap interrupted, whose score is a lower bound over a prefix of the root move
-  list. ⚠️ **A lower bound against a two-sided window is wrong in both
-  directions** — it admits positions a completed search rejects *and* rejects
-  ones it admits — so "the bound is conservative" is not an argument for
-  leaving it. DECISIONS.md carries what reading the wrong line cost v1.
+  The last `info` line published may belong to an iteration the node cap
+  interrupted, whose score is a lower bound. ⚠️ **A lower bound against a
+  two-sided window is wrong in both directions**, so it is not the safe
+  reading; DECISIONS.md carries what it cost v1.
 
 ## The `info` line
 
