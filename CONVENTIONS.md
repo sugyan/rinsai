@@ -236,9 +236,33 @@ carries the rule.
 - **The frozen counts live beside the code, not in PROGRESS.md.** The single
   deliberate exception to the "a number has one home and it is a PROGRESS.md
   table" rule, because a baseline has to be executable — see DECISIONS.md.
-- **A committed position set is where the licensing rule bites hardest**, so
-  every line carries its provenance in the file's header, and a later set is a
-  new file rather than an edit to `bench-v1.sfen`.
+- Its position set is one of the frozen sets below and follows their rules.
+
+## Frozen position sets
+
+Two exist: `positions/bench-v1.sfen`, which `bench` compiles in, and
+`positions/openings-v2.sfen`, which the SPRT harness opens from. The same
+rules hold of both.
+
+- **A later set is a new file, never an edit.** `bench` counts and paired-game
+  results are comparable only within one set, so editing a set in place
+  silently invalidates every number already attributed to it — including the
+  ones in DECISIONS.md entries that can no longer be re-run.
+- **Every line carries its provenance in the file's own header**, which is
+  where the licensing rule bites hardest (CLAUDE.md §2). A *generated* set
+  interpolates its own counters into that header, so the file cannot disagree
+  with the run that made it.
+- **Everything that could move the output is fixed inside the generator**
+  rather than read from the environment: the source days, the filters, the
+  balance search's depth, node cap and table size, and the seed. ⚠️ **The node
+  cap belongs on that list even though it reads like a budget rather than a
+  rule** — it decides how deep each candidate is judged, so a set generated at
+  another cap is a different set.
+- **A generated set's balance score comes from an iteration that finished.**
+  The last `info` line published may belong to an iteration the node cap
+  interrupted, whose score is a lower bound. ⚠️ **A lower bound against a
+  two-sided window is wrong in both directions**, so it is not the safe
+  reading; DECISIONS.md carries what it cost v1.
 
 ## The `info` line
 
@@ -325,6 +349,13 @@ committed bench position set, which is where the licensing rule bites hardest.
   standing.
 - **`the_first_iteration_is_never_abandoned`'s fixture** is two plies on from
   the matsuri position, reached by rinsai's own search.
+- **The committed floodgate records** under `crates/xtask/tests/fixtures/` are
+  game records — factual data (DESIGN.md §7) — copied from the local cache
+  `cargo run -p xtask -- fetch-floodgate` fills. There are two corpora and the
+  second is deliberately a single game: `floodgate/` feeds the extractor's
+  reproducibility gate, and `floodgate-capped/` exists because **no candidate
+  in the first one separates the balance filter's two possible rules**, at any
+  cap tried. Its one game was chosen for a position that does.
 - **The mate-in-1..5 ladder and both repetition fixtures are our own
   construction**, built for these tests and verified by searching them. ⚠️ A
   composed 詰将棋 is not covered by the argument above: the argument is that a

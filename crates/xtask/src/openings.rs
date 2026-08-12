@@ -13,15 +13,18 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use rinsai_game::{Game, position_key};
-use rinsai_search::{InfoSink, Limits, NegamaxSearcher, SearchJob, SearchSignals, Searcher};
+use rinsai_search::{
+    BestMove, InfoSink, Limits, NegamaxSearcher, SearchJob, SearchSignals, Searcher,
+};
 use shogi_core::{Color, Move, Piece, Square, ToUsi};
 
 use crate::csa::{self, CsaMove};
 use crate::fetch;
 use crate::rng;
 
-/// Everything that moves the output. ⚠️ Changing any field after
-/// `openings-v1.sfen` is frozen means a new file, not a regeneration.
+/// Everything that moves the output. ⚠️ Changing any field after a set is
+/// frozen means a new file, not a regeneration — and so does changing the
+/// pipeline around it, which is what took v1 to v2.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
     /// Both players' floodgate rates must reach this.
@@ -41,14 +44,12 @@ pub struct PipelineConfig {
     /// and unpruned, so an open position can cost orders more than the depth
     /// suggests.
     ///
-    /// ⚠️ **The score a capped search publishes is a lower bound, not the
-    /// value of any completed iteration.** The deepening loop emits an `info`
-    /// line for the iteration the cap interrupted, whose score is the best
-    /// over a *prefix* of the root moves. The filter below therefore admits
-    /// some positions it would reject on a completed search, and never the
-    /// reverse. PROGRESS.md records how many lines of the frozen set that
-    /// reaches. A capped search is as deterministic as an uncapped one, so
-    /// the file still reproduces byte for byte.
+    /// ⚠️ **The cap decides how deep a candidate is judged, not whether it is
+    /// judged.** A search it interrupts is scored on the deepest iteration
+    /// that finished, so raising the cap does not admit or reject candidates
+    /// directly — it moves the depth their verdict comes from, which can
+    /// change the verdict. That is enough to make a set generated at another
+    /// cap a different file.
     pub balance_node_cap: u64,
     /// A candidate survives iff rinsai's own score sits within ±this, in
     /// centipawns from the side to move, and is not a mate score.
@@ -61,10 +62,11 @@ pub struct PipelineConfig {
 }
 
 impl PipelineConfig {
-    /// The constants `positions/openings-v1.sfen` is generated with. The seed
-    /// spells `RINSAI-1`.
+    /// The constants `positions/openings-v2.sfen` is generated with. The seed
+    /// spells `RINSAI-1`. Why the set is v2 rather than a regeneration is in
+    /// DECISIONS.md.
     #[must_use]
-    pub fn frozen_v1() -> Self {
+    pub fn frozen_v2() -> Self {
         Self {
             min_rate: 3000.0,
             min_game_plies: 60,
@@ -180,7 +182,7 @@ pub fn generate(days: &[DayInput], cfg: &PipelineConfig, rev: &str) -> Result<St
 
     let mut searcher = NegamaxSearcher::with_hash_mb(cfg.balance_hash_mb);
     let mut per_game: HashMap<usize, usize> = HashMap::new();
-    let mut picked: Vec<(usize, i32)> = Vec::new();
+    let mut picked: Vec<(usize, i32, i32)> = Vec::new();
     for i in order {
         if picked.len() == cfg.target {
             break;
@@ -214,16 +216,25 @@ pub fn generate(days: &[DayInput], cfg: &PipelineConfig, rev: &str) -> Result<St
             signals: Arc::new(SearchSignals::new()),
         };
         let sink = ScoreSink::default();
-        searcher.search(&job, &sink);
-        let Some((is_mate, cp)) = sink.last() else {
+        // ⚠️ The score is taken from the deepest iteration that searched every
+        // root move, not from the last line published — see `ScoreSink`.
+        let completed = match searcher.search(&job, &sink) {
+            BestMove::Play {
+                completed_depth, ..
+            } => completed_depth,
+            // No legal move at all: a candidate the window should never have
+            // produced, since it snapshots positions the game continued from.
+            BestMove::Resign => 0,
+        };
+        let Some((is_mate, cp)) = sink.at(completed) else {
             return Err(format!(
-                "{} ply {}: the balance search published no score",
+                "{} ply {}: the balance search completed no iteration",
                 candidate.file, candidate.ply
             ));
         };
         if !is_mate && cp.abs() <= cfg.balance_cp_max {
             *taken += 1;
-            picked.push((i, cp));
+            picked.push((i, cp, completed));
         } else {
             counters.rejected_balance += 1;
         }
@@ -240,7 +251,7 @@ pub fn generate(days: &[DayInput], cfg: &PipelineConfig, rev: &str) -> Result<St
     }
     // A canonical re-sort: the shuffle chose the subset, the source order
     // fixes the layout, so the file diffs readably.
-    picked.sort_by(|&(a, _), &(b, _)| {
+    picked.sort_by(|&(a, _, _), &(b, _, _)| {
         let (a, b) = (&candidates[a], &candidates[b]);
         (a.day, &a.file, a.ply).cmp(&(b.day, &b.file, b.ply))
     });
@@ -315,36 +326,66 @@ fn build_move(game: &Game, mv: &CsaMove) -> Result<Move, String> {
     }
 }
 
-/// Captures the score of the last `info` line a search published.
+/// Every `info` line's `(depth, is_mate, value)`, so the balance filter can
+/// ask for the score of a named iteration.
+///
+/// ⚠️ **The last line published is the wrong one to judge a position on.** A
+/// search that spends its node cap mid-iteration publishes that iteration
+/// anyway, and its score is the best over a *prefix* of the root move list —
+/// a lower bound, not the iteration's value.
+///
+/// ⚠️ **A lower bound against `|cp| <= max` errs in both directions**, which
+/// is the half that is easy to get wrong: it can sit inside the band while
+/// the finished value is above `+max`, and it can sit below `−max` while the
+/// finished value is inside. PROGRESS.md counts how often each happened.
 #[derive(Debug, Default)]
-struct ScoreSink(Mutex<Option<(bool, i32)>>);
+struct ScoreSink(Mutex<Vec<(i32, bool, i32)>>);
 
 impl ScoreSink {
-    /// `(is_mate, value)` — centipawns from the side to move, or mate
-    /// distance when `is_mate`.
-    fn last(&self) -> Option<(bool, i32)> {
-        *self.0.lock().expect("no panics hold this lock")
+    /// `(is_mate, value)` from the iteration at `depth` — centipawns from the
+    /// side to move, or mate distance when `is_mate`. `None` when no line
+    /// reported that depth, which for `depth` 0 means no iteration finished.
+    fn at(&self, depth: i32) -> Option<(bool, i32)> {
+        self.0
+            .lock()
+            .expect("no panics hold this lock")
+            .iter()
+            .rev()
+            .find(|&&(d, _, _)| d == depth)
+            .map(|&(_, is_mate, value)| (is_mate, value))
     }
 }
 
 impl InfoSink for ScoreSink {
     fn info(&self, line: &str) {
+        let mut depth = None;
+        let mut score = None;
         let mut tokens = line.split_whitespace();
         while let Some(token) = tokens.next() {
-            if token != "score" {
-                continue;
+            match token {
+                // `seldepth` is a whole token of its own, so it cannot be
+                // mistaken for this one.
+                "depth" => depth = tokens.next().and_then(|v| v.parse::<i32>().ok()),
+                "score" => {
+                    let kind = tokens.next();
+                    let value = tokens.next().and_then(|v| v.parse::<i32>().ok());
+                    score = match (kind, value) {
+                        (Some("cp"), Some(v)) => Some((false, v)),
+                        (Some("mate"), Some(v)) => Some((true, v)),
+                        _ => None,
+                    };
+                    // `depth` precedes `score` in the line, so nothing
+                    // after this point is wanted.
+                    break;
+                }
+                _ => {}
             }
-            let kind = tokens.next();
-            let value = tokens.next().and_then(|v| v.parse::<i32>().ok());
-            if let (Some(kind), Some(value)) = (kind, value) {
-                let is_mate = match kind {
-                    "cp" => false,
-                    "mate" => true,
-                    _ => return,
-                };
-                *self.0.lock().expect("no panics hold this lock") = Some((is_mate, value));
-            }
-            return;
+        }
+        if let (Some(depth), Some((is_mate, value))) = (depth, score) {
+            self.0
+                .lock()
+                .expect("no panics hold this lock")
+                .push((depth, is_mate, value));
         }
     }
 }
@@ -355,7 +396,7 @@ fn emit(
     rev: &str,
     counters: &Counters,
     candidates: &[Candidate],
-    picked: &[(usize, i32)],
+    picked: &[(usize, i32, i32)],
 ) -> String {
     let labels: Vec<&str> = days.iter().map(|d| d.label.as_str()).collect();
     let qualifying = counters.files
@@ -366,7 +407,7 @@ fn emit(
     let _ = write!(
         out,
         "\
-# rinsai opening set, v1 — frozen.
+# rinsai opening set, v2 — frozen.
 #
 # One USI `position` argument per line (`startpos moves …`); `#` starts a
 # comment and blank lines are ignored — the same conventions as
@@ -374,7 +415,7 @@ fn emit(
 # swapped (CLAUDE.md §3).
 #
 # ⚠️ FROZEN. Paired-game results are comparable only within one opening set,
-# so a later set is a new file, openings-v2.sfen, never an edit to this one.
+# so a later set is a new file, openings-v3.sfen, never an edit to this one.
 #
 # PROVENANCE (CLAUDE.md §2). floodgate game records are factual data
 # (DESIGN.md §7); the game behind each line is named on the comment above
@@ -393,8 +434,13 @@ fn emit(
 #     {evaluated} searched at depth {depth} capped at {node_cap} nodes,
 #     {hash_mb} MiB table; {rej_bal} fell outside ±{cp_max} cp or carried a
 #     mate score; the first {target} survivors are the set, emitted in
-#     (day, file, ply) order. eval= on each comment line is rinsai's own
-#     score, from the side to move.
+#     (day, file, ply) order.
+#   eval= on each comment line is rinsai's own score, from the side to move,
+#     and d= is the depth it came from: the deepest iteration that searched
+#     *every* root move. A search the node cap interrupts is judged on the
+#     last iteration that finished, never on the partial one — whose score
+#     is the best over a prefix of the root list and so a lower bound. That
+#     is the one thing v2 changed from v1, which read the partial line.
 # Regeneration from the same cached inputs, rev and seed is byte-identical
 # (`--rev` replays the rev recorded above, since HEAD moves when the file
 # is committed); crates/xtask/tests/gen_openings_fixture.rs is the
@@ -427,12 +473,12 @@ fn emit(
         max_per_game = cfg.max_per_game,
         target = cfg.target,
     );
-    for &(i, eval_cp) in picked {
+    for &(i, eval_cp, eval_depth) in picked {
         let c = &candidates[i];
         let _ = write!(
             out,
-            "# {}/{} ply={} eval={:+}\nstartpos moves {}\n",
-            days[c.day].label, c.file, c.ply, eval_cp, c.moves_usi
+            "# {}/{} ply={} eval={:+} d={}\nstartpos moves {}\n",
+            days[c.day].label, c.file, c.ply, eval_cp, eval_depth, c.moves_usi
         );
     }
     out
@@ -441,9 +487,9 @@ fn emit(
 pub fn run(args: &[String]) -> ExitCode {
     let mut dates: Option<String> = None;
     let mut root = PathBuf::from("data/floodgate");
-    let mut out_path = PathBuf::from("positions/openings-v1.sfen");
+    let mut out_path = PathBuf::from("positions/openings-v2.sfen");
     let mut rev: Option<String> = None;
-    let mut cfg = PipelineConfig::frozen_v1();
+    let mut cfg = PipelineConfig::frozen_v2();
     let mut iter = args.iter();
     // ⚠️ A flag whose value is missing must be an error, never a silent
     // fallback: `--out` with the path eaten by the shell would otherwise
@@ -590,7 +636,67 @@ fn git_head() -> Result<String, String> {
 fn usage() -> ExitCode {
     eprintln!(
         "usage: cargo run --release -p xtask -- gen-openings --dates 2026-06-01..2026-06-07 \
-         [--root data/floodgate] [--out positions/openings-v1.sfen] [--seed N] [--rev SHA]"
+         [--root data/floodgate] [--out positions/openings-v2.sfen] [--seed N] [--rev SHA]"
     );
     ExitCode::FAILURE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A search's published lines, in the order the deepening loop emits them.
+    fn feed(sink: &ScoreSink, lines: &[&str]) {
+        for line in lines {
+            sink.info(line);
+        }
+    }
+
+    /// The rule the balance filter rests on: a named depth's score, not the
+    /// newest one.
+    ///
+    /// Sabotage: have `at` ignore its argument and return the last entry —
+    /// the depth-2 score below — and this fires.
+    #[test]
+    fn a_named_depth_is_read_and_not_the_last_line() {
+        let sink = ScoreSink::default();
+        feed(
+            &sink,
+            &[
+                "info depth 1 seldepth 1 time 0 nodes 31 nps 0 hashfull 0 score cp 0 pv 7g7f",
+                "info depth 2 seldepth 5 time 1 nodes 900 nps 0 hashfull 0 score cp 415 pv 7g7f",
+            ],
+        );
+        assert_eq!(sink.at(1), Some((false, 0)));
+        assert_eq!(sink.at(2), Some((false, 415)));
+    }
+
+    /// A depth no line reported has no score, which is what the caller turns
+    /// into an error rather than a guess. `0` is that case in practice: it is
+    /// what a search reports when no iteration finished.
+    #[test]
+    fn an_unreported_depth_has_no_score() {
+        let sink = ScoreSink::default();
+        feed(
+            &sink,
+            &["info depth 1 seldepth 1 time 0 nodes 31 nps 0 hashfull 0 score cp 0 pv 7g7f"],
+        );
+        assert_eq!(sink.at(0), None);
+        assert_eq!(sink.at(2), None);
+    }
+
+    /// A mate score is kept apart from a centipawn one, because the filter
+    /// rejects on it rather than comparing it against ±`balance_cp_max` — a
+    /// `mate 1` compared as centipawns would read as balanced.
+    ///
+    /// Sabotage: parse `mate` as `cp` and the filter admits mates.
+    #[test]
+    fn a_mate_score_is_not_a_centipawn_score() {
+        let sink = ScoreSink::default();
+        feed(
+            &sink,
+            &["info depth 3 seldepth 9 time 0 nodes 130 nps 0 hashfull 0 score mate 2 pv 5e5d"],
+        );
+        assert_eq!(sink.at(3), Some((true, 2)));
+    }
 }

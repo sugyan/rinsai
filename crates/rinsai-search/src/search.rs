@@ -15,6 +15,7 @@ use std::time::Duration;
 use shogi_core::Move;
 
 use crate::game::Game;
+use crate::score::Depth;
 
 /// What a `go` command asked for.
 ///
@@ -125,6 +126,18 @@ pub enum BestMove {
         /// E2 gives ponder something to stand on: a ponder move the engine
         /// cannot actually back up is worse than none.
         ponder: Option<Move>,
+        /// The deepest iteration that searched **every** root move, or 0 when
+        /// none did.
+        ///
+        /// ⚠️ **Not the `depth` of the last `info` line.** A search that runs
+        /// out of budget mid-iteration publishes that iteration anyway, and
+        /// its score is the best over a *prefix* of the root list — a lower
+        /// bound rather than the iteration's value. A caller reading a score
+        /// to **judge a position** wants the line at this depth; a caller
+        /// showing a user what the engine is doing wants the last line. Named
+        /// caller: `xtask`'s opening-set balance filter, which picks a
+        /// position iff the engine scores it near equal.
+        completed_depth: Depth,
     },
     /// The side to move has no legal move.
     Resign,
@@ -378,10 +391,13 @@ impl fmt::Display for BestMove {
         use shogi_core::ToUsi;
         match self {
             Self::Resign => f.write_str("resign"),
-            Self::Play { mv, ponder: None } => f.write_str(&mv.to_usi_owned()),
+            Self::Play {
+                mv, ponder: None, ..
+            } => f.write_str(&mv.to_usi_owned()),
             Self::Play {
                 mv,
                 ponder: Some(p),
+                ..
             } => write!(f, "{} (ponder {})", mv.to_usi_owned(), p.to_usi_owned()),
         }
     }

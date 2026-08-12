@@ -757,6 +757,10 @@ impl Searcher for NegamaxSearcher {
         // search looked at rather than the seed. `stop` still gets through.
         let first = budget.without_limits();
 
+        // Stays 0 until an iteration gets all the way through the root list —
+        // see `BestMove::Play`'s field for what a caller may conclude from it.
+        let mut completed_depth: Depth = 0;
+
         for depth in 1..=budget.max_depth {
             // Per-iteration, unlike `self.nodes` — see the field's doc.
             self.seldepth = 0;
@@ -767,6 +771,13 @@ impl Searcher for NegamaxSearcher {
             else {
                 break;
             };
+            // `negamax_root` leaves its root loop early on `self.stopped` and
+            // on nothing else, and `self.stopped` is sticky for the whole
+            // search — so a return through it with the flag still clear means
+            // every root move was searched at this depth.
+            if !self.stopped {
+                completed_depth = depth;
+            }
             // ⚠️ Taking the answer from a *partial* iteration is safe for
             // exactly one reason: the root list was re-seeded below with the
             // last iteration's move, so everything this iteration finished was
@@ -806,6 +817,7 @@ impl Searcher for NegamaxSearcher {
             BestMove::Play {
                 mv: best,
                 ponder: None,
+                completed_depth,
             },
         )
     }
@@ -1159,12 +1171,72 @@ mod tests {
         assert!(cp_of(&lines) < 0, "{lines:?}");
     }
 
+    /// `completed_depth` counts iterations that got through the **whole** root
+    /// list, so a budget that lands inside one leaves it out — which is the
+    /// whole difference between it and the last `info` line's `depth`.
+    ///
+    /// ⚠️ **The cap is load-bearing and the assertion says so out loud.** It
+    /// has to land *inside* an iteration; one that happened to fall on a
+    /// boundary would leave this green against a `completed_depth` that never
+    /// consulted `self.stopped` at all.
+    ///
+    /// Sabotage: drop the `if !self.stopped` guard around
+    /// `completed_depth = depth` and the interrupted iteration is counted.
+    #[test]
+    fn completed_depth_leaves_out_the_iteration_a_budget_cut_short() {
+        let args = "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
+        let limits = Limits {
+            depth: Some(6),
+            nodes: Some(20_000),
+            ..Limits::default()
+        };
+        let (best, lines) = run(args, limits);
+        let published = field(
+            lines.last().expect("the search reported something"),
+            "depth",
+        );
+        let BestMove::Play {
+            completed_depth, ..
+        } = best
+        else {
+            panic!("the fixture has legal moves");
+        };
+        assert!(
+            i64::from(completed_depth) < published,
+            "the cap did not interrupt an iteration, so this fixture proves \
+             nothing: published depth {published}, completed {completed_depth}"
+        );
+    }
+
+    /// The other direction, and it needs its own test: a search nothing
+    /// interrupts reports the iteration it actually finished.
+    ///
+    /// Sabotage: never assign `completed_depth` and it stays 0, which the test
+    /// above cannot see — 0 is below the published depth there too.
+    #[test]
+    fn completed_depth_reaches_the_last_iteration_when_nothing_interrupts() {
+        let args = "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
+        let (best, lines) = run(args, depth(4));
+        let published = field(
+            lines.last().expect("the search reported something"),
+            "depth",
+        );
+        let BestMove::Play {
+            completed_depth, ..
+        } = best
+        else {
+            panic!("the fixture has legal moves");
+        };
+        assert_eq!(published, 4, "the depth limit was not reached");
+        assert_eq!(i64::from(completed_depth), published);
+    }
+
     #[test]
     fn answers_with_a_legal_move() {
         let fixture = game("startpos");
         let (best, _) = run("startpos", depth(2));
         match best {
-            BestMove::Play { mv, ponder } => {
+            BestMove::Play { mv, ponder, .. } => {
                 assert!(is_legal(fixture.position(), mv));
                 assert_eq!(ponder, None);
             }

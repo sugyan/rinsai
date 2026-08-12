@@ -154,6 +154,12 @@ Newest last. The format follows shunsai's.
   - **What that says about the batch rule.** The 2026-08-12 pacing entry above scoped batching to work a deterministic suite can see fail. That was right and is unchanged; what this adds is that *a suite the same batch wrote* is not that instrument for the batch that wrote it. The two rituals it kept mandatory — the sabotage made at the site, and the claim-by-claim read — caught nothing here that the review did not, because both operate on what was written rather than on what was omitted. **A batch's review has to ask what is missing, not only whether what is present is true.** The mutation that exposed the perpetual-check hole was not a sabotage note's mutation; it was a reviewer asking what the rule's opposite would break.
   - **Not adopted: a rule that every moved test must be diffed against its origin.** It is the obvious lesson and it is too narrow — the same class arrives whenever coverage and code are separated, and a rule keyed to repository moves would not have caught the untested `position` string, which was never anywhere else. What generalises is the question, not the procedure.
 
+- **2026-08-12 — `openings-v2`: a candidate is judged on an iteration that finished.**
+  - **Decided.** The balance filter scores a candidate on the deepest iteration that searched every root move, not on the last `info` line published. v1 read the partial line, whose score is the best over a *prefix* of the root list — 150 of its 256 lines were selected that way. The rule is in CONVENTIONS.md, the counts in PROGRESS.md; the engine signal is `completed_depth` on `BestMove::Play`.
+  - **Rejected: "drop a candidate whose balance search hit the cap"**, this file's own parked proposal. It keys on tree size — only positions whose depth-6 search fits the cap survive — and the open, capture-rich middlegames that removes are where E1's ordering and pruning are meant to pay, so the set would measure those patches on the positions least able to show them.
+  - **Reopens if** the balance search stops being a rinsai search, or the window stops being two-sided.
+  - ⚠️ **"A lower bound admits what a completed search rejects, and never the reverse" was false**, and stood from steps 6+7 through two reviews: the window is two-sided, so a lower bound errs both ways, and the reverse direction is the one that moved four of the eight lines. CONVENTIONS.md carries the corrected rule.
+
 ## Recorded but deliberately not built
 
 [CLAUDE.md](./CLAUDE.md) forbids building for a consumer that does not exist
