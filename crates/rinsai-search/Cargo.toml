@@ -17,3 +17,8 @@ workspace = true
 shunsai.workspace = true
 shogi_core.workspace = true
 shogi_usi_parser.workspace = true
+
+[dev-dependencies]
+# The independent implementation of the repetition rule; the differential
+# tests in src/repetition.rs hold the two in agreement.
+rinsai-game.workspace = true

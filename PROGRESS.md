@@ -21,9 +21,9 @@ land as two pull requests with the harness first (DECISIONS.md, 2026-08-12).
 | 3a | Quiescence search — captures only, `seldepth` | **done** |
 | 3b | TT + transposition-move ordering — `hashfull`, `USI_Hash`, `rinsai bench` | **done** |
 | 4 | Repetition (千日手) + 連続王手 — history *queries*, mate-in-1..5 suite | **done** |
-| 5 | Time management — byoyomi / Fischer / movetime, `stop` responsiveness | second batch PR — its gates want the harness |
-| 6 | `openings-v1` extractor — floodgate CSA → balanced opening SFENs (`crates/xtask` arrives here) | next — first batch PR, with 7 |
-| 7 | Match harness + SPRT — Ayane vendored, `tools/opponents.toml.example` | next — first batch PR, with 6 |
+| 5 | Time management — byoyomi / Fischer / movetime, `stop` responsiveness | next — the last E0 step |
+| 6 | `openings-v1` extractor — floodgate CSA → balanced opening lines (`crates/xtask` arrives here) | **done** |
+| 7 | Match harness + SPRT — own Rust harness refereeing on `crates/rinsai-game`, `tools/opponents.toml.example` | **done** |
 
 ### E0 exit criteria not yet met
 
@@ -665,6 +665,232 @@ That is the ordinary case and the reason the rule needed constructed fixtures:
 against an opponent playing to win, a fourfold repetition at these strengths is
 rare, and waiting for one to occur naturally is not a test.
 
+## What steps 6+7 delivered
+
+The measurement loop's instrument, as one batch pull request: a frozen opening
+set extracted from floodgate, an own Rust match harness refereeing on an
+independent rules library, and a pentanomial SPRT driver. Two new workspace
+members — `crates/rinsai-game`, the rules layer moved from tuishogi
+(DECISIONS.md, 2026-08-12), and `crates/xtask` with `fetch-floodgate`,
+`gen-openings` and `sprt` — plus `positions/openings-v1.sfen` and
+`tools/opponents.toml.example`. **The engine is untouched**: `crates/rinsai`
+did not change at all, `crates/rinsai-search` gained only tests and a
+dev-dependency, and `rinsai bench` reproduces every frozen count.
+
+### openings-v1, and the two regenerations that freeze it
+
+| | |
+|---|---|
+| source days | 2026-06-01..07 — 2 577 records |
+| qualifying games | 1 422 (both rates ≥ 3000, %TORYO/%KACHI, ≥ 60 plies) |
+| rejected on replay | **0 of 1 422** — every replayed move (each game through ply 24) legal for `shogi_legality_lite` |
+| lines | 256 — ≤ 2 per game, plies 12..=24 outside check, own eval within ±100 cp |
+| seed / rev | `0x52494E5341492D31` / the rev in the file's own header |
+| regeneration | twice, same cache, `--rev` as recorded — **byte-identical both times** |
+
+The full pass-by-pass counters live in the file's own header, which the
+generator interpolates — the one place they cannot drift from the code. The
+fixture-scale golden test in `crates/xtask/tests/` is the half of the
+reproducibility claim CI runs on every push.
+
+### The mirror gate: exactly 50%, and why "exactly"
+
+Fresh processes and fixed nodes make each game deterministic, so a pair's two
+games are one game with the seats exchanged — any deviation from exact
+symmetry would be a harness bug (a colour bias, an opening applied per seat, a
+state leak), not noise. That is what makes this gate sharp:
+
+| pairs | nodes | score | pentanomial 0/¼/½/¾/1 | candidate W-D-L | LLR |
+|---|---|---|---|---|---|
+| 200 | 10 000 both | **exactly 50.00%** | 0/0/200/0/0 | 157-86-157 | 0.000 |
+
+Every pair scored exactly ½. The all-one-cell sample is the zero-variance
+degenerate case of the GSPRT, and the guard that reports "no evidence" instead
+of dividing by zero idled correctly for the whole run, live.
+
+### The ladder gate: the rungs order themselves, and rinsai sits on the bottom one
+
+rinsai at 100 000 nodes against the node-limited material YaneuraOu
+(`Threads 1`, fresh process per game, `go nodes` on both sides), 100 pairs per
+rung from `openings-v1`, seed 1:
+
+| YaneuraOu nodes | rinsai score | candidate W-D-L | pentanomial |
+|---|---|---|---|
+| 1 000 | **50.00%** | 97-6-97 | 21/4/51/2/22 |
+| 10 000 | 2.50% | 4-2-194 | 94/2/4/0/0 |
+| 100 000 | 0.00% | 0-0-200 | 100/0/0/0/0 |
+| 1 000 000 | 0.00% | 0-0-200 | 100/0/0/0/0 |
+
+Two readings. **rinsai's E0 search at 100k nodes measures level with
+YaneuraOu's material search at 1k** — a 100× node handicap, which is the
+honest price of a search with no ordering beyond the transposition move and no
+pruning; E1 exists to close it. And **the measuring stick saturates**: from
+the 10k rung up rinsai wins almost nothing, so the bottom rows say the rungs
+are above it, not how far apart they are. The rung spacing itself is measured
+directly, rung against rung:
+
+| pairing (nodes) | higher rung's score | W-D-L | pentanomial 0/¼/½/¾/1 |
+|---|---|---|---|
+| 10 000 vs 1 000 | **99.00%** | 99-0-1 | 0/0/1/0/49 |
+| 100 000 vs 10 000 | **100.00%** | 100-0-0 | 0/0/0/0/50 |
+
+50 pairs each, seed 1. The rungs order decisively everywhere they were
+measured. ⚠️ **The 1 000 000-vs-100 000 pairing is deliberately unmeasured**:
+it is the one expensive pairing (both sides think for real), and nothing yet
+consumes its calibration — rinsai measures level with the *bottom* rung, so
+the ladder work E1 starts with happens at 1k–10k. The number can be taken
+overnight the day something needs it, at low concurrency: results are
+load-immune (CLAUDE.md §3), but the machine is not, and a match fleet's
+concurrency is chosen for the machine, not for the statistics.
+
+### The review pass, and what it found the tests could not
+
+A max-effort review of the finished batch — ten reading angles, each finding
+verified against the code — found no defect the deterministic suites had been
+built to catch and several they could not:
+
+| | |
+|---|---|
+| findings reported | 15 |
+| confirmed by running the failure, not by reading | 13 |
+| defects in the harness's *decision* path | 5 |
+| dropped tests, i.e. rules with no remaining guard | 4 |
+| false claims in prose | 9 |
+
+⚠️ **The largest single finding was a hole, not a bug**: turning the
+perpetual-check rule from "checked on every move" into "checked at least once"
+left the entire workspace green, so the referee could have awarded a game win
+in a drawn position with nothing to say so. Four tests had come across from
+tuishogi with the rules layer and been lost in the move; they are restored,
+each verified by applying the mutation its note names.
+
+The rest of the confirmed list, each fixed in this branch: the SPRT summary
+recomputed its verdict from counts that include pairs landing after the bound
+was crossed, so a decided test could print "inconclusive"; `--alpha`/`--beta`
+were unvalidated, and out of range they make the stopping bounds infinite or
+NaN, deciding a test on its first pair; openings were validated against the
+referee's parser but not the engine's, which turns a line only one of them
+accepts into a fabricated loss on every pair it appears in — and a mirror gate
+cannot see that, because one colour loses every game and the pair still sums
+to a half; two runs of one pairing in the same second wrote one log file
+through two cursors, producing a record that reads as a single coherent run
+while attributing one run's games to the other's parameters; and the
+`position` string carrying game state to both engines was asserted by no test
+at all.
+
+### The sabotage re-run at steps 6+7: six mutations, six fired, no false notes
+
+The diff touched two files carrying standing sabotage notes —
+`rinsai-search/src/repetition.rs` (five) and the note `rinsai-game`'s
+`an_illegal_move_leaves_the_game_untouched` inherited from tuishogi (one).
+Each mutation applied at the site its note names, the suite run, the tree
+restored:
+
+| | |
+|---|---|
+| mutations applied | 6 |
+| fired on the test their note names | 6 |
+| notes that were **false** | 0 |
+
+One addition worth recording: the `OCCURRENCES - 2` mutation now also fires
+`the_referee_and_the_search_agree_that_three_occurrences_decide_nothing` —
+the cross-implementation differential net catches a rule mutation from either
+side, which no single-implementation test could.
+
+### ⚠️ The balance filter scores an interrupted search, and the frozen set is built on it
+
+The generator's own doc claimed the balance score was "the last completed
+iteration's". It is not: the deepening loop publishes an `info` line for the
+iteration the node cap interrupted, and that score is the best over a *prefix*
+of the root move list — a lower bound. The filter therefore admits some
+positions a completed search would reject, and never the reverse; the
+positions that get lower bounds are the open, capture-rich ones the filter
+exists to exclude. Found by review after the set was frozen, and measured by
+re-scoring all 256 committed lines at the header's own settings — every
+`eval=` reproduced to the digit, so this is the pipeline's behaviour and not
+an artefact:
+
+| how the emitted `eval=` was produced | lines |
+|---|---|
+| a completed depth-6 search, as the header's wording implies | **24** |
+| a completed iteration at depth 2–5 | 82 |
+| an iteration cut off at the cap | **150** |
+
+One line's verdict actually turns on it. `openings-v1.sfen:350` records
+`eval=+0`; its depth-4 iteration *completes* at `cp 115`, outside the ±100
+window, and the depth-5 iteration is cut off and publishes `cp 0`. Of the
+eight lines whose partial score differs from their last completed one, it is
+the only one that would not have been picked. Re-scoring the eighty shallowest
+at twenty times the cap moved five outside ±100, and twenty-one still had not
+finished depth 6.
+
+**The file is not wrong — the claim about how it was made was**, and the doc
+now says what the number is. Whether to regenerate as `openings-v2` under a
+"reject a candidate whose balance search hit the cap" rule is **open, and
+belongs to whoever runs the first SPRT that these openings decide**: it moves
+the measurement baseline, and paired play absorbs an unbalanced opening as
+extra variance rather than as bias, so the cost of leaving it is a slower test
+rather than a wrong one.
+
+⚠️ **The CI reproducibility gate cannot see this.** The fixture pipeline runs
+at depth 3 and no fixture search reaches the cap, so the golden test exercises
+none of the behaviour that decided 232 of the 256 real lines.
+
+### What the balance searches measured about the engine
+
+Not a strength claim — a cost. Real floodgate middlegames at plies 12–24 cost
+**8.8 M to over 40 M nodes** for a depth-6 search, against 13–20 ms from the
+initial position. That is the same gap E1's items 2, 8 and 9 (move ordering,
+SEE, futility) exist to close, measured on positions the engine will actually
+be asked about rather than on the opening. It is recorded here because
+CLAUDE.md §3 keeps the numbers that argue for work as well as the ones that
+argue against it.
+
+### Deliberately not built, each with its owner
+
+- **Time-based games.** The harness sends `go nodes` and nothing clock-shaped;
+  its only clocks are hang detectors, which can turn a wedged engine into a
+  recorded loss but never change a move. The wire margin is step 5's whole
+  subject (CONVENTIONS.md, Time control).
+- **The first real SPRT** — finished E0 against the step-3b engine at
+  elo0=−5/elo1=0 — runs when step 5 completes E0, as the instrument that
+  retroactively audits both batch PRs.
+- **`fetch-net` / `release` subcommands** — later phases (DESIGN.md §4).
+- **`rinsai-game` publication and tuishogi's adoption of it** — deferred until
+  the API has its second consumer in hand (DECISIONS.md, 2026-08-12).
+- **`openings-v2` under a reject-if-capped balance rule** — the section above.
+  It wants a decision from whoever the openings first measure, not from the
+  step that built them.
+- **A "was I cut off" signal on `Searcher`.** Fixing the balance filter's
+  *semantics* rather than its prose needs the search to say whether its last
+  published score came from a completed iteration. That is an API addition to
+  `rinsai-search` with one consumer, and the consumer is the regeneration
+  above, so it waits for it.
+- **`Ply::kifu` computed on demand.** It costs ~95% of `Game::play` — 79 µs
+  per ply against 3.9 µs without it, because the notation library brute-forces
+  every candidate move to pick a disambiguation character — and the harness
+  never reads it. Making it lazy is an API change to a crate whose second
+  consumer is tuishogi, which *does* read it, so it goes with the publication
+  above rather than ahead of it.
+- **Killing an engine's whole process group, and deadlines on writes to a
+  child.** `Drop` sends `SIGKILL` to the child it spawned, which is the engine
+  itself for every binary in the roster; a launcher *script* that does not
+  `exec` would leave the real engine behind. And a child that stops draining
+  its stdin can block a write with no timeout. Both are latent — nothing in
+  the roster is a script, and no engine has wedged that way — and both want
+  care rather than a quick patch.
+- **Unused `pub` surfaces on `rinsai-game`** (`from_position`, `last_move`,
+  `check_squares`, `destinations`, `drop_destinations`, `promotion`, `undo`,
+  `resign`). CONVENTIONS.md's named-caller rule asks for a specific caller in
+  each doc; tuishogi is the caller for all of them and is a plan until the
+  crate publishes. Either name its screens or delete them, at publication.
+- **CONVENTIONS.md rows for the second frozen position set.** Its `bench`
+  section states the frozen-set rule naming only `bench-v1.sfen`, and its
+  fixture-provenance section catalogues committed fixtures; neither gained a
+  row for `openings-v1.sfen` or the eleven committed floodgate records. The
+  rules currently live in the generated artefact's own header. Adding them is
+  a CONVENTIONS.md change, which needs a DECISIONS.md entry of its own.
+
 ## Measurements the conventions rest on
 
 [CONVENTIONS.md](./CONVENTIONS.md) carries the rules these produced and
@@ -892,25 +1118,17 @@ attributed rather than measured here: `@mizarjp/yaneuraou.k-p` ships a playable
 browser shogi engine with a small net embedded in about 2.6 MB, which is the
 order a web build has to reach.
 
-## After step 4 — the two batch pull requests
+## After steps 6+7 — step 5 is E0's last
 
-Steps 5–7 land as two pull requests rather than three, harness first
-(DECISIONS.md, 2026-08-12). Each gets one review pass, over the whole batch.
-
-1. **Steps 6+7 as one PR** — the `openings-v1` extractor, Ayane vendored, the
-   SPRT driver, `tools/opponents.toml.example`. Gates, all deterministic: the
-   extractor reproduces its set from (rev, seed) with provenance in the file
-   header; the SPRT arithmetic is unit-tested against synthetic game streams;
-   colour-swapped pairing is asserted structurally; a rinsai-vs-rinsai match
-   lands near 50%; the YaneuraOu node ladder orders itself. Its first real run
-   is a **non-regression SPRT of the finished E0 against the step-3b engine**
-   (elo0=−5, elo1=0) — the instrument that retroactively looks at the batch.
-2. **Step 5 as one PR** — time management; what it has to get right is the
-   section below. Gates: clock-simulation tests, `stop` responsiveness, and
-   fifty real-time games against the local ladder with zero flag falls. With
-   the harness already in hand, the constants E0 inherited untuned — the poll
-   interval, the allowance shape — get their SPRTs immediately after, as
-   real-time patches on a quiet machine.
+Step 5 (time management) lands as its own pull request, the second of the two
+batch PRs (DECISIONS.md, 2026-08-12); what it has to get right is the section
+below. Gates: clock-simulation tests, `stop` responsiveness, and fifty
+real-time games against the local ladder with zero flag falls. With the
+harness in hand, the constants E0 inherited untuned — the poll interval, the
+allowance shape — get their SPRTs immediately after, as real-time patches on a
+quiet machine, and the harness's first real act is the **non-regression SPRT
+of the finished E0 against the step-3b engine** (elo0=−5, elo1=0) — the
+instrument that retroactively audits both batches.
 
 Then the E0 exit criterion above, unchanged: the shunsai v0.1.0 release. No
 SPRT number may be attributed to a git rev that is not a release (CLAUDE.md
@@ -1041,6 +1259,9 @@ runnable there today:
 | Apery | `apery_rust/target/release/apery` | also material-only (no eval files present) |
 | Fairy-Stockfish | `Fairy-Stockfish/src/stockfish` | USI dialect |
 
-**Not present anywhere**: Lesserkai, 技巧2, shogi-server, Ayane, and any
-floodgate CSA archive. Step 6 has to download the game records; step 7 has to
-fetch Ayane (Apache-2.0) and vendor it.
+**Not present anywhere**: Lesserkai, 技巧2, shogi-server. The floodgate
+records behind `openings-v1` live in the gitignored `data/floodgate/` cache
+(`cargo run -p xtask -- fetch-floodgate` refills it; re-runs cost nothing).
+Ayane is not used — the harness is `crates/xtask`, own code (DECISIONS.md,
+2026-08-12). Engine paths go in `tools/opponents.toml`, copied from the
+committed `.example` — absolute paths only, the worktree trap again.

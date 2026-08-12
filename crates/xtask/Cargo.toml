@@ -1,0 +1,18 @@
+[package]
+name = "xtask"
+description = "rinsai's development tooling: the openings extractor and the match harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+rinsai-game.workspace = true
+rinsai-search.workspace = true
+shogi_core.workspace = true

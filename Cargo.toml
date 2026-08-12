@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rinsai-search", "crates/rinsai"]
+members = ["crates/rinsai-game", "crates/rinsai-search", "crates/rinsai", "crates/xtask"]
 
 # Crates are split when there is a reason, not up front — DESIGN.md §4 names
 # the phases the remaining ones arrive at.
@@ -41,7 +41,13 @@ shunsai = { git = "https://github.com/sugyan/shunsai", rev = "e58c16fc073f07ae79
 # asserts exactly one `shogi_core` in Cargo.lock.
 shogi_core = "0.1.5"
 shogi_usi_parser = "0.1"
+# The referee's legality source, deliberately not shunsai: a game the harness
+# referees with an independent implementation is a differential test of the
+# players rather than an echo of one of them.
+shogi_legality_lite = "0.1.3"
+shogi_official_kifu = "0.1.2"
 
+rinsai-game = { path = "crates/rinsai-game" }
 rinsai-search = { path = "crates/rinsai-search" }
 
 # WARNING: no shunsai feature may ever be enabled from here — not by a
