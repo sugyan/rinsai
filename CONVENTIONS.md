@@ -261,8 +261,10 @@ rules hold of both.
 - **A generated set's balance score comes from an iteration that finished.**
   The last `info` line a search publishes may belong to an iteration its node
   cap interrupted, whose score is a lower bound over a prefix of the root move
-  list; judging a position on that admits ones a completed search rejects.
-  DECISIONS.md carries what reading the wrong one cost v1.
+  list. ⚠️ **A lower bound against a two-sided window is wrong in both
+  directions** — it admits positions a completed search rejects *and* rejects
+  ones it admits — so "the bound is conservative" is not an argument for
+  leaving it. DECISIONS.md carries what reading the wrong line cost v1.
 
 ## The `info` line
 

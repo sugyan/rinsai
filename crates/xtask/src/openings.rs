@@ -332,9 +332,12 @@ fn build_move(game: &Game, mv: &CsaMove) -> Result<Move, String> {
 /// ⚠️ **The last line published is the wrong one to judge a position on.** A
 /// search that spends its node cap mid-iteration publishes that iteration
 /// anyway, and its score is the best over a *prefix* of the root move list —
-/// a lower bound, not the iteration's value. The filter admits on
-/// `|cp| <= max`, so a lower bound lets through positions a finished search
-/// would reject, and never the reverse.
+/// a lower bound, not the iteration's value.
+///
+/// ⚠️ **A lower bound against `|cp| <= max` errs in both directions**, which
+/// is the half that is easy to get wrong: it can sit inside the band while
+/// the finished value is above `+max`, and it can sit below `−max` while the
+/// finished value is inside. PROGRESS.md counts how often each happened.
 #[derive(Debug, Default)]
 struct ScoreSink(Mutex<Vec<(i32, bool, i32)>>);
 

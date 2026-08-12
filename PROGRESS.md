@@ -803,10 +803,14 @@ side, which no single-implementation test could.
 The generator's own doc claimed the balance score was "the last completed
 iteration's". It is not: the deepening loop publishes an `info` line for the
 iteration the node cap interrupted, and that score is the best over a *prefix*
-of the root move list — a lower bound. The filter therefore admits some
-positions a completed search would reject, and never the reverse; the
-positions that get lower bounds are the open, capture-rich ones the filter
-exists to exclude. Found by review after the set was frozen, and measured by
+of the root move list — a lower bound. ⚠️ **"And never the reverse" stood here
+until v2 measured it, and it was false**: the filter is the two-sided
+`|cp| <= 100`, so a lower bound errs *both* ways — inside the band while the
+finished value is above `+100`, and below `−100` while the finished value is
+inside. v2's section below counts each direction, and the second is the more
+common one. The positions that get lower bounds at all are the open,
+capture-rich ones the filter exists to exclude. Found by review after the set
+was frozen, and measured by
 re-scoring all 256 committed lines at the header's own settings — every
 `eval=` reproduced to the digit, so this is the pipeline's behaviour and not
 an artefact:
@@ -872,12 +876,26 @@ What the set actually changed:
 | lines shared with the other set | — | **252 of 256** |
 | regeneration at the recorded rev and seed | byte-identical | **byte-identical, twice** |
 
-**Four lines moved where only one picked line's verdict flipped**, and the
-direction of the candidate count is what explains it: the pass is lazy and
-stops at 256, so v2 reaching the target on *fewer* searches means at least one
-candidate v1 rejected is one v2 keeps — a flip the re-score above cannot see,
-because it only reads lines that were picked. Every flip in either direction
-shifts the per-game cap and the visit order for everything after it.
+⚠️ **Both directions of the error occur, and the one the sentence above denied
+is the more common.** Re-scoring the eight lines the two sets disagree about,
+at the frozen settings:
+
+| | lines | completed verdict | partial verdict |
+|---|---|---|---|
+| gained by v2 | **4** | keep — `+15, 0, 0, 0` | **reject** — `−200, −115, −115, −215` |
+| lost from v1 | 1 | reject — `+115` | keep — `0` |
+| lost from v1 | 3 | keep | keep — no verdict change at all |
+
+One line left because its verdict flipped in the direction v1's prose
+described. **Four entered because theirs flipped in the direction it said
+could not happen.** Three left with no verdict change: the pass is lazy and
+stops at 256, so four candidates being kept sooner ends the walk earlier and
+the tail v1 reached is never visited.
+
+The counts close on that account exactly. Over the first 305 candidates v2
+keeps 256 and rejects 49; v1 differs on five of them, so it keeps 253 and
+rejects 52, then takes four more candidates — keeping three, rejecting one —
+to reach 256 at 309 with 53 rejected.
 
 ⚠️ **The committed fixture corpus cannot tell the two rules apart, and no cap
 value tried fixes that.** On every candidate it holds, the interrupted
