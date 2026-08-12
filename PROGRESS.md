@@ -24,6 +24,7 @@ land as two pull requests with the harness first (DECISIONS.md, 2026-08-12).
 | 5 | Time management — byoyomi / Fischer / movetime, `stop` responsiveness | next — the last E0 step |
 | 6 | `openings-v1` extractor — floodgate CSA → balanced opening lines (`crates/xtask` arrives here) | **done** |
 | 7 | Match harness + SPRT — own Rust harness refereeing on `crates/rinsai-game`, `tools/opponents.toml.example` | **done** |
+| — | `openings-v2` — the balance score read from an iteration that finished, plus `completed_depth` on `BestMove` | **done** |
 
 ### E0 exit criteria not yet met
 
@@ -824,17 +825,76 @@ the only one that would not have been picked. Re-scoring the eighty shallowest
 at twenty times the cap moved five outside ±100, and twenty-one still had not
 finished depth 6.
 
-**The file is not wrong — the claim about how it was made was**, and the doc
-now says what the number is. Whether to regenerate as `openings-v2` under a
-"reject a candidate whose balance search hit the cap" rule is **open, and
-belongs to whoever runs the first SPRT that these openings decide**: it moves
-the measurement baseline, and paired play absorbs an unbalanced opening as
-extra variance rather than as bias, so the cost of leaving it is a slower test
-rather than a wrong one.
+**The file is not wrong — the claim about how it was made was.** The open
+question this section left to "whoever runs the first SPRT that these openings
+decide" is closed below: `openings-v2` is that decision, taken before step 5's
+SPRTs open from the set.
 
 ⚠️ **The CI reproducibility gate cannot see this.** The fixture pipeline runs
 at depth 3 and no fixture search reaches the cap, so the golden test exercises
-none of the behaviour that decided 232 of the 256 real lines.
+none of the behaviour that decided 232 of the 256 real lines. **Nor can any
+test written against that corpus** — see v2's section below, which is what a
+second corpus exists for.
+
+## `openings-v2` — the balance score comes from an iteration that finished
+
+`positions/openings-v2.sfen`, 256 lines, replacing v1 as the harness's default
+before the first SPRT opens from either. The rule adopted, against the
+"reject a candidate whose balance search hit the cap" one this file had
+parked, is in DECISIONS.md; the engine change it needed is a `completed_depth`
+on `BestMove::Play`, and `rinsai bench` reproduces every frozen count either
+side of it.
+
+Re-scoring all 256 of **v1's** lines at the frozen settings — depth 6, a
+2 000 000-node cap, a 16 MiB table, one cleared searcher per line:
+
+| | |
+|---|---|
+| lines whose last iteration was interrupted | 150 |
+| of those, whose completed score differs from the partial one | **6** |
+| of those, whose ±100 cp verdict differs | **1** |
+
+⚠️ **That middle figure is 6 where this file previously recorded 8**, against
+the same comparison. Both passes are recorded rather than one overwriting the
+other, which is this project's rule for a measurement that will not reconcile
+from the page. What the two passes *do* agree on: the interrupted count at
+150, the verdict-flip count at 1, and the line it names. The completed-depth
+histogram over the same run is 1 at depth 2, 48 at 3, 42 at 4, 141 at 5 and 24
+at 6 — the same 24 as the table above, and the same 232 that did not finish
+depth 6, re-partitioned by the depth each line's score actually came from.
+
+What the set actually changed:
+
+| | v1 | v2 |
+|---|---|---|
+| candidates searched to fill the target | 309 | **305** |
+| rejected on balance | 53 | 49 |
+| lines shared with the other set | — | **252 of 256** |
+| regeneration at the recorded rev and seed | byte-identical | **byte-identical, twice** |
+
+**Four lines moved where only one picked line's verdict flipped**, and the
+direction of the candidate count is what explains it: the pass is lazy and
+stops at 256, so v2 reaching the target on *fewer* searches means at least one
+candidate v1 rejected is one v2 keeps — a flip the re-score above cannot see,
+because it only reads lines that were picked. Every flip in either direction
+shifts the per-game cap and the visit order for everything after it.
+
+⚠️ **The committed fixture corpus cannot tell the two rules apart, and no cap
+value tried fixes that.** On every candidate it holds, the interrupted
+iteration's score and the last completed one are equal:
+
+| candidates | nominal depth | node caps | interrupted | divergent |
+|---|---|---|---|---|
+| 4 | 3 | 100 … 50 000, nine values | — | **0** |
+| 14 | 4, 5, 6 | 2 000 … 500 000, eight pairs | 7–13 of 14 | **0** |
+
+Six of 256 real lines diverge, so eleven games will not contain one by
+chance. The gate is therefore a second corpus of **one** game,
+`crates/xtask/tests/fixtures/floodgate-capped/`, chosen for a position that
+diverges: at depth 3 under a 5 000-node cap it scores 0 on the depth-2
+iteration it completes and −1380 on the depth-3 iteration the cap interrupts.
+The two rules disagree about keeping it at all, so the test fires on the
+mutation — verified by applying it.
 
 ### What the balance searches measured about the engine
 
@@ -858,14 +918,6 @@ argue against it.
 - **`fetch-net` / `release` subcommands** — later phases (DESIGN.md §4).
 - **`rinsai-game` publication and tuishogi's adoption of it** — deferred until
   the API has its second consumer in hand (DECISIONS.md, 2026-08-12).
-- **`openings-v2` under a reject-if-capped balance rule** — the section above.
-  It wants a decision from whoever the openings first measure, not from the
-  step that built them.
-- **A "was I cut off" signal on `Searcher`.** Fixing the balance filter's
-  *semantics* rather than its prose needs the search to say whether its last
-  published score came from a completed iteration. That is an API addition to
-  `rinsai-search` with one consumer, and the consumer is the regeneration
-  above, so it waits for it.
 - **`Ply::kifu` computed on demand.** It costs ~95% of `Game::play` — 79 µs
   per ply against 3.9 µs without it, because the notation library brute-forces
   every candidate move to pick a disambiguation character — and the harness
@@ -884,12 +936,6 @@ argue against it.
   `resign`). CONVENTIONS.md's named-caller rule asks for a specific caller in
   each doc; tuishogi is the caller for all of them and is a plan until the
   crate publishes. Either name its screens or delete them, at publication.
-- **CONVENTIONS.md rows for the second frozen position set.** Its `bench`
-  section states the frozen-set rule naming only `bench-v1.sfen`, and its
-  fixture-provenance section catalogues committed fixtures; neither gained a
-  row for `openings-v1.sfen` or the eleven committed floodgate records. The
-  rules currently live in the generated artefact's own header. Adding them is
-  a CONVENTIONS.md change, which needs a DECISIONS.md entry of its own.
 
 ## Measurements the conventions rest on
 
@@ -1118,13 +1164,27 @@ attributed rather than measured here: `@mizarjp/yaneuraou.k-p` ships a playable
 browser shogi engine with a small net embedded in about 2.6 MB, which is the
 order a web build has to reach.
 
-## After steps 6+7 — step 5 is E0's last
+## After `openings-v2` — step 5 is E0's last, and it is two pull requests
 
-Step 5 (time management) lands as its own pull request, the second of the two
-batch PRs (DECISIONS.md, 2026-08-12); what it has to get right is the section
-below. Gates: clock-simulation tests, `stop` responsiveness, and fifty
-real-time games against the local ladder with zero flag falls. With the
-harness in hand, the constants E0 inherited untuned — the poll interval, the
+⚠️ **Step 5's gate needs an instrument that does not exist**, which is the one
+thing the plan for it did not account for. Its gate is fifty real-time games
+with zero flag falls, and **the harness has no notion of a clock at all**: it
+sends `go nodes N` and nothing else, `Seat::bestmove` takes no clock and
+returns no elapsed time, no per-game budget is tracked, and `EndReason`'s only
+timeout is the hang detector — which is classified *abnormal*, so a real flag
+fall would be reported as a degraded run rather than a loss. So step 5 lands
+as two pull requests, harness first, on the same reasoning that put steps 6+7
+ahead of it:
+
+1. **The harness's byoyomi time control**, plus a normal-loss flag-fall
+   result. ⚠️ Verifiable with the engine untouched, because rinsai already
+   honours `byoyomi` — and ⚠️ **the steps 6+7 mirror gate does not carry
+   over**: a real-time game is not deterministic, so the exactly-50.00% check
+   becomes a statistical one plus unit tests on the clock bookkeeping.
+2. **The engine's time management** — the section below — now with a gate that
+   can actually be run.
+
+With that in hand, the constants E0 inherited untuned — the poll interval, the
 allowance shape — get their SPRTs immediately after, as real-time patches on a
 quiet machine, and the harness's first real act is the **non-regression SPRT
 of the finished E0 against the step-3b engine** (elo0=−5, elo1=0) — the
@@ -1260,7 +1320,7 @@ runnable there today:
 | Fairy-Stockfish | `Fairy-Stockfish/src/stockfish` | USI dialect |
 
 **Not present anywhere**: Lesserkai, 技巧2, shogi-server. The floodgate
-records behind `openings-v1` live in the gitignored `data/floodgate/` cache
+records behind both opening sets live in the gitignored `data/floodgate/` cache
 (`cargo run -p xtask -- fetch-floodgate` refills it; re-runs cost nothing).
 Ayane is not used — the harness is `crates/xtask`, own code (DECISIONS.md,
 2026-08-12). Engine paths go in `tools/opponents.toml`, copied from the
