@@ -9,7 +9,7 @@ This file defines project rules that every implementation session (Claude Code) 
 - **Route**: **NNUE + αβ first**; DL/MCTS is a conditional later option, not a rejected one. The conditions are written down in DESIGN.md E6 — do not start DL work without checking them.
 - **Scope**: search, evaluation, NNUE inference and training, USI/CSA, time management, repetition (千日手), declaration (入玉宣言), self-play, the match harness. **Move generation is not in scope** — it belongs to shunsai. Neither is SFEN parsing (`shogi_usi_parser`) or mate solving (`tsumeshogi-solver`).
 - **Phases**: staged **E0–E6** (numbered so as not to collide with shunsai's M0–M7). See DESIGN.md §5. Know which phase a piece of work belongs to before starting it.
-- **Read [PROGRESS.md](./PROGRESS.md) first.** It is the ledger: which sub-step is next, what each step delivered, the surveyed shunsai API and its traps. Update it at the end of every step.
+- **Read [PROGRESS.md](./PROGRESS.md) first.** It is the ledger: which sub-step is next, what each step delivered, the surveyed shunsai API and its traps. Update it at the end of every pull request; a step's narrative lives in its pull request description, and the ledger keeps the state, the gates and the numbers.
 
 **Each document has one job, and nothing is written in two of them.**
 
@@ -19,7 +19,7 @@ This file defines project rules that every implementation session (Claude Code) 
 | CLAUDE.md | the rules a session must follow | this file |
 | [CONVENTIONS.md](./CONVENTIONS.md) | what is frozen and already built on, by subject | changing one needs a DECISIONS.md entry |
 | [DECISIONS.md](./DECISIONS.md) | what was decided and why, including what was rejected | dated, append-only, superseded rather than edited |
-| [PROGRESS.md](./PROGRESS.md) | the state, the next action, **and every measured number** | rewritten each step |
+| [PROGRESS.md](./PROGRESS.md) | the state, the next action, **and every measured number** | rewritten each pull request |
 
 ## 2. ⚠️ Top rule: licensing (stay permissive, no GPL reuse)
 
@@ -52,9 +52,9 @@ Nothing is adopted on argument. `patch → bench → fixed-node paired games →
 
 - **`bench`** (fixed positions × fixed depth) is the search analogue of perft: node-count agreement is a regression test, and a patch that changes node counts unintentionally is a bug, not an improvement.
 - **SPRT**: gain tests at elo0=0 / elo1=5; non-regression gates at elo0=-5 / elo1=0; α=β=0.05. **Paired openings with colours swapped are mandatory.** Feature patches run at fixed nodes; speed and time-management patches run in real time.
-- **One feature = one SPRT.** Do not bundle.
+- **One feature = one SPRT.** Do not bundle. ⚠️ The rule governs **strength patches** — changes whose intended effect is Elo. Correctness and infrastructure work is gated by its own deterministic suites (scenario, conformance, parity, `bench`) and may land batched; DECISIONS.md (2026-08-12) draws the line.
 - **Record the rejected numbers too.** This is shunsai's habit and it carries over: a measured loss is a result worth keeping. **The number goes in a PROGRESS.md table; the decision it supports goes in DECISIONS.md and points at the table.** Never both — two copies of a measurement drift, and this project has already caught one pair 2× apart and a second pair that had quietly diverged in the docs.
-- Benchmarking needs a quiet machine. A noisy run is not a result.
+- Benchmarking needs a quiet machine. A noisy run is not a result. ⚠️ This binds **times and real-time games**: a fixed-node game between deterministic engines is decided by the opening and the budgets, not by load, so the fixed-node SPRT queue may run beside other work — timing measurements and real-time SPRTs may not.
 
 ## 4. Prose has an address
 

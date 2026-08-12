@@ -113,6 +113,7 @@ Numbered **E0–E6** so as not to collide with shunsai's M0–M7. Rating targets
 - **Repetition (千日手) is mandatory at E0 and lives here, not in shunsai.** Stack `(key(), Hand, in_check())` per ply; use `key()` as the first filter and hand equality to confirm. Perpetual check — where the checking side loses — is decided from the `in_check()` history. shunsai holds no game history by design, so this is the engine's responsibility.
 - Harness: **Ayane (Apache-2.0) adopted immediately**, plus SPRT scripts. Sparring by running GPL binaries: Lesserkai → node-limited YaneuraOu → 技巧2.
 - **shunsai API additions: none, deliberately.** E0 building against a frozen shunsai is the layering's first contact with a real consumer.
+- ⚠️ **The remaining sub-steps land as two pull requests, harness first**: steps 6+7 (openings, match harness, SPRT), then step 5 (time management) — so the new instrument gates step 5's real-time behaviour, and its first run is a non-regression SPRT of the finished E0 against the step-3b engine. [DECISIONS.md](./DECISIONS.md), 2026-08-12; the gates are in [PROGRESS.md](./PROGRESS.md)'s next-step section.
 - Infrastructure: repository skeleton, CLAUDE.md, USI conformance dialogue tests, a `bench` command (fixed positions × fixed depth, following the Stockfish convention), CI, and `openings-v1` — balanced positions extracted in-house from high-rated floodgate games, reusing the method of shunsai's `examples/gen_bench_positions.rs`.
 - Verification: fixed-depth node counts as a regression test (the search analogue of perft), a mate-in-1..5 suite, repetition and perpetual-check scenario tests.
 
@@ -136,17 +137,20 @@ Introduction order, with the shogi-specific caveats that differ from chess:
 
 **SPRT discipline** — the parameters are in [CLAUDE.md](./CLAUDE.md) and are not restated here. What is specific to E1 is the pacing: **one item on this list is one SPRT**, in list order, and an item that fails to pass is recorded in DECISIONS.md with its numbers rather than retried until it does.
 
+**Measurement is serial; implementation is not.** Features are built ahead, each on its own branch with its unit tests and bench counts, while the harness drains one SPRT at a time — a fixed-node game between deterministic engines is noise-immune (CLAUDE.md §3), so the queue runs beside development sessions. Merge on pass, rebase the queue behind it. The bottleneck is machine time, which is the correct one.
+
 **This is where shunsai API additions start** — see §6.
 
 ### E2 — real-world infrastructure: resident on floodgate (size M)
 
-- **Two stages**: short term, run a GPL bridge as a separate process to get onto floodgate immediately and start the rating series; medium term, an own Rust CSA client (also needed for WCSC). The `csa` crate is MIT and reusable as a record parser; integration-test against a locally hosted shogi-server.
+- **Two stages**: short term, run a GPL bridge as a separate process to get onto floodgate immediately and start the rating series; medium term, an own Rust CSA client (also needed for WCSC). The `csa` crate is MIT and reusable as a record parser; integration-test against a locally hosted shogi-server. ⚠️ **The short-term stage is not sequenced after E1**: it starts as soon as step 5's wire margin exists and runs beside E1's queue — the rating series is calendar-bound, and every week it starts earlier is a week of baseline the later generations are compared against.
 - **Declaration (入玉宣言, the 27-point rule)** implemented engine-side from shunsai's existing bitboard accessors — `bestmove win` / `%KACHI`. No shunsai API addition.
 - Lazy SMP with a shared TT (`Position` is cloned once per thread at startup, so there is no allocation problem), ponder, and real time management (floodgate uses Fischer; confirm WCSC's rules for the year).
 - Operations: a small resident cloud VM — **aarch64 keeps the NEON path live, and a Mac is unusable here because sleep and NAT corrupt the rating series** — version encoded in the account name so ratings become generation-comparison data, systemd with auto-reconnect, a game-record archive, a rating dashboard.
 
 ### E3 — NNUE, first generation (size L — the biggest single step)
 
+- **The pipeline lands end-to-end as one batch, trusted on the deterministic checks in the verification line below before any strength claim** — until the loop closes, no component of it can be evaluated at all. Strength enters once, at the end: generation 0 over the material evaluation is a single large-margin SPRT.
 - **Start at `halfkp_256x2-32-32`.** HalfKP: king 81 × BonaPiece 1548 = 125,388 dimensions per perspective, ×2 perspectives → 256×2 → 32 → 32 → 1. Larger networks do not pay at first-generation data quality; iteration speed is what matters.
 - **Dirty pieces are computed engine-side** from `piece_at` reads before `do_move`, leaving shunsai untouched. A `DirtyPieces`-returning API is considered *with measurement* only if it shows up in a profile. The accumulator stack parallels the search stack; refresh on own-king moves.
 - int16/int8 quantization with both SIMD backends (NEON for the development machine and aarch64 VMs, AVX2/VNNI for x86 production).
@@ -154,7 +158,7 @@ Introduction order, with the shogi-specific caveats that differ from chess:
 - **Data bootstrap**: generation 0 is self-play by the finished E1 engine (random openings, depth 6–9 labels), **100 M positions** (20–50 M floor), plus own re-labelling of floodgate game positions. Generation runs on CPU spot fleets (aarch64 spot is cheap and compounds with the NEON work); training on an **L4/A10G-class GPU for 1–3 days**, inside the monthly budget. MPS is for prototyping only.
 - **Generational iteration**: new network → self-play → 300–500 M positions per generation at depth 8–10 → retrain. Two to four generations give a marked gain. **Mix in a few percent of entering-king and declaration positions** — a classic NNUE weakness, and E2's declaration code is reused to generate them.
 - Experiment tracking: wandb with local JSONL duplication; evaluation files named by content hash, registered in `NETS.md`, one-to-one with a git tag.
-- Verification: pre/post-quantization agreement within tolerance, Rust inference against PyTorch inference on fixed positions, SPRT per generation, floodgate rating.
+- Verification: pre/post-quantization agreement within tolerance, Rust inference against PyTorch inference on fixed positions, an incremental-against-refresh accumulator differential over random game paths, SPRT per generation, floodgate rating.
 
 ### E4 — iteration at scale, and adapting to production hardware (size L, mostly compute-bound)
 
@@ -175,7 +179,7 @@ Introduction order, with the shogi-specific caveats that differ from chess:
 
 ## 6. The shunsai API extension catalogue
 
-Each addition is prototyped on a shunsai branch, measured on shunsai's own bench, adopted, **released**, and then required by version here. Several of them also unlock a re-measurement that shunsai's decision log parked for exactly this consumer.
+Each addition is prototyped on a shunsai branch, measured on shunsai's own bench, adopted, **released**, and then required by version here — a release per *adoption*, not one per API, so several additions adopted together may travel as one release. Several of them also unlock a re-measurement that shunsai's decision log parked for exactly this consumer.
 
 | API | Phase | The shunsai re-measurement it unlocks |
 |---|---|---|

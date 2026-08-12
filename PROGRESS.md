@@ -11,7 +11,8 @@ step.
 
 E0 is split into seven sub-steps, one per pull request — except step 3, which
 became two when building it showed that quiescence alone changes three frozen
-conventions and rebaselines every committed node count (DECISIONS.md).
+conventions and rebaselines every committed node count, and steps 5–7, which
+land as two pull requests with the harness first (DECISIONS.md, 2026-08-12).
 
 | # | Step | Status |
 |---|---|---|
@@ -20,9 +21,9 @@ conventions and rebaselines every committed node count (DECISIONS.md).
 | 3a | Quiescence search — captures only, `seldepth` | **done** |
 | 3b | TT + transposition-move ordering — `hashfull`, `USI_Hash`, `rinsai bench` | **done** |
 | 4 | Repetition (千日手) + 連続王手 — history *queries*, mate-in-1..5 suite | **done** |
-| 5 | Time management — byoyomi / Fischer / movetime, `stop` responsiveness | next |
-| 6 | `openings-v1` extractor — floodgate CSA → balanced opening SFENs (`crates/xtask` arrives here) | |
-| 7 | Match harness + SPRT — Ayane vendored, `tools/opponents.toml.example` | |
+| 5 | Time management — byoyomi / Fischer / movetime, `stop` responsiveness | second batch PR — its gates want the harness |
+| 6 | `openings-v1` extractor — floodgate CSA → balanced opening SFENs (`crates/xtask` arrives here) | next — first batch PR, with 7 |
+| 7 | Match harness + SPRT — Ayane vendored, `tools/opponents.toml.example` | next — first batch PR, with 6 |
 
 ### E0 exit criteria not yet met
 
@@ -840,6 +841,18 @@ of non-blank non-comment lines:
 DESIGN.md was 63 426 bytes of which §9 was 40 482 (63.8%), and §9 accounted for
 37 241 of the file's 39 785 bytes of lifetime growth (93.6%).
 
+**What the per-step ritual cost, one pass over the session transcripts
+(2026-08-12).** The figures the 2026-08-12 DECISIONS.md entry rests on.
+Transcript analysis is a proxy — operations and bytes, not minutes — and this
+is one pass, not a maintained series.
+
+| | |
+|---|---|
+| sessions, 2026-08-04 → 08-11 | 14 (85 human turns, 3 789 assistant turns) |
+| Edit/Write operations targeting `.md` files | 33% of 530 |
+| transcript bytes, review-dedicated worktree vs the implementation worktree it began by reviewing | ~12 MB vs ~6.7 MB |
+| `main` commits since code exists that are substantively prose-only | 2 of 6 |
+
 **⚠️ The wasm target compiles and the binary has no engine in it.** Measured on
 rustc 1.94.1, `wasm32-unknown-unknown`, at `1dbf0cd`. `cargo check` for the
 target passes unmodified; the release binary does not run:
@@ -879,7 +892,31 @@ attributed rather than measured here: `@mizarjp/yaneuraou.k-p` ships a playable
 browser shogi engine with a small net embedded in about 2.6 MB, which is the
 order a web build has to reach.
 
-## Step 5 — what to do next
+## After step 4 — the two batch pull requests
+
+Steps 5–7 land as two pull requests rather than three, harness first
+(DECISIONS.md, 2026-08-12). Each gets one review pass, over the whole batch.
+
+1. **Steps 6+7 as one PR** — the `openings-v1` extractor, Ayane vendored, the
+   SPRT driver, `tools/opponents.toml.example`. Gates, all deterministic: the
+   extractor reproduces its set from (rev, seed) with provenance in the file
+   header; the SPRT arithmetic is unit-tested against synthetic game streams;
+   colour-swapped pairing is asserted structurally; a rinsai-vs-rinsai match
+   lands near 50%; the YaneuraOu node ladder orders itself. Its first real run
+   is a **non-regression SPRT of the finished E0 against the step-3b engine**
+   (elo0=−5, elo1=0) — the instrument that retroactively looks at the batch.
+2. **Step 5 as one PR** — time management; what it has to get right is the
+   section below. Gates: clock-simulation tests, `stop` responsiveness, and
+   fifty real-time games against the local ladder with zero flag falls. With
+   the harness already in hand, the constants E0 inherited untuned — the poll
+   interval, the allowance shape — get their SPRTs immediately after, as
+   real-time patches on a quiet machine.
+
+Then the E0 exit criterion above, unchanged: the shunsai v0.1.0 release. No
+SPRT number may be attributed to a git rev that is not a release (CLAUDE.md
+§6), so the release gates the first E1 ledger entry, not just "E0 done".
+
+## Step 5 — what it has to get right
 
 Time management: turning `btime` / `wtime` / `binc` / `winc` into a per-move
 allowance, which CONVENTIONS.md currently records as *deliberately ignored* —
@@ -904,7 +941,7 @@ allowance, which CONVENTIONS.md currently records as *deliberately ignored* —
 4. **The unclocked first iteration overruns by the whole of it**, not just by
    root move 0, which is all the guarantee needs. Narrowing it is not hard and
    it changes what the engine does with a clock — so it is this step's, and the
-   measured worst case is in the table below.
+   measured worst case is in the table above.
 
 Also waiting, and not urgent: the unbounded input line above, which E2's CSA
 client is the reason to bound and the phase that can choose the bound.
