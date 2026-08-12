@@ -743,6 +743,41 @@ overnight the day something needs it, at low concurrency: results are
 load-immune (CLAUDE.md §3), but the machine is not, and a match fleet's
 concurrency is chosen for the machine, not for the statistics.
 
+### The review pass, and what it found the tests could not
+
+A max-effort review of the finished batch — ten reading angles, each finding
+verified against the code — found no defect the deterministic suites had been
+built to catch and several they could not:
+
+| | |
+|---|---|
+| findings reported | 15 |
+| confirmed by running the failure, not by reading | 13 |
+| defects in the harness's *decision* path | 5 |
+| dropped tests, i.e. rules with no remaining guard | 4 |
+| false claims in prose | 9 |
+
+⚠️ **The largest single finding was a hole, not a bug**: turning the
+perpetual-check rule from "checked on every move" into "checked at least once"
+left the entire workspace green, so the referee could have awarded a game win
+in a drawn position with nothing to say so. Four tests had come across from
+tuishogi with the rules layer and been lost in the move; they are restored,
+each verified by applying the mutation its note names.
+
+The rest of the confirmed list, each fixed in this branch: the SPRT summary
+recomputed its verdict from counts that include pairs landing after the bound
+was crossed, so a decided test could print "inconclusive"; `--alpha`/`--beta`
+were unvalidated, and out of range they make the stopping bounds infinite or
+NaN, deciding a test on its first pair; openings were validated against the
+referee's parser but not the engine's, which turns a line only one of them
+accepts into a fabricated loss on every pair it appears in — and a mirror gate
+cannot see that, because one colour loses every game and the pair still sums
+to a half; two runs of one pairing in the same second wrote one log file
+through two cursors, producing a record that reads as a single coherent run
+while attributing one run's games to the other's parameters; and the
+`position` string carrying game state to both engines was asserted by no test
+at all.
+
 ### The sabotage re-run at steps 6+7: six mutations, six fired, no false notes
 
 The diff touched two files carrying standing sabotage notes —
@@ -762,6 +797,55 @@ One addition worth recording: the `OCCURRENCES - 2` mutation now also fires
 the cross-implementation differential net catches a rule mutation from either
 side, which no single-implementation test could.
 
+### ⚠️ The balance filter scores an interrupted search, and the frozen set is built on it
+
+The generator's own doc claimed the balance score was "the last completed
+iteration's". It is not: the deepening loop publishes an `info` line for the
+iteration the node cap interrupted, and that score is the best over a *prefix*
+of the root move list — a lower bound. The filter therefore admits some
+positions a completed search would reject, and never the reverse; the
+positions that get lower bounds are the open, capture-rich ones the filter
+exists to exclude. Found by review after the set was frozen, and measured by
+re-scoring all 256 committed lines at the header's own settings — every
+`eval=` reproduced to the digit, so this is the pipeline's behaviour and not
+an artefact:
+
+| how the emitted `eval=` was produced | lines |
+|---|---|
+| a completed depth-6 search, as the header's wording implies | **24** |
+| a completed iteration at depth 2–5 | 82 |
+| an iteration cut off at the cap | **150** |
+
+One line's verdict actually turns on it. `openings-v1.sfen:350` records
+`eval=+0`; its depth-4 iteration *completes* at `cp 115`, outside the ±100
+window, and the depth-5 iteration is cut off and publishes `cp 0`. Of the
+eight lines whose partial score differs from their last completed one, it is
+the only one that would not have been picked. Re-scoring the eighty shallowest
+at twenty times the cap moved five outside ±100, and twenty-one still had not
+finished depth 6.
+
+**The file is not wrong — the claim about how it was made was**, and the doc
+now says what the number is. Whether to regenerate as `openings-v2` under a
+"reject a candidate whose balance search hit the cap" rule is **open, and
+belongs to whoever runs the first SPRT that these openings decide**: it moves
+the measurement baseline, and paired play absorbs an unbalanced opening as
+extra variance rather than as bias, so the cost of leaving it is a slower test
+rather than a wrong one.
+
+⚠️ **The CI reproducibility gate cannot see this.** The fixture pipeline runs
+at depth 3 and no fixture search reaches the cap, so the golden test exercises
+none of the behaviour that decided 232 of the 256 real lines.
+
+### What the balance searches measured about the engine
+
+Not a strength claim — a cost. Real floodgate middlegames at plies 12–24 cost
+**8.8 M to over 40 M nodes** for a depth-6 search, against 13–20 ms from the
+initial position. That is the same gap E1's items 2, 8 and 9 (move ordering,
+SEE, futility) exist to close, measured on positions the engine will actually
+be asked about rather than on the opening. It is recorded here because
+CLAUDE.md §3 keeps the numbers that argue for work as well as the ones that
+argue against it.
+
 ### Deliberately not built, each with its owner
 
 - **Time-based games.** The harness sends `go nodes` and nothing clock-shaped;
@@ -774,6 +858,38 @@ side, which no single-implementation test could.
 - **`fetch-net` / `release` subcommands** — later phases (DESIGN.md §4).
 - **`rinsai-game` publication and tuishogi's adoption of it** — deferred until
   the API has its second consumer in hand (DECISIONS.md, 2026-08-12).
+- **`openings-v2` under a reject-if-capped balance rule** — the section above.
+  It wants a decision from whoever the openings first measure, not from the
+  step that built them.
+- **A "was I cut off" signal on `Searcher`.** Fixing the balance filter's
+  *semantics* rather than its prose needs the search to say whether its last
+  published score came from a completed iteration. That is an API addition to
+  `rinsai-search` with one consumer, and the consumer is the regeneration
+  above, so it waits for it.
+- **`Ply::kifu` computed on demand.** It costs ~95% of `Game::play` — 79 µs
+  per ply against 3.9 µs without it, because the notation library brute-forces
+  every candidate move to pick a disambiguation character — and the harness
+  never reads it. Making it lazy is an API change to a crate whose second
+  consumer is tuishogi, which *does* read it, so it goes with the publication
+  above rather than ahead of it.
+- **Killing an engine's whole process group, and deadlines on writes to a
+  child.** `Drop` sends `SIGKILL` to the child it spawned, which is the engine
+  itself for every binary in the roster; a launcher *script* that does not
+  `exec` would leave the real engine behind. And a child that stops draining
+  its stdin can block a write with no timeout. Both are latent — nothing in
+  the roster is a script, and no engine has wedged that way — and both want
+  care rather than a quick patch.
+- **Unused `pub` surfaces on `rinsai-game`** (`from_position`, `last_move`,
+  `check_squares`, `destinations`, `drop_destinations`, `promotion`, `undo`,
+  `resign`). CONVENTIONS.md's named-caller rule asks for a specific caller in
+  each doc; tuishogi is the caller for all of them and is a plan until the
+  crate publishes. Either name its screens or delete them, at publication.
+- **CONVENTIONS.md rows for the second frozen position set.** Its `bench`
+  section states the frozen-set rule naming only `bench-v1.sfen`, and its
+  fixture-provenance section catalogues committed fixtures; neither gained a
+  row for `openings-v1.sfen` or the eleven committed floodgate records. The
+  rules currently live in the generated artefact's own header. Adding them is
+  a CONVENTIONS.md change, which needs a DECISIONS.md entry of its own.
 
 ## Measurements the conventions rest on
 
