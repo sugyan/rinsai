@@ -71,7 +71,7 @@ A doc comment answers three questions and no others: **what is this**, **how do 
 | what a later step will do | PROGRESS.md's next-step section, or DESIGN.md's roadmap |
 | a restatement of the signature | deleted; it moves nowhere |
 
-**Why volume is the lever, and not care.** Three review passes established the same finding at increasing strength: a *measurement* in a comment goes stale silently; an *invariant* goes stale faster — six of them were false on the day they were written, against code in the same commit; and one step's review found **eleven false claims in its prose and zero defects in its code**. `cargo doc -D warnings` sees none of this and no CI job can, because an invariant is prose. The instrument that works is reading every claim in a diff against the code beneath it, and it has now been run three times and found new false claims every time. **A claim that is not written cannot be false.** That is the only instrument that scales, so the rule is to write less, not to check harder.
+**Why volume is the lever, and not care.** Three review passes established the same finding at increasing strength: a *measurement* in a comment goes stale silently; an *invariant* goes stale faster — six of them were false on the day they were written, against code in the same commit; and one step's review found **eleven false claims in its prose and zero defects in its code**. `cargo doc -D warnings` sees none of this and no CI job can, because an invariant is prose. The instrument that works is reading every claim in a diff against the code beneath it, and it has found new false claims every time it has been run. **A claim that is not written cannot be false.** That is the only instrument that scales, so the rule is to write less, not to check harder.
 
 Consequences worth stating outright:
 
@@ -79,6 +79,7 @@ Consequences worth stating outright:
 - **A forward reference stays only if it is load-bearing.** Naming the caller that keeps an unused surface alive (CONVENTIONS.md's named-caller rule) is load-bearing and fits on one line. "E1 will add killers here" is not; it belongs in the roadmap.
 - **A test's doc says what the test would catch, not what it caught last time.** A sabotage note is the deliberate exception to "the argument lives elsewhere": it has to sit on the test it describes.
 - **Do not write a comment correcting an earlier version of itself.** Fix the comment; the correction, if it is interesting, is a DECISIONS.md entry.
+- **A doc comment may only assert things about the item it documents.** Anything about code elsewhere is a pointer or it is nothing — never a restatement, however short and however true it looks. This is the rule the table's rows are instances of, and it is the one that predicts where the false claims are: every claim step 4's review refuted was about something the writer could not check from the same screen — a store a hundred lines down, another file, a test run not yet made, a sum. Not one contract sentence, whose subject *was* the item, was wrong.
 
 ## 5. Correctness baseline
 

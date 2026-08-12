@@ -283,7 +283,13 @@ carries the rule.
   implementation detail. Assert "this is legal here" by replaying the move into
   a position the test builds itself.
 - **A sabotage note is only worth writing if the mutation was made and the test
-  went red**, and it has to sit on the test it describes. ⚠️ **Re-run every
+  went red**, and it has to sit on the test it describes. ⚠️ **It may state
+  what that run showed and no more.** "In either run", "in both loops",
+  "every row but the first" are generalisations past the mutation actually
+  applied, and each has shipped as a false note while satisfying the sentence
+  above — the mutation was made, a test did go red, and the note then claimed
+  a second site nobody touched. Name the site mutated and the test that fired;
+  if a neighbouring site was not tried, try it or say so. ⚠️ **Re-run every
   sabotage after a change, including the ones a previous step already
   verified** — a note is trusted exactly because it was verified once, and a
   note that cannot fire is worse than none.
