@@ -438,40 +438,36 @@ pub fn run(args: &[String]) -> ExitCode {
     let mut rev: Option<String> = None;
     let mut cfg = PipelineConfig::frozen_v1();
     let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--dates" => dates = iter.next().cloned(),
-            "--root" => {
-                if let Some(v) = iter.next() {
-                    root = PathBuf::from(v);
-                }
-            }
-            "--out" => {
-                if let Some(v) = iter.next() {
-                    out_path = PathBuf::from(v);
-                }
-            }
-            // The header's rev is the provenance of the *original* generation.
-            // To reproduce a committed file byte for byte, pass the rev its
-            // header records — HEAD has necessarily moved past it, since the
-            // commit that added the file came after the run that stamped it.
-            "--rev" => rev = iter.next().cloned(),
-            "--seed" => match iter.next().map(|v| parse_seed(v)) {
-                Some(Ok(seed)) => cfg.seed = seed,
-                Some(Err(e)) => {
-                    eprintln!("gen-openings: {e}");
-                    return usage();
-                }
-                None => {
-                    eprintln!("gen-openings: --seed wants a value");
-                    return usage();
-                }
-            },
-            other => {
-                eprintln!("gen-openings: unknown argument `{other}`");
-                return usage();
+    // ⚠️ A flag whose value is missing must be an error, never a silent
+    // fallback: `--out` with the path eaten by the shell would otherwise
+    // rewrite the frozen set in place, and `--rev` would stamp today's HEAD
+    // as the provenance of a run it does not describe.
+    let mut parsed = || -> Result<_, String> {
+        while let Some(arg) = iter.next() {
+            let mut value = || {
+                iter.next()
+                    .cloned()
+                    .ok_or_else(|| format!("`{arg}` wants a value"))
+            };
+            match arg.as_str() {
+                "--dates" => dates = Some(value()?),
+                "--root" => root = PathBuf::from(value()?),
+                "--out" => out_path = PathBuf::from(value()?),
+                // The header's rev is the provenance of the *original*
+                // generation. To reproduce a committed file byte for byte,
+                // pass the rev its header records — HEAD has necessarily
+                // moved past it, since the commit that added the file came
+                // after the run that stamped it.
+                "--rev" => rev = Some(value()?),
+                "--seed" => cfg.seed = parse_seed(&value()?)?,
+                other => return Err(format!("unknown argument `{other}`")),
             }
         }
+        Ok(())
+    };
+    if let Err(e) = parsed() {
+        eprintln!("gen-openings: {e}");
+        return usage();
     }
     let Some(dates) = dates else {
         eprintln!("gen-openings: --dates is required");
@@ -540,7 +536,15 @@ pub fn run(args: &[String]) -> ExitCode {
                 .lines()
                 .filter(|l| l.starts_with("startpos"))
                 .count();
-            if let Err(e) = std::fs::write(&out_path, contents) {
+            // Written beside the target and renamed, the same shape
+            // `fetch-floodgate` uses: an interrupted write must not leave a
+            // truncated opening set that the harness would then load without
+            // complaint.
+            let part = out_path.with_extension("part");
+            if let Err(e) =
+                std::fs::write(&part, contents).and_then(|()| std::fs::rename(&part, &out_path))
+            {
+                let _ = std::fs::remove_file(&part);
                 eprintln!("gen-openings: write {}: {e}", out_path.display());
                 return ExitCode::FAILURE;
             }

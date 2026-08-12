@@ -18,19 +18,26 @@ pub fn run(args: &[String]) -> ExitCode {
     let mut dates: Option<String> = None;
     let mut root = PathBuf::from("data/floodgate");
     let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--dates" => dates = iter.next().cloned(),
-            "--root" => {
-                if let Some(v) = iter.next() {
-                    root = PathBuf::from(v);
-                }
-            }
-            other => {
-                eprintln!("fetch-floodgate: unknown argument `{other}`");
-                return usage();
+    // A flag whose value is missing is an error rather than a silent
+    // fallback to the default — the same rule the other subcommands follow.
+    let mut parsed = || -> Result<_, String> {
+        while let Some(arg) = iter.next() {
+            let mut value = || {
+                iter.next()
+                    .cloned()
+                    .ok_or_else(|| format!("`{arg}` wants a value"))
+            };
+            match arg.as_str() {
+                "--dates" => dates = Some(value()?),
+                "--root" => root = PathBuf::from(value()?),
+                other => return Err(format!("unknown argument `{other}`")),
             }
         }
+        Ok(())
+    };
+    if let Err(e) = parsed() {
+        eprintln!("fetch-floodgate: {e}");
+        return usage();
     }
     let Some(dates) = dates else {
         eprintln!("fetch-floodgate: --dates is required");

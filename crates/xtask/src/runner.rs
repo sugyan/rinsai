@@ -7,6 +7,7 @@
 //! Determinism per game comes from fresh processes: no table state, no
 //! option drift, nothing carried between games.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -463,22 +464,49 @@ fn log_game(
 
 fn load_openings(path: &PathBuf) -> Result<Vec<String>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let openings: Vec<String> = text
+    // The physical line number travels with the opening: a message pointing
+    // at the ordinal sends the reader to a comment line, and the offset grows
+    // through a file whose openings each carry a provenance comment.
+    let openings: Vec<(usize, String)> = text
         .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(String::from)
+        .enumerate()
+        .map(|(index, line)| (index + 1, line.trim()))
+        .filter(|(_, line)| !line.is_empty() && !line.starts_with('#'))
+        .map(|(number, line)| (number, line.to_owned()))
         .collect();
     if openings.is_empty() {
         return Err(format!("{}: no openings", path.display()));
     }
-    // Fail before any engine spawns: every line must be a position the
-    // referee can replay.
-    for (index, opening) in openings.iter().enumerate() {
-        rinsai_game::Game::from_usi_position(opening)
-            .map_err(|e| format!("{} line {}: {e}", path.display(), index + 1))?;
+
+    // Every check here happens before a single engine spawns, because each of
+    // these failures is silent once games are running: a line the engine
+    // refuses becomes a fabricated illegal-move loss, an already-decided line
+    // is a guaranteed draw no strength gap can move, and a duplicate is an
+    // opening played twice per lap while another is played once.
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for (number, opening) in &openings {
+        let at = |e: String| format!("{} line {number}: {e}", path.display());
+        let game = rinsai_game::Game::from_usi_position(opening)
+            .map_err(|e| at(format!("the referee cannot replay this: {e}")))?;
+        if let Some(outcome) = game.outcome() {
+            return Err(at(format!(
+                "the game is already over here ({outcome}), so neither engine would be asked \
+                 for a move"
+            )));
+        }
+        // The engine's parser is stricter than the referee's — it bounds
+        // piece counts and rejects an out-of-range SFEN move number, where
+        // `PartialPosition::from_usi` saturates and reports success. An
+        // opening only the referee accepts makes the engine keep its previous
+        // board and answer from it, which the referee then scores as an
+        // illegal move.
+        rinsai_search::Game::from_usi_position(opening)
+            .map_err(|e| at(format!("the engine refuses this position: {e:?}")))?;
+        if let Some(first) = seen.insert(opening.as_str(), *number) {
+            return Err(at(format!("duplicates line {first}")));
+        }
     }
-    Ok(openings)
+    Ok(openings.into_iter().map(|(_, opening)| opening).collect())
 }
 
 fn parse_args(args: &[String]) -> Result<Args, String> {
