@@ -11,5 +11,8 @@
 pub mod csa;
 pub mod fetch;
 pub mod openings;
+pub mod referee;
 pub mod rng;
+pub mod schedule;
 pub mod sprt;
+pub mod usi;
