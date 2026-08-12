@@ -60,8 +60,15 @@ pub(crate) fn verdict(path: &[HistoryEntry]) -> Option<Repetition> {
     // over `path` rather than over `earlier`.
     let now = earlier.len();
 
-    // Back by two: shunsai's key carries the side to move, so an entry of the
-    // other parity can never match.
+    // Back by two, because `path` alternates side to move — every entry is
+    // one legal move on from the last, and a key carries the side to move, so
+    // the other parity cannot match.
+    //
+    // ⚠️ **A null move breaks that and nothing here would notice.** Pushing an
+    // entry for a pass shifts the parity of everything below it, and this walk
+    // then compares `current` only against the opponent's positions and returns
+    // `None` for every real repetition in the subtree. DESIGN.md's E1 item 5
+    // owns it.
     let mut seen = 0;
     let mut first = None;
     let mut i = now;
@@ -213,8 +220,13 @@ mod tests {
 
     /// One quiet move anywhere in the run breaks it: 連続 means every move.
     ///
-    /// Sabotage: use `any` instead of `all` in either run and this reports a
-    /// perpetual check that nobody delivered.
+    /// Sabotage: `any` instead of `all` in the **`we_checked`** run, which
+    /// reports a perpetual check that nobody delivered.
+    ///
+    /// ⚠️ **The same mutation in `they_checked` fires nothing, here or in any
+    /// other test.** Every fixture in the module gives that run a uniform
+    /// sequence, and `any` and `all` agree on a uniform sequence — so only the
+    /// mixed run can tell them apart, and this is the only fixture with one.
     #[test]
     fn one_unchecked_ply_makes_it_an_ordinary_draw() {
         let mut nearly = entries(&[

@@ -21,7 +21,9 @@
 use std::io::{Cursor, Write};
 use std::sync::{Arc, Mutex};
 
-use rinsai_search::{BestMove, Game, InfoSink, Limits, NegamaxSearcher, SearchJob, Searcher};
+use rinsai_search::{
+    BestMove, Game, InfoSink, Limits, NegamaxSearcher, Score, SearchJob, Searcher,
+};
 
 // ---------------------------------------------------------------- scaffolding
 
@@ -558,7 +560,11 @@ fn a_repetition_in_the_position_command_reaches_the_search() {
         .iter()
         .rfind(|l| l.starts_with("info depth "))
         .unwrap_or_else(|| panic!("no info line: {lines:?}"));
-    assert!(info.contains(" score cp 30000 "), "{info}");
+    // Against the constant, not a literal: E1's two-fold heuristic and any
+    // contempt or band change move the number, and a literal would fail here
+    // with "no info line" instead of pointing at what moved.
+    let want = format!(" score cp {} ", Score::REPETITION.get());
+    assert!(info.contains(&want), "{info}");
     assert_eq!(bestmoves(&lines).len(), 1, "{lines:?}");
 }
 

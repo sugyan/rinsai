@@ -390,17 +390,18 @@ impl NegamaxSearcher {
     /// before a test can reach it, which is why the assertion is at the
     /// boundary rather than in a test.
     ///
-    /// ⚠️ **It is also where 千日手 is decided**, and three things follow from
-    /// the site rather than from the rule. Both callers push [`Self::path`]
-    /// immediately before calling this, so the position asked about is the one
-    /// just reached. Every node the path knows about is entered through here,
-    /// **the depth-1 iteration's included** — that iteration dispatches
-    /// straight into [`Self::qsearch`], so a check at the top of
-    /// [`Self::negamax`] would leave the one search that always completes
-    /// unable to see the move that loses the game. And returning from here
-    /// happens before either node function is entered, so a path-dependent
-    /// verdict never reaches the transposition table's probe or its store, and
-    /// the node-counting convention needs no exception.
+    /// ⚠️ **It is also where 千日手 is decided.** Both callers push
+    /// [`Self::path`] immediately before calling this, so the position asked
+    /// about is the one just reached. Every node below the root is entered
+    /// through here, **the depth-1 iteration's children included** — that
+    /// iteration dispatches straight into [`Self::qsearch`], so a check at the
+    /// top of [`Self::negamax`] would leave the one search that always
+    /// completes unable to see the move that loses the game.
+    ///
+    /// ⚠️ **Returning here keeps the verdict node's own key out of the table,
+    /// and nothing more.** The caller takes the returned score as its `best`
+    /// and stores *that* under a key with no path in it — CONVENTIONS.md
+    /// carries the imprecision.
     #[inline]
     fn child(
         &mut self,
@@ -864,9 +865,9 @@ mod tests {
     }
 
     /// ⚠️ **Never [`NegamaxSearcher::new`] in a test.** It allocates
-    /// [`DEFAULT_HASH_MB`] MiB, and both this module and `usi_conformance.rs`
-    /// build one searcher per test. One MiB is the smallest `USI_Hash` admits,
-    /// so it is also the size the engine has to work at.
+    /// [`DEFAULT_HASH_MB`] MiB, and the suite builds a searcher per `run` — of
+    /// which one test can make several. One MiB is the smallest `USI_Hash`
+    /// admits, so it is also the size the engine has to work at.
     fn searcher() -> NegamaxSearcher {
         NegamaxSearcher::with_hash_mb(1)
     }
@@ -958,9 +959,17 @@ mod tests {
         let (_, lines) = run(args, depth(u32::try_from(plies).expect("a short mate")));
         let last = lines.last().expect("the search reported something");
         assert_eq!(field(last, "mate"), plies, "{last}");
+        assert_mate_is_real(args, last, plies);
+    }
 
-        let pv = pv_of(last);
-        assert_eq!(i64::try_from(pv.len()).expect("short pv"), plies, "{last}");
+    /// The proving half: `line`'s principal variation is `plies` long, playable
+    /// from `args`, and ends with the loser having no move.
+    ///
+    /// ⚠️ Naming a move instead would be asserting shunsai's unspecified
+    /// generation order — CONVENTIONS.md.
+    fn assert_mate_is_real(args: &str, line: &str, plies: i64) {
+        let pv = pv_of(line);
+        assert_eq!(i64::try_from(pv.len()).expect("short pv"), plies, "{line}");
 
         let mut replay = game(args);
         for token in pv {
@@ -970,7 +979,7 @@ mod tests {
         }
         assert!(
             !replay.position().has_legal_moves(),
-            "the line the search called mate leaves legal moves: {last}"
+            "the line the search called mate leaves legal moves: {line}"
         );
     }
 
@@ -978,15 +987,15 @@ mod tests {
     /// distance from one move to five, each found at exactly the depth it needs
     /// and each proved by replay.
     ///
-    /// ⚠️ **Searched at exactly `2n - 1`, which is what makes the distance an
-    /// assertion rather than a formality.** The deepening loop stops at the
-    /// first iteration that returns a mate score, so a fixture with a shorter
-    /// mate in it reports the shorter number and fails here — which is how the
-    /// gold version of [`MATE_LADDER`] was caught.
+    /// ⚠️ **The distance is asserted, not merely reported.** The deepening
+    /// loop stops at the first iteration that returns a mate score, so a
+    /// fixture holding a shorter mate than its row claims announces the
+    /// shorter number and fails the equality below. The depth each row is
+    /// searched at is the depth it needs, not what makes the assertion bite.
     ///
     /// Sabotage: score a mated node `Score::mated_in(0)` rather than
-    /// `mated_in(ply)` **in [`Self::qsearch`]**, and every row but the first
-    /// reports the wrong distance.
+    /// `mated_in(ply)` **in [`Self::qsearch`]** — the **first** row fails, on
+    /// `mate 0` where 1 was expected, and the loop stops there.
     ///
     /// ⚠️ **The same mutation in [`Self::negamax`] leaves the whole suite
     /// green, `bench` included** — no test here or anywhere reaches it. A mate
@@ -1124,12 +1133,14 @@ mod tests {
     }
 
     /// The same position reached without the history that repeats it is an
-    /// ordinary position, and one search must leave no verdict behind for the
-    /// next — a repetition is a property of the path, and the table is keyed on
-    /// the position alone.
+    /// ordinary position, and says so.
     ///
-    /// ⚠️ It shares a searcher with the search before it *on purpose*: with a
-    /// fresh one there would be no table to read a stale verdict out of.
+    /// ⚠️ **This does not establish that the table is clean.** It reads the
+    /// *root* score, and the root is the one node that neither probes nor
+    /// stores, so a verdict-derived entry left at ply 1 or below would not show
+    /// here. What it does catch is the verdict leaking through a shared
+    /// searcher's table all the way to a fresh root; CONVENTIONS.md carries the
+    /// leak that stays.
     #[test]
     fn a_repetition_verdict_does_not_survive_into_a_position_without_it() {
         let mut searcher = searcher();
@@ -1594,20 +1605,7 @@ mod tests {
         let last = lines.last().expect("the search reported something");
         let plies = field(last, "mate");
         assert!(plies > 0, "{last}");
-
-        let pv = pv_of(last);
-        assert_eq!(i64::try_from(pv.len()).expect("short pv"), plies, "{last}");
-
-        let mut replay = game(args);
-        for token in pv {
-            replay
-                .push_usi_move(token)
-                .unwrap_or_else(|e| panic!("the reported pv is not playable: {e}"));
-        }
-        assert!(
-            !replay.position().has_legal_moves(),
-            "the line the search called mate leaves legal moves"
-        );
+        assert_mate_is_real(args, last, plies);
     }
 
     /// A depth nobody could reach, cut short by a deadline.

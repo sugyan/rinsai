@@ -125,16 +125,21 @@ carries the rule.
   ply-threaded buffer is for.
 
 - **千日手 is decided where a child is dispatched, not at the top of the
-  interior node.** Three things depend on the site and none of them on the
-  rule: the depth-1 iteration dispatches straight into quiescence, so a check
-  inside the interior node leaves the one iteration that always completes blind
-  to the move that ends the game; returning before either node function is
-  entered is what keeps a path-dependent verdict out of the transposition
-  table's probe and store, structurally rather than by a flag; and a cut-off
-  that enters neither node function leaves the node-counting convention above
-  untouched. ⚠️ The child's line has to be cleared on that path, or a parent
-  that raises alpha on the verdict publishes a variation running past the end
-  of the game.
+  interior node.** Two things depend on the site: the depth-1 iteration
+  dispatches straight into quiescence, so a check inside the interior node
+  leaves the one iteration that always completes blind to the move that ends
+  the game; and a cut-off that enters neither node function leaves the
+  node-counting convention above untouched. ⚠️ The child's line has to be
+  cleared on that path, or a parent that raises alpha on the verdict publishes
+  a variation running past the end of the game.
+
+- ⚠️ **A repetition verdict does reach the transposition table, by way of the
+  parent.** The verdict node's own key is never probed or stored — it returns
+  before either node function is entered — but the parent takes the returned
+  score as its `best` and stores it under a key that carries no path. So a
+  later probe can hand back a draw or a 連続王手 score for a position that no
+  repetition reached. This is the accepted imprecision, not a guarantee;
+  DECISIONS.md carries it and names the unbuilt fix.
 
 - **The repetition path is extended at interior nodes only, and quiescence is a
   deliberate hole in it.** Quiescence is the overwhelming majority of all

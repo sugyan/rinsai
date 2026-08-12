@@ -627,7 +627,7 @@ The plan reasoned from branching — nine plies of full-width search with only
 transposition-move ordering — and expected mate-in-4 and mate-in-5 to be too
 expensive for `cargo test`. Measured, in the **dev** profile:
 
-| Mate in | Depth searched | Nodes | Iteration that found it |
+| Mate in | Depth limit | Nodes | Iteration that found it |
 |---|---|---|---|
 | 1 | 1 | 20 | 1 |
 | 2 | 3 | 31 | 1 |
