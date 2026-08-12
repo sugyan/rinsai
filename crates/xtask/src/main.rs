@@ -6,8 +6,9 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    match std::env::args().nth(1).as_deref() {
+        Some("fetch-floodgate") => xtask::fetch::run(&args),
         Some(other) => {
             eprintln!("xtask: unknown subcommand `{other}`");
             usage()
@@ -18,5 +19,6 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!("usage: cargo run --release -p xtask -- <subcommand>");
+    eprintln!("subcommands: fetch-floodgate");
     ExitCode::FAILURE
 }
