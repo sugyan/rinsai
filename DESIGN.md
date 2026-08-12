@@ -24,7 +24,7 @@ A shogi engine that places well on **floodgate** and in the **世界コンピュ
 
 `go mate` is out of scope: that is [`tsumeshogi-solver`](https://github.com/sugyan/tsumeshogi-solver)'s territory.
 
-**The dependency is a released version, not a git pin.** rinsai depends on `shunsai = "0.1"` from crates.io. Prototyping an API addition uses `[patch.crates-io]` with a path override; adopting it means **releasing shunsai** and raising rinsai's requirement. The loop is: try it on a shunsai branch → measure it on shunsai's own bench → adopt → release → bump. rinsai's own crates are `publish = false` — nothing depends on a search engine as a library, and its artifact is a binary.
+**The dependency is a released version, not a git pin.** rinsai depends on `shunsai = "0.1"` from crates.io. Prototyping an API addition uses `[patch.crates-io]` with a path override; adopting it means **releasing shunsai** and raising rinsai's requirement. The loop is: try it on a shunsai branch → measure it on shunsai's own bench → adopt → release → bump. rinsai's **engine** crates are `publish = false` — nothing depends on a search engine as a library, and its artifact is a binary. The one publication-intended exception is `rinsai-game`, the rules library the match referee and [tuishogi](https://github.com/sugyan/tuishogi) share ([DECISIONS.md](./DECISIONS.md), 2026-08-12).
 
 > ⚠️ **Not true yet.** shunsai v0.1.0 is not on crates.io, so E0 builds against a git rev — a knowing, temporary deviation from the paragraph above, recorded in [DECISIONS.md](./DECISIONS.md) (2026-08-05) and tracked as an E0 exit criterion in [PROGRESS.md](./PROGRESS.md). `git grep 'TODO(shunsai-0.1-release)'`.
 
@@ -56,10 +56,13 @@ rinsai/
 ├── NETS.md                # evaluation-file registry (added at E3)
 ├── Cargo.toml             # [workspace]                      (added at E0)
 ├── crates/
+│   ├── rinsai-game/       # lib: the rules layer — legality-gated play, undo, 千日手 and
+│   │                      #      連続王手 adjudication; the match referee, shared with tuishogi
 │   ├── rinsai-search/     # lib: αβ + TT + qsearch + time management + repetition + eval
 │   │                      #      the only crate that depends on shunsai
 │   ├── rinsai/            # bin: the engine. USI on stdio by default, --csa for floodgate
-│   └── xtask/             # bin: gen-openings / sprt / fetch-net / release  (added at E0 step 6)
+│   └── xtask/             # bin: fetch-floodgate / gen-openings / sprt; fetch-net and
+│                          #      release join later  (added at E0 steps 6+7)
 ├── train/                 # PyTorch: dataset, model, quantize, export   (added at E3)
 ├── positions/             # bench-v1.sfen (frozen, E0 step 3b); openings-v1.sfen (E0 step 6)
 ├── tools/                 # match harness config, ladder definitions  (added at E0 step 7)
@@ -77,6 +80,7 @@ criterion target — see E0 step 3b.)
 
 | Crate | Split off at | Because |
 |---|---|---|
+| `rinsai-game` | E0 step 7 (exists) | the match referee and tuishogi share one rules layer, and a crate boundary is what a second repository can adopt; moved from tuishogi rather than written — [DECISIONS.md](./DECISIONS.md), 2026-08-12 |
 | `rinsai-nnue` | E3 | SIMD backends (NEON / AVX2) and PyTorch-parity tests want their own test surface. **Draw the boundary carefully**: the accumulator stack parallels the *search* stack, so `nnue` owns pure inference and the `Accumulator` type, while pushing and popping it stays in the search. |
 | `rinsai-protocol` | E2 | when the CSA client arrives and wants to share the **session layer** with USI: both drive the same `SearchDriver`, `Game` and time management, and both need "one answer per turn, structurally" to hold. **Not** the line-oriented loop, and **not** a codec — the two protocols share no grammar, no move notation (`+7776FU` against `7g7f`) and no state machine. Recorded in DECISIONS.md's 2026-08-10 entry on sharing the USI layer. |
 | `rinsai-selfplay` | E3 | data generation drives the search library in-process rather than over USI, so it needs its own binary |
@@ -111,7 +115,7 @@ Numbered **E0–E6** so as not to collide with shunsai's M0–M7. Rating targets
   - ⚠️ "From the start" means from the start of *E0*, not of every sub-step. The split ships step 2 without them, knowingly: step 2's engine is horizon-effect-prone and is supposed to be, step 3a is the fix, and separating them is what makes step 3a's diff attributable. [DECISIONS.md](./DECISIONS.md), 2026-08-06, amended 2026-08-07 when step 3 became 3a (quiescence) and 3b (the transposition table and `bench`), taking the split from seven sub-steps to eight.
   - ⚠️ Likewise "simple time management": step 2 honours only the budgets it is *told* (`movetime`, `byoyomi`), and deciding a per-move allowance from `btime` is step 5.
 - **Repetition (千日手) is mandatory at E0 and lives here, not in shunsai.** Stack `(key(), Hand, in_check())` per ply; use `key()` as the first filter and hand equality to confirm. Perpetual check — where the checking side loses — is decided from the `in_check()` history. shunsai holds no game history by design, so this is the engine's responsibility.
-- Harness: **Ayane (Apache-2.0) adopted immediately**, plus SPRT scripts. Sparring by running GPL binaries: Lesserkai → node-limited YaneuraOu → 技巧2.
+- Harness: **an own Rust USI match harness and SPRT driver in `crates/xtask`**, refereeing on `crates/rinsai-game` — decided when step 7 arrived and Ayane turned out to lack fixed-node play, repetition adjudication and legality checking ([DECISIONS.md](./DECISIONS.md), 2026-08-12). Sparring by running GPL binaries: node-limited YaneuraOu → 技巧2.
 - **shunsai API additions: none, deliberately.** E0 building against a frozen shunsai is the layering's first contact with a real consumer.
 - ⚠️ **The remaining sub-steps land as two pull requests, harness first**: steps 6+7 (openings, match harness, SPRT), then step 5 (time management) — so the new instrument gates step 5's real-time behaviour, and its first run is a non-regression SPRT of the finished E0 against the step-3b engine. [DECISIONS.md](./DECISIONS.md), 2026-08-12; the gates are in [PROGRESS.md](./PROGRESS.md)'s next-step section.
 - Infrastructure: repository skeleton, CLAUDE.md, USI conformance dialogue tests, a `bench` command (fixed positions × fixed depth, following the Stockfish convention), CI, and `openings-v1` — balanced positions extracted in-house from high-rated floodgate games, reusing the method of shunsai's `examples/gen_bench_positions.rs`.
