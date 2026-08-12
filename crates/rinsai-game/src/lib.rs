@@ -28,4 +28,6 @@ mod types;
 pub use game::Game;
 pub use moves::{in_check, move_from_usi};
 pub use repetition::{PositionKey, position_key};
-pub use types::{MoveError, Outcome, Ply, PromotionChoice, illegal, side};
+pub use types::{
+    MoveError, Outcome, Ply, PromotionChoice, UsiMoveError, UsiPositionError, illegal, side,
+};

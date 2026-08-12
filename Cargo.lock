@@ -24,6 +24,7 @@ dependencies = [
 name = "rinsai-search"
 version = "0.1.0"
 dependencies = [
+ "rinsai-game",
  "shogi_core",
  "shogi_usi_parser",
  "shunsai",

@@ -88,6 +88,73 @@ pub const fn side(color: Color) -> &'static str {
     }
 }
 
+/// Why a USI move token was refused by [`Game::play_usi`](crate::Game::play_usi).
+#[derive(Debug, Clone)]
+pub enum UsiMoveError {
+    /// The token is not a move.
+    Syntax(shogi_usi_parser::Error),
+    /// The token is a move, and the rules refused it.
+    Refused(MoveError),
+}
+
+impl fmt::Display for UsiMoveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Syntax(e) => write!(f, "not a USI move: {e}"),
+            Self::Refused(e) => write!(f, "refused: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for UsiMoveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Syntax(e) => Some(e),
+            Self::Refused(e) => Some(e),
+        }
+    }
+}
+
+/// Why a USI `position` argument was refused by
+/// [`Game::from_usi_position`](crate::Game::from_usi_position).
+#[derive(Debug, Clone)]
+pub enum UsiPositionError {
+    /// The argument was empty.
+    Empty,
+    /// The root — `startpos` or `sfen …` — did not parse.
+    Root(shogi_usi_parser::Error),
+    /// A token in the `moves` list was refused; `index` counts from the first
+    /// move token.
+    Move {
+        index: usize,
+        token: String,
+        source: UsiMoveError,
+    },
+}
+
+impl fmt::Display for UsiPositionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("empty position argument"),
+            Self::Root(e) => write!(f, "bad root: {e}"),
+            Self::Move {
+                index,
+                token,
+                source,
+            } => write!(f, "move {index} `{token}`: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for UsiPositionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Empty | Self::Root(_) => None,
+            Self::Move { source, .. } => Some(source),
+        }
+    }
+}
+
 /// The user-facing reason a move was illegal.
 ///
 /// `IncorrectMove` is a catch-all that lumps together far too much to show

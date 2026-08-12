@@ -276,4 +276,68 @@ mod tests {
         assert!(!Repetition::PerpetualCheckWin.score().is_mate());
         assert!(!Repetition::PerpetualCheckLoss.score().is_mate());
     }
+
+    /// Drive one game through this module's rule and through `rinsai-game`'s
+    /// referee — a separate implementation on a separate legality library —
+    /// and demand one answer.
+    ///
+    /// The agreement claim is scoped to *refereed* games, which end at the
+    /// fourth occurrence: the two windows coincide exactly there. A path
+    /// carrying a fifth occurrence is reachable only from a search line
+    /// running past a finished game, `rinsai-game` cannot represent one at
+    /// all, and this module's window rule for it has its own test above.
+    fn the_two_implementations_agree(args: &str) {
+        let refereed =
+            rinsai_game::Game::from_usi_position(args).expect("legality_lite accepts the game");
+        let searched =
+            crate::game::Game::from_usi_position(args).expect("shunsai accepts the game");
+        let expected = refereed.outcome().map(|outcome| match outcome {
+            rinsai_game::Outcome::Repetition => Repetition::Draw,
+            rinsai_game::Outcome::PerpetualCheck { loser } => {
+                if loser == searched.side_to_move() {
+                    Repetition::PerpetualCheckLoss
+                } else {
+                    Repetition::PerpetualCheckWin
+                }
+            }
+            other => panic!("the game did not end by repetition: {other:?}"),
+        });
+        assert_eq!(verdict(searched.history()), expected, "for {args}");
+    }
+
+    #[test]
+    fn the_referee_and_the_search_agree_on_a_fourfold_draw() {
+        the_two_implementations_agree(
+            "startpos moves 2h3h 8b7b 3h2h 7b8b 2h3h 8b7b 3h2h 7b8b 2h3h 8b7b 3h2h 7b8b",
+        );
+    }
+
+    #[test]
+    fn the_referee_and_the_search_agree_that_three_occurrences_decide_nothing() {
+        the_two_implementations_agree("startpos moves 2h3h 8b7b 3h2h 7b8b 2h3h 8b7b 3h2h 7b8b");
+    }
+
+    /// The repeated position has the evader to move, so the verdict from the
+    /// side to move is a win — checked from both colours.
+    #[test]
+    fn the_referee_and_the_search_agree_when_the_evader_faces_the_fourth_occurrence() {
+        the_two_implementations_agree(
+            "sfen 4k4/9/9/9/9/9/9/9/K7R b - 1 moves 1i1a 5a5b 1a1b 5b5a 1b1a 5a5b 1a1b 5b5a \
+             1b1a 5a5b 1a1b 5b5a 1b1a",
+        );
+        the_two_implementations_agree(
+            "sfen k7r/9/9/9/9/9/9/9/4K4 w - 1 moves 1a1i 5i5h 1i1h 5h5i 1h1i 5i5h 1i1h 5h5i \
+             1h1i 5i5h 1i1h 5h5i 1h1i",
+        );
+    }
+
+    /// The repeated position has the checker to move — the cycle closes on the
+    /// evasion — so the verdict from the side to move is a loss.
+    #[test]
+    fn the_referee_and_the_search_agree_when_the_checker_faces_the_fourth_occurrence() {
+        the_two_implementations_agree(
+            "sfen 4k4/8R/9/9/9/9/9/9/K8 b - 1 moves 1b1a 5a5b 1a1b 5b5a 1b1a 5a5b 1a1b 5b5a \
+             1b1a 5a5b 1a1b 5b5a",
+        );
+    }
 }

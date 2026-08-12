@@ -3,9 +3,11 @@
 use shogi_core::{Bitboard, Color, Move, PartialPosition, Piece, PositionStatus, Square};
 use shogi_legality_lite as legality;
 
+use shogi_usi_parser::FromUsi;
+
 use crate::moves;
 use crate::repetition::RepetitionIndex;
-use crate::types::{MoveError, Outcome, Ply, PromotionChoice};
+use crate::types::{MoveError, Outcome, Ply, PromotionChoice, UsiMoveError, UsiPositionError};
 
 #[derive(Debug, Clone)]
 pub struct Game {
@@ -38,6 +40,59 @@ impl Game {
             moves: Vec::new(),
             outcome: None,
         }
+    }
+
+    /// Build a game from the argument of a USI `position` command:
+    /// `startpos [moves …]` or `sfen <board> <side> <hands> [<ply>] [moves …]`.
+    ///
+    /// Every move in the list goes through [`Self::play_usi`], so each is
+    /// legality-checked and the game is adjudicated as it is replayed. A list
+    /// that continues past a rule-decided ending is therefore refused at the
+    /// first move after the end — a game record cannot both end by rule and
+    /// keep going.
+    pub fn from_usi_position(args: &str) -> Result<Self, UsiPositionError> {
+        let mut tokens = args.split_whitespace().peekable();
+        if tokens.peek().is_none() {
+            return Err(UsiPositionError::Empty);
+        }
+
+        let mut root = String::new();
+        while let Some(&token) = tokens.peek() {
+            if token == "moves" {
+                break;
+            }
+            if !root.is_empty() {
+                root.push(' ');
+            }
+            root.push_str(token);
+            tokens.next();
+        }
+        let initial = PartialPosition::from_usi(&root).map_err(UsiPositionError::Root)?;
+        let mut game = Self::from_position(initial);
+
+        if tokens.next().is_some() {
+            for (index, token) in tokens.enumerate() {
+                game.play_usi(token)
+                    .map_err(|source| UsiPositionError::Move {
+                        index,
+                        token: token.to_owned(),
+                        source,
+                    })?;
+            }
+        }
+        Ok(game)
+    }
+
+    /// Parse one USI move token for the side to move and [`play`](Self::play)
+    /// it.
+    ///
+    /// Parsing goes through [`crate::move_from_usi`], which is what re-colours
+    /// a drop — USI drop notation carries no colour, and the parser hard-codes
+    /// Black.
+    pub fn play_usi(&mut self, token: &str) -> Result<Move, UsiMoveError> {
+        let mv = moves::move_from_usi(token, self.side_to_move()).map_err(UsiMoveError::Syntax)?;
+        self.play(mv).map_err(UsiMoveError::Refused)?;
+        Ok(mv)
     }
 
     #[must_use]
@@ -453,6 +508,82 @@ mod tests {
         game.play(normal((7, 7), (7, 6))).expect("legal");
         assert_eq!(game.moves()[0].kifu, "▲７六歩");
         assert!(!game.moves()[0].gave_check);
+    }
+
+    #[test]
+    fn a_position_argument_replays_its_moves_onto_its_root() {
+        let game = Game::from_usi_position("startpos moves 7g7f 3c3d").expect("valid");
+        assert_eq!(game.ply(), 2);
+        assert_eq!(game.side_to_move(), Color::Black);
+
+        let game = Game::from_usi_position("sfen 4k4/9/9/9/9/9/9/9/4K4 b - 1").expect("valid");
+        assert_eq!(game.ply(), 0);
+
+        let game =
+            Game::from_usi_position("  startpos   moves  7g7f ").expect("stray spaces are fine");
+        assert_eq!(game.ply(), 1);
+    }
+
+    #[test]
+    fn a_bad_root_and_a_bad_move_are_told_apart() {
+        assert!(matches!(
+            Game::from_usi_position(""),
+            Err(UsiPositionError::Empty)
+        ));
+        assert!(matches!(
+            Game::from_usi_position("sfen what"),
+            Err(UsiPositionError::Root(_))
+        ));
+        assert!(matches!(
+            Game::from_usi_position("startpos moves 7g7f xyzzy"),
+            Err(UsiPositionError::Move {
+                index: 1,
+                source: UsiMoveError::Syntax(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            Game::from_usi_position("startpos moves 7g7f 7g7f"),
+            Err(UsiPositionError::Move {
+                index: 1,
+                source: UsiMoveError::Refused(MoveError::Illegal(_)),
+                ..
+            })
+        ));
+    }
+
+    /// The rook shuffle ends the game at its twelfth move; a thirteenth is a
+    /// move played into a finished game, and the referee refuses it.
+    #[test]
+    fn a_move_list_running_past_a_rule_decided_ending_is_refused() {
+        let shuffle = "2h3h 8b7b 3h2h 7b8b 2h3h 8b7b 3h2h 7b8b 2h3h 8b7b 3h2h 7b8b";
+        let ended = Game::from_usi_position(&format!("startpos moves {shuffle}")).expect("valid");
+        assert_eq!(ended.outcome(), Some(Outcome::Repetition));
+
+        let err = Game::from_usi_position(&format!("startpos moves {shuffle} 2h3h")).unwrap_err();
+        assert!(matches!(
+            err,
+            UsiPositionError::Move {
+                index: 12,
+                source: UsiMoveError::Refused(MoveError::GameOver),
+                ..
+            }
+        ));
+    }
+
+    /// The drop-recolouring trap, end to end: the token names no colour, so the
+    /// side to move decides it.
+    #[test]
+    fn play_usi_recolours_a_drop_to_the_side_to_move() {
+        let mut game = game_from("sfen 4k4/9/9/9/9/9/9/9/4K4 w p 1");
+        let mv = game.play_usi("P*5e").expect("legal drop");
+        assert_eq!(
+            mv,
+            Move::Drop {
+                piece: Piece::new(PieceKind::Pawn, Color::White),
+                to: sq(5, 5),
+            }
+        );
     }
 
     #[test]
