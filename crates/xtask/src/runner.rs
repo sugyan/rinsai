@@ -14,13 +14,17 @@ use std::time::Duration;
 
 use crate::config::{self, EngineConfig};
 use crate::jsonl::JsonObject;
-use crate::referee::{self, GameRecord, MAX_GAME_PLIES, Seat, Winner};
+use crate::referee::{self, EndReason, GameRecord, MAX_GAME_PLIES, Seat, Winner};
 use crate::schedule::{self, GamePlan};
 use crate::sprt::{self, PairCounts, Status};
 use crate::usi::{BestmoveAnswer, EngineError, UsiEngine};
 
 const DEFAULT_MOVE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_PAIRS: u64 = 2_000;
+/// Workers, each holding two engine processes for the length of a game. A
+/// ceiling rather than a guess at the right number: the operator picks
+/// `--concurrency` for the machine, and this only bounds a typo.
+const MAX_CONCURRENCY: usize = 32;
 
 /// One engine behind a fixed node budget — the [`Seat`] the referee plays.
 struct EngineSeat {
@@ -56,7 +60,10 @@ struct Args {
 }
 
 struct PairOutcome {
-    plan: GamePlan,
+    /// Both plans, not just the first: the seat each game was played from is
+    /// the schedule's to state, and re-deriving it from the game's index
+    /// would be a second copy of that fact.
+    plans: [GamePlan; 2],
     games: [GameRecord; 2],
     half_points: usize,
 }
@@ -106,13 +113,32 @@ pub fn run(args: &[String]) -> ExitCode {
     let plans: Vec<[GamePlan; 2]> = schedule::pairings(openings.len(), args.seed)
         .take(budget as usize)
         .collect();
+    // More workers than pairs is threads and engine processes spawned to do
+    // nothing; the ceiling is what keeps a mistyped flag from asking for
+    // hundreds of engines, each holding its configured table.
+    let concurrency = args
+        .concurrency
+        .min(plans.len().max(1))
+        .min(MAX_CONCURRENCY);
+    if concurrency < args.concurrency {
+        eprintln!(
+            "sprt: --concurrency {} reduced to {concurrency} ({} pairs to play, ceiling {MAX_CONCURRENCY}); \
+             each worker holds two engine processes",
+            args.concurrency,
+            plans.len()
+        );
+    }
 
+    // The pid is what stops two runs of the same pairing in the same second
+    // from opening one file with two cursors and interleaving into a record
+    // that reads as a single coherent run.
     let log_dir = PathBuf::from("logs").join(format!(
-        "sprt-{}-{}-vs-{}",
+        "sprt-{}-{}-{}-vs-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0),
+        std::process::id(),
         args.candidate,
         args.baseline
     ));
@@ -158,10 +184,12 @@ pub fn run(args: &[String]) -> ExitCode {
 
     let mut counts = PairCounts::default();
     let mut game_tally = [0u64; 3]; // candidate wins, draws, losses
+    let mut abnormal: Vec<(EndReason, u64)> = Vec::new();
     let mut fatal: Option<String> = None;
+    let mut decided: Option<Status> = None;
 
     std::thread::scope(|scope| {
-        for _ in 0..args.concurrency {
+        for _ in 0..concurrency {
             let tx = tx.clone();
             let (next, stop, plans, openings) = (&next, &stop, &plans, &openings);
             let (candidate, baseline, args) = (candidate, baseline, &args);
@@ -182,7 +210,6 @@ pub fn run(args: &[String]) -> ExitCode {
         drop(tx);
 
         let (lower, upper) = sprt::bounds(args.alpha, args.beta);
-        let mut decided: Option<Status> = None;
         for outcome in rx {
             let outcome = match outcome {
                 Ok(outcome) => outcome,
@@ -196,21 +223,33 @@ pub fn run(args: &[String]) -> ExitCode {
             };
             counts.record(outcome.half_points);
             for (game_index, record) in outcome.games.iter().enumerate() {
-                let candidate_black = game_index == 0;
+                let candidate_black = outcome.plans[game_index].candidate_is_black;
                 match candidate_points(record, candidate_black) {
                     2 => game_tally[0] += 1,
                     1 => game_tally[1] += 1,
                     _ => game_tally[2] += 1,
                 }
-                log_game(&mut log, &outcome.plan, game_index, record, candidate_black);
+                if is_abnormal(record.reason) {
+                    match abnormal.iter_mut().find(|(r, _)| *r == record.reason) {
+                        Some((_, count)) => *count += 1,
+                        None => abnormal.push((record.reason, 1)),
+                    }
+                }
+                log_game(
+                    &mut log,
+                    &outcome.plans[game_index],
+                    game_index,
+                    record,
+                    candidate_black,
+                );
             }
             let llr = sprt::llr(&counts, args.elo.0, args.elo.1);
             println!(
                 "pair {:>4} opening {:>3} [{}{}] | pent {} | score {:>5.1}% | llr {:+.3} in [{:+.3}, {:+.3}]",
-                outcome.plan.pair,
-                outcome.plan.opening,
-                letter(&outcome.games[0], true),
-                letter(&outcome.games[1], false),
+                outcome.plans[0].pair,
+                outcome.plans[0].opening,
+                letter(&outcome.games[0], outcome.plans[0].candidate_is_black),
+                letter(&outcome.games[1], outcome.plans[1].candidate_is_black),
                 counts
                     .counts
                     .iter()
@@ -233,22 +272,24 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     });
 
-    if let Some(e) = fatal {
-        eprintln!("sprt: {e}");
-        return ExitCode::FAILURE;
-    }
-
     let llr = sprt::llr(&counts, args.elo.0, args.elo.1);
+    // The verdict is the decision that stopped the run, not a recomputation:
+    // pairs already in flight when a bound was crossed still count, and the
+    // LLR is not monotone, so re-asking `status` can report `Continue` for a
+    // test that has already decided.
     let verdict = if args.pairs.is_some() {
         "fixed-length match complete".to_owned()
     } else {
-        match sprt::status(llr, args.alpha, args.beta) {
+        match decided.unwrap_or_else(|| sprt::status(llr, args.alpha, args.beta)) {
             Status::AcceptH1 => format!("H1 accepted (elo >= {})", args.elo.1),
             Status::AcceptH0 => format!("H0 accepted (elo <= {})", args.elo.0),
             Status::Continue => format!("inconclusive at the {}-pair cap", args.max_pairs),
         }
     };
     println!("---");
+    if fatal.is_some() {
+        println!("RUN ABORTED — the summary below covers the pairs that completed");
+    }
     println!("{verdict}");
     println!(
         "pairs {} | games {} | candidate W-D-L {}-{}-{} | pent {:?} | llr {:+.3} | score {:.2}% (elo {:+.1} est)",
@@ -262,8 +303,34 @@ pub fn run(args: &[String]) -> ExitCode {
         counts.score() * 100.0,
         sprt::elo_estimate(counts.score()),
     );
+    // An engine that timed out or died is scored as an ordinary loss, so a
+    // degraded run reads as a clean verdict unless the reasons are named
+    // beside it (CLAUDE.md §3: a noisy run is not a result).
+    if !abnormal.is_empty() {
+        let games: u64 = abnormal.iter().map(|(_, n)| n).sum();
+        let detail = abnormal
+            .iter()
+            .map(|(reason, n)| format!("{reason:?} {n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("⚠️  {games} game(s) ended abnormally and were scored as losses: {detail}");
+    }
     println!("log: {}", log_path.display());
+    if let Some(e) = fatal {
+        eprintln!("sprt: {e}");
+        return ExitCode::FAILURE;
+    }
     ExitCode::SUCCESS
+}
+
+/// Whether an ending says something about the harness or the engines rather
+/// than about the game. These are scored as ordinary losses; the summary
+/// names them so a run degraded by them is not read as a measurement.
+fn is_abnormal(reason: EndReason) -> bool {
+    matches!(
+        reason,
+        EndReason::IllegalMove | EndReason::Timeout | EndReason::Died | EndReason::Protocol
+    )
 }
 
 /// One colour-swapped pair: two games, fresh processes for each.
@@ -338,7 +405,7 @@ fn play_pair(
     let half_points = candidate_points(&games[0], pair[0].candidate_is_black)
         + candidate_points(&games[1], pair[1].candidate_is_black);
     Ok(PairOutcome {
-        plan: pair[0],
+        plans: *pair,
         games,
         half_points,
     })
@@ -474,6 +541,19 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             );
         }
     };
+    // ⚠️ Out of range these do not merely widen the test, they decide it: at
+    // α = 1 the lower bound is +∞ and pair one accepts H0; above 1 it is NaN,
+    // every comparison against it is false, and control falls through to the
+    // H1 arm. A typo such as `--alpha 5` for "5%" therefore reports a
+    // confident verdict after a single pair.
+    for (name, value) in [("--alpha", alpha), ("--beta", beta)] {
+        if !(value.is_finite() && value > 0.0 && value < 1.0) {
+            return Err(format!(
+                "{name} is an error probability and must be strictly between 0 and 1, not {value} \
+                 (0.05 is 5%)"
+            ));
+        }
+    }
     let (candidate_nodes, baseline_nodes) = match (nodes, candidate_nodes, baseline_nodes) {
         (Some(n), None, None) => (n, n),
         (None, Some(c), Some(b)) => (c, b),
@@ -526,7 +606,6 @@ fn usage() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::referee::EndReason;
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| (*s).to_owned()).collect()
@@ -564,6 +643,35 @@ mod tests {
         assert_eq!((split.candidate_nodes, split.baseline_nodes), (100, 9));
         assert!(with(&[]).is_err());
         assert!(with(&["--nodes", "1", "--candidate-nodes", "2"]).is_err());
+    }
+
+    /// Each rejected value below is one that `bounds` turns into an infinity
+    /// or a NaN, which `status` then reads as a decision on the first pair.
+    ///
+    /// Sabotage: delete the range check in `parse_args` and this fails on
+    /// `--alpha 5`; nothing else in the workspace notices, because `bounds`
+    /// and `status` are individually correct on the inputs they are given.
+    #[test]
+    fn an_error_probability_outside_zero_to_one_is_refused() {
+        let with = |extra: &[&str]| {
+            let mut v = strings(&[
+                "--candidate",
+                "a",
+                "--baseline",
+                "b",
+                "--gain",
+                "--nodes",
+                "1",
+            ]);
+            v.extend(strings(extra));
+            parse_args(&v)
+        };
+        assert!(with(&[]).expect("defaults are valid").alpha > 0.0);
+        assert!(with(&["--alpha", "0.01", "--beta", "0.2"]).is_ok());
+        for bad in ["5", "1", "0", "-0.05", "nan", "inf"] {
+            assert!(with(&["--alpha", bad]).is_err(), "--alpha {bad} accepted");
+            assert!(with(&["--beta", bad]).is_err(), "--beta {bad} accepted");
+        }
     }
 
     #[test]
