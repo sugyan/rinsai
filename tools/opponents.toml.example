@@ -1,0 +1,45 @@
+# tools/opponents.toml — the engine roster `cargo run -p xtask -- sprt` reads.
+# Copy to tools/opponents.toml (gitignored) and edit the paths.
+#
+# Read by xtask's own minimal parser. The accepted subset of TOML:
+#   [engines.<id>] and [engines.<id>.options] section headers,
+#   key = "value" with double-quoted values (escapes: \" and \\),
+#   full-line # comments, blank lines.
+# Anything else is a hard error, never skipped — an ignored option key would
+# silently change match conditions. Engine keys: name, path, args. Options
+# are sent as `setoption` in file order; a name the engine did not declare
+# in its `usi` reply is warned about on stderr.
+#
+# ⚠️ Paths must be ABSOLUTE. A git worktree under .claude/worktrees/ is two
+# levels deeper than the main checkout, so `../benchmarks` resolves
+# differently per checkout — the same trap PROGRESS.md records for the
+# shunsai path override.
+
+[engines.rinsai-dev]
+name = "rinsai (current build)"
+path = "/Users/you/dev/sugyan/shogi/rinsai/target/release/rinsai"
+
+[engines.rinsai-dev.options]
+USI_Hash = "256"
+
+# A second id for the same binary: the mirror gate plays rinsai-dev against
+# this, and two ids keep the two seats apart in the logs.
+[engines.rinsai-dev-b]
+name = "rinsai (current build, second seat)"
+path = "/Users/you/dev/sugyan/shogi/rinsai/target/release/rinsai"
+
+[engines.rinsai-dev-b.options]
+USI_Hash = "256"
+
+# GPL sparring binaries live in the local-only ../benchmarks repository and
+# are only ever run as separate processes (CLAUDE.md §2, run-vs-link).
+[engines.yaneuraou-material]
+name = "YaneuraOu MaterialLv1"
+path = "/Users/you/dev/sugyan/shogi/benchmarks/YaneuraOu/source/YaneuraOu-by-gcc"
+
+[engines.yaneuraou-material.options]
+# A node-limited search is only deterministic single-threaded.
+Threads = "1"
+USI_Hash = "256"
+# NodesLimit is deliberately NOT set: the harness sends `go nodes N`, which
+# YaneuraOu documents as overriding the option.

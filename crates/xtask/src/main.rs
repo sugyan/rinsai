@@ -10,6 +10,7 @@ fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
         Some("fetch-floodgate") => xtask::fetch::run(&args),
         Some("gen-openings") => xtask::openings::run(&args),
+        Some("sprt") => xtask::runner::run(&args),
         Some(other) => {
             eprintln!("xtask: unknown subcommand `{other}`");
             usage()
@@ -20,6 +21,6 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!("usage: cargo run --release -p xtask -- <subcommand>");
-    eprintln!("subcommands: fetch-floodgate, gen-openings");
+    eprintln!("subcommands: fetch-floodgate, gen-openings, sprt");
     ExitCode::FAILURE
 }

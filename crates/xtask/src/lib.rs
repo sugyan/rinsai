@@ -8,11 +8,14 @@
 // module reports to the terminal.
 #![allow(clippy::print_stdout)]
 
+pub mod config;
 pub mod csa;
 pub mod fetch;
+pub mod jsonl;
 pub mod openings;
 pub mod referee;
 pub mod rng;
+pub mod runner;
 pub mod schedule;
 pub mod sprt;
 pub mod usi;
