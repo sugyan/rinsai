@@ -298,6 +298,8 @@ mod tests {
         Square::new(file, rank).expect("valid square")
     }
 
+    type Slide = ((u8, u8), (u8, u8));
+
     fn normal(from: (u8, u8), to: (u8, u8)) -> Move {
         Move::Normal {
             from: sq(from.0, from.1),
@@ -490,6 +492,160 @@ mod tests {
             }),
             "Black gave check on every move of the cycle"
         );
+    }
+
+    /// The same position as `a_perpetual_check_loses_for_the_checking_side`,
+    /// with the rook going all the way home rather than on to the next
+    /// checking square. One quiet move inside the window is the whole
+    /// difference between losing and a draw.
+    ///
+    /// Sabotage: in `classify_repetition`, seed `all_checks` with
+    /// `[false, false]` **and** accumulate with `|=` — both together, which is
+    /// what turns the rule into "checked at least once" — and this is the only
+    /// test in the workspace that goes red. ⚠️ Either half alone makes every
+    /// window a draw instead, which the two perpetual-check tests catch and
+    /// this one cannot.
+    #[test]
+    fn a_cycle_with_one_quiet_move_is_a_draw_rather_than_a_perpetual_check() {
+        let mut game = game_from("sfen 4k4/9/9/9/9/9/9/9/K7R b - 1");
+        let cycle = [
+            ((1, 9), (1, 1)), // the rook checks along the first rank
+            ((5, 1), (5, 2)), // the king steps off it
+            ((1, 1), (1, 9)), // and the rook goes home, checking nothing
+            ((5, 2), (5, 1)),
+        ];
+        for _ in 0..3 {
+            for (from, to) in cycle {
+                game.play(normal(from, to)).expect("cycle move is legal");
+            }
+        }
+        // The premise stated exactly rather than assumed: which moves checked
+        // is what the outcome below is derived from.
+        let checks: Vec<bool> = game.moves().iter().map(|ply| ply.gave_check).collect();
+        assert_eq!(
+            checks,
+            [
+                true, false, false, false, true, false, false, false, true, false, false, false
+            ]
+        );
+        assert_eq!(game.outcome(), Some(Outcome::Repetition));
+    }
+
+    /// `(true, true)` shares the `_` arm with "nobody checked", so a real game
+    /// cannot tell the two apart — but the arm above it can be widened to
+    /// `(true, _)` and every other test here stays green, so the arm still
+    /// needs pinning. The window and the positions are a real 千日手; only the
+    /// twelve flags are set by hand, no legal cycle producing that many
+    /// consecutive cross-checks.
+    ///
+    /// Sabotage: widen `(true, false)` to `(true, _)` and this reports a
+    /// perpetual-check loss for a cycle both sides checked throughout.
+    #[test]
+    fn a_window_in_which_both_sides_checked_throughout_is_still_a_draw() {
+        let mut game = Game::startpos();
+        let cycle = [
+            ((2, 8), (3, 8)),
+            ((8, 2), (7, 2)),
+            ((3, 8), (2, 8)),
+            ((7, 2), (8, 2)),
+        ];
+        for _ in 0..3 {
+            for (from, to) in cycle {
+                game.play(normal(from, to)).expect("rook shuffle is legal");
+            }
+        }
+        assert_eq!(game.outcome(), Some(Outcome::Repetition));
+
+        for ply in &mut game.moves {
+            ply.gave_check = true;
+        }
+        assert_eq!(game.classify_repetition(), Outcome::Repetition);
+    }
+
+    /// The mirror of `a_perpetual_check_loses_for_the_checking_side`, and the
+    /// only test in this crate that names White as the loser.
+    ///
+    /// Sabotage: replace the side lookup in `classify_repetition` with `i % 2`
+    /// and this fails, because the root has White to move and the parities no
+    /// longer line up.
+    #[test]
+    fn a_perpetual_check_by_white_names_white_as_the_loser() {
+        // Black king alone on 5i, White king tucked away on 1a, White rook 9a.
+        let mut game = game_from("sfen r7k/9/9/9/9/9/9/9/4K4 w - 1");
+        game.play(normal((9, 1), (9, 9)))
+            .expect("rook to 9i checks");
+        let cycle = [
+            ((5, 9), (5, 8)), // Black king steps off the checked rank
+            ((9, 9), (9, 8)), // White checks again
+            ((5, 8), (5, 9)),
+            ((9, 8), (9, 9)),
+        ];
+        for _ in 0..3 {
+            for (from, to) in cycle {
+                game.play(normal(from, to)).expect("cycle move is legal");
+            }
+        }
+        assert_eq!(
+            game.outcome(),
+            Some(Outcome::PerpetualCheck {
+                loser: Color::White
+            }),
+            "White gave check on every move of the cycle"
+        );
+        // The window opens at the first occurrence of the repeated position,
+        // which here is the position after White's opening check — not the
+        // root. Sabotage: return `Some(0)` from `first_occurrence` and this
+        // assertion fails while every other repetition test stays green.
+        assert_eq!(game.repetition.first_occurrence(), Some(1));
+    }
+
+    /// Three returns to the start position by different squares and — the part
+    /// that matters — different numbers of moves. The index counts occurrences
+    /// of a position, so a cycle of six has to count the same as a cycle of
+    /// four.
+    #[test]
+    fn the_fourth_occurrence_counts_however_the_position_was_reached() {
+        // Rank h is empty either side of the rook as far as the bishop on 8h,
+        // and rank b likewise for White, so every one of these is a clear
+        // slide. Two of them cross the file both kings stand on; what keeps
+        // those quiet is the mover's own pawn wall on the rank ahead, not the
+        // choice of squares.
+        let short_way: &[Slide] = &[
+            ((2, 8), (1, 8)),
+            ((8, 2), (9, 2)),
+            ((1, 8), (2, 8)),
+            ((9, 2), (8, 2)),
+        ];
+        let long_way: &[Slide] = &[
+            ((2, 8), (3, 8)),
+            ((8, 2), (7, 2)),
+            ((3, 8), (4, 8)),
+            ((7, 2), (6, 2)),
+            ((4, 8), (2, 8)),
+            ((6, 2), (8, 2)),
+        ];
+        let middle_way: &[Slide] = &[
+            ((2, 8), (5, 8)),
+            ((8, 2), (5, 2)),
+            ((5, 8), (2, 8)),
+            ((5, 2), (8, 2)),
+        ];
+
+        let mut game = Game::startpos();
+        for (from, to) in short_way.iter().chain(long_way) {
+            game.play(normal(*from, *to)).expect("a clear rook slide");
+        }
+        assert_eq!(game.outcome(), None, "three occurrences is not yet 千日手");
+
+        for (from, to) in middle_way {
+            game.play(normal(*from, *to)).expect("a clear rook slide");
+        }
+        assert_eq!(game.ply(), 14);
+        assert!(
+            game.moves().iter().all(|ply| !ply.gave_check),
+            "no rook leaves its own rank"
+        );
+        assert_eq!(game.outcome(), Some(Outcome::Repetition));
     }
 
     #[test]
