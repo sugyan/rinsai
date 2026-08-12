@@ -27,7 +27,7 @@ pub struct CsaMove {
 /// What one record said, before any filtering.
 #[derive(Debug, Clone)]
 pub struct CsaGame {
-    /// The file's basename, carried for provenance lines.
+    /// The file's basename, as `parse` was given it.
     pub name: String,
     pub moves: Vec<CsaMove>,
     /// From the floodgate comment `'black_rate:<name>:<value>`; `None` when
@@ -220,8 +220,9 @@ mod tests {
 
     /// The committed fixture set, read through the parser, matches the
     /// catalogue below — one row per file, listing why each is in the set.
-    /// The five qualifying games feed the extractor's golden test; the four
-    /// rejects each exercise one filter arm; the second day exercises the
+    /// The seven qualifying games feed the extractor's golden test; the four
+    /// rejects cover three filter arms (rate twice — once too low, once
+    /// absent — then termination and length); the second day exercises the
     /// day-list plumbing.
     #[test]
     fn the_committed_fixtures_read_as_catalogued() {

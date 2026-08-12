@@ -685,7 +685,7 @@ dev-dependency, and `rinsai bench` reproduces every frozen count.
 | qualifying games | 1 422 (both rates ≥ 3000, %TORYO/%KACHI, ≥ 60 plies) |
 | rejected on replay | **0 of 1 422** — every replayed move (each game through ply 24) legal for `shogi_legality_lite` |
 | lines | 256 — ≤ 2 per game, plies 12..=24 outside check, own eval within ±100 cp |
-| seed / rev | `0x52494E5341492D31` / `d517531` |
+| seed / rev | `0x52494E5341492D31` / the rev in the file's own header |
 | regeneration | twice, same cache, `--rev` as recorded — **byte-identical both times** |
 
 The full pass-by-pass counters live in the file's own header, which the

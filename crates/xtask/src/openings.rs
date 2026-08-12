@@ -39,9 +39,16 @@ pub struct PipelineConfig {
     pub balance_depth: u32,
     /// Node cap on the balance search. The engine's quiescence is unordered
     /// and unpruned, so an open position can cost orders more than the depth
-    /// suggests; the cap bounds it, and the score is then the last completed
-    /// iteration's — the first iteration always completes, so a score always
-    /// exists. A capped search is as deterministic as an uncapped one.
+    /// suggests.
+    ///
+    /// ⚠️ **The score a capped search publishes is a lower bound, not the
+    /// value of any completed iteration.** The deepening loop emits an `info`
+    /// line for the iteration the cap interrupted, whose score is the best
+    /// over a *prefix* of the root moves. The filter below therefore admits
+    /// some positions it would reject on a completed search, and never the
+    /// reverse. PROGRESS.md records how many lines of the frozen set that
+    /// reaches. A capped search is as deterministic as an uncapped one, so
+    /// the file still reproduces byte for byte.
     pub balance_node_cap: u64,
     /// A candidate survives iff rinsai's own score sits within ±this, in
     /// centipawns from the side to move, and is not a mate score.

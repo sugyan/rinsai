@@ -1,9 +1,10 @@
 //! The `sprt` subcommand: colour-swapped pairs from the opening set, fresh
 //! engine processes per game, pentanomial GSPRT over the pair outcomes.
 //!
-//! Fixed-node games between deterministic engines are load-immune, which is
-//! what licenses `--concurrency` and running beside other work (CLAUDE.md
-//! §3); nothing here reads a wall clock except the hang-detection timeouts.
+//! Fixed-node games between deterministic engines are load-immune, so a
+//! result does not depend on what else the machine is doing (CLAUDE.md
+//! §3): no clock reading can change a move, and the only ones here are the
+//! hang-detection timeouts and the log directory's name.
 //! Determinism per game comes from fresh processes: no table state, no
 //! option drift, nothing carried between games.
 

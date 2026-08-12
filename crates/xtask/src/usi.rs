@@ -7,8 +7,9 @@
 //! ⚠️ No orphans: [`UsiEngine`]'s `Drop` quits, waits briefly, then kills and
 //! reaps — and it runs on unwinding panics, which the workspace keeps
 //! enabled. If the harness itself dies uncleanly, the child's stdin closes
-//! and a USI engine exits on EOF; that backstop, plus the runner bounding
-//! how many engines exist at once, is the whole containment story.
+//! and a USI engine exits on EOF. Two engines exist per game and are
+//! dropped before the next one starts, so what bounds the total is the
+//! caller's worker count.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write as _};

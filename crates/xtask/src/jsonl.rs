@@ -1,6 +1,7 @@
-//! A one-line JSON object builder for the match log — flat objects, string
-//! escaping per RFC 8259, and nothing a `serde` would add, which the licence
-//! allow-list rules out anyway.
+//! A one-line JSON object builder for the match log — flat objects and
+//! string escaping per RFC 8259. Nothing here needs what a serialisation
+//! framework offers, and the graph's third-party surface is scanned before
+//! a release, so it stays small on purpose.
 
 use std::fmt::Write as _;
 

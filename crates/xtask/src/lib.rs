@@ -3,9 +3,8 @@
 //! Not part of the engine and never published; the library target exists so
 //! the tests can reach the modules.
 
-// stdout is this tool's user interface; no protocol runs on it. The engine
-// keeps the allow to one protocol-writer module — here every subcommand
-// module reports to the terminal.
+// stdout is this tool's user interface; no protocol runs on it, so the
+// allow is crate-wide rather than per-module.
 #![allow(clippy::print_stdout)]
 
 pub mod config;

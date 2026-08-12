@@ -230,8 +230,9 @@ impl Game {
             PositionStatus::WhiteWins => Some(Outcome::Checkmate {
                 winner: Color::White,
             }),
-            // `Invalid` is not an outcome: a hand-built position the rules
-            // library cannot classify stays in progress rather than ending.
+            // ⚠️ Not an outcome, and not a no-op either: a position the
+            // rules library calls invalid never reaches the repetition arm
+            // below, so such a game runs on past a fourfold repetition.
             PositionStatus::Invalid => None,
             _ if count >= 4 => Some(self.classify_repetition()),
             _ => None,

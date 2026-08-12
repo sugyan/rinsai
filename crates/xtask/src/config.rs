@@ -1,8 +1,9 @@
 //! The engine roster, read from `tools/opponents.toml`.
 //!
-//! A hand-rolled reader for a small TOML subset — the workspace's licence
-//! allow-list rules out the usual parsing dependencies, and a roster needs
-//! four keys. The accepted grammar, documented in the committed `.example`:
+//! A hand-rolled reader for a small TOML subset. A roster needs three keys
+//! and a table of strings, which is not worth a dependency in a graph whose
+//! whole third-party surface is scanned before a release. The accepted
+//! grammar, documented in the committed `.example`:
 //! full-line `#` comments, blank lines, `[engines.<id>]` and
 //! `[engines.<id>.options]` headers, and `key = "value"` with double-quoted
 //! values (escapes: `\"` and `\\`). ⚠️ Anything else is a hard error, never

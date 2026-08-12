@@ -12,8 +12,10 @@ use shogi_core::{Color, ToUsi};
 
 use crate::usi::{BestmoveAnswer, EngineError};
 
-/// A game is at most this many plies from `startpos`, opening included;
-/// reaching the cap is a draw — floodgate's own `Max_Moves:512` convention.
+/// A game is at most this many plies from the opening's own root, the
+/// opening's moves included; reaching the cap is a draw — floodgate's own
+/// `Max_Moves:512` convention. ⚠️ For an opening rooted at a mid-game `sfen`
+/// that is fewer plies of real game than the number says.
 pub const MAX_GAME_PLIES: usize = 512;
 
 /// One side's ability to answer a position. [`crate::usi::UsiEngine`] behind
@@ -49,9 +51,10 @@ pub enum EndReason {
     /// 詰み — the rules library folds stalemate in, which is shogi's rule.
     Checkmate,
     Resign,
-    /// `bestmove win`, trusted as sent: no engine in the roster declares
-    /// before E2 gives rinsai the 27-point rule, and a wrong trust costs one
-    /// logged game, not the run.
+    /// `bestmove win`, trusted as sent — the referee has no 27-point rule to
+    /// check it against until E2 builds one. ⚠️ An engine that declares
+    /// wrongly is scored a full win, so this arm is worth revisiting the
+    /// first time a run's log shows one.
     Declaration,
     IllegalMove,
     Timeout,
@@ -68,7 +71,7 @@ pub enum EndReason {
 pub struct GameRecord {
     pub winner: Winner,
     pub reason: EndReason,
-    /// Total plies from `startpos`, the opening's included.
+    /// Moves played from the opening's own root, the opening's included.
     pub plies: usize,
     /// The whole game in USI move tokens, opening included.
     pub moves_usi: String,

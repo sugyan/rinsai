@@ -160,8 +160,9 @@ fn curl_to_file(url: &str, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The `wdoor…​.csa` names an index page links to, deduplicated and sorted —
-/// filename order is the deterministic spine the pipeline scans in.
+/// The `wdoor…​.csa` names an index page links to, deduplicated and sorted.
+/// ⚠️ The sort orders the *fetch*; `gen-openings` re-reads the directory and
+/// sorts again, because `read_dir` promises no order.
 fn hrefs(index_html: &str) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     let mut rest = index_html;
