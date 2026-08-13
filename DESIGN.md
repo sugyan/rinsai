@@ -49,7 +49,7 @@ One repository, a Cargo workspace, with the training pipeline alongside the engi
 rinsai/
 ├── CLAUDE.md              # rules for implementation sessions
 ├── DESIGN.md              # this file: the plan
-├── DECISIONS.md           # what was decided and why; append-only  (added at E0)
+├── DECISIONS.md           # what was decided, and what lost; retired in place  (added at E0)
 ├── CONVENTIONS.md         # what is frozen, by subject             (added at E0)
 ├── PROGRESS.md            # the state, the next action, and every measured number  (added at E0)
 ├── README.md              # what it is, and the name
@@ -112,7 +112,7 @@ Numbered **E0–E6** so as not to collide with shunsai's M0–M7. Rating targets
 ### E0 — baseline: play legal moves and don't hang pieces (size M)
 
 - USI shell (`position` / `go` / `stop` / `gameover`), iterative-deepening negamax αβ, **TT and quiescence search from the start** (material evaluation without qsearch fails on the horizon effect), simple time management, material evaluation.
-  - ⚠️ "From the start" means from the start of *E0*, not of every sub-step. The split ships step 2 without them, knowingly: step 2's engine is horizon-effect-prone and is supposed to be, step 3a is the fix, and separating them is what makes step 3a's diff attributable. [DECISIONS.md](./DECISIONS.md), 2026-08-06, amended 2026-08-07 when step 3 became 3a (quiescence) and 3b (the transposition table and `bench`), taking the split from seven sub-steps to eight.
+  - ⚠️ "From the start" means from the start of *E0*, not of every sub-step. The split ships step 2 without them, knowingly: step 2's engine is horizon-effect-prone and is supposed to be, step 3a is the fix, and separating them is what makes step 3a's diff attributable. [DECISIONS.md](./DECISIONS.md), 2026-08-07, when step 3 became 3a (quiescence) and 3b (the transposition table and `bench`).
   - ⚠️ Likewise "simple time management": step 2 honours only the budgets it is *told* (`movetime`, `byoyomi`), and deciding a per-move allowance from `btime` is step 5.
 - **Repetition (千日手) is mandatory at E0 and lives here, not in shunsai.** Stack `(key(), Hand, in_check())` per ply; use `key()` as the first filter and hand equality to confirm. Perpetual check — where the checking side loses — is decided from the `in_check()` history. shunsai holds no game history by design, so this is the engine's responsibility.
 - Harness: **an own Rust USI match harness and SPRT driver in `crates/xtask`**, refereeing on `crates/rinsai-game` — decided when step 7 arrived and Ayane turned out to lack fixed-node play, repetition adjudication and legality checking ([DECISIONS.md](./DECISIONS.md), 2026-08-12). Sparring by running GPL binaries: node-limited YaneuraOu → 技巧2.

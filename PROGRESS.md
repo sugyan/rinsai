@@ -559,9 +559,9 @@ PROGRESS.md 7.0 KB, against CONVENTIONS.md's 1.8 KB.
 
 | | before | after |
 |---|---|---|
-| DECISIONS.md | 108 813 | **46 133** |
-| PROGRESS.md | 73 567 | **37 984** |
-| the five documents together | 244 299 | **148 025** |
+| DECISIONS.md | 108 813 | **47 308** |
+| PROGRESS.md | 73 567 | **38 582** |
+| the five documents together | 244 299 | **150 009** |
 | against Rust, non-blank | 12 599 lines | 12 599 lines |
 
 ### Portability and the browser

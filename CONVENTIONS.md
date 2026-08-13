@@ -26,7 +26,9 @@ the alternatives lost; neither carries both.
 - **A bare `Position` means `shunsai::Position`** — the board a search walks,
   and the only one of the two with unmake and an incremental Zobrist key.
   `shogi_core::Position` is a *record* (root, current position, moves played) and
-  `Game` delegates that half to it under the alias `Record`; it is never
+  `Game` delegates that half to it under the alias `Record` — `shogi_core::Game`
+  was weighed for the same job and is `Position` plus a `GameResolution`, which
+  becomes interesting at E2's declaration handling and not before; it is never
   imported unqualified. Its `from_usi` is not used at all, for the reason under
   "Traps" in PROGRESS.md — **do not confuse "we cannot parse with it" with "we
   cannot store in it"**, which is the mistake the first draft of `Game` made.

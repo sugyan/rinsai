@@ -27,8 +27,9 @@ This file defines project rules that every implementation session (Claude Code) 
 paragraph?* If it would only be less informed about how the work went, that is
 history, and history is already stored — do not write it. ⚠️ **The volume is
 mine to keep down; it is not a thing to measure or gate on.** The five documents
-above reached 250 KB against ~9 500 lines of Rust before this rule existed,
-because two of them had no stopping condition written into their shape.
+above outgrew the code they describe before this rule existed, because two of
+them had no stopping condition written into their shape. PROGRESS.md carries
+the figures, and they belong there and not here.
 
 ## 2. ⚠️ Top rule: licensing (stay permissive, no GPL reuse)
 
@@ -84,7 +85,7 @@ A doc comment answers three questions and no others: **what is this**, **how do 
 
 Consequences worth stating outright:
 
-- **A comment that narrates history is a pull request description in the wrong file.** "It used to be X", "this was re-measured", "the note said otherwise" — none of that is a decision, and routing it to DECISIONS.md is how that file reached 113 KB in five days. Only the *conclusion* is an entry: do not do X, because Y was measured. ⚠️ The one exception is a prediction measurement **refuted** — that keeps a live entry, because losing it costs somebody the experiment again.
+- **A comment that narrates history is a pull request description in the wrong file.** "It used to be X", "this was re-measured", "the note said otherwise" — none of that is a decision, and routing it to DECISIONS.md is how that file came to outweigh every other document in the repository put together. Only the *conclusion* is an entry: do not do X, because Y was measured. ⚠️ The one exception is a prediction measurement **refuted** — that keeps a live entry, because losing it costs somebody the experiment again.
 - **A forward reference stays only if it is load-bearing.** Naming the caller that keeps an unused surface alive (CONVENTIONS.md's named-caller rule) is load-bearing and fits on one line. "E1 will add killers here" is not; it belongs in the roadmap.
 - **A test's doc says what the test would catch, not what it caught last time.** A sabotage note is the deliberate exception to "the argument lives elsewhere": it has to sit on the test it describes.
 - **Do not write a comment correcting an earlier version of itself.** Fix the comment; the correction, if it is interesting, is a DECISIONS.md entry.
