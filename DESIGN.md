@@ -214,8 +214,7 @@ What belongs to the *plan* rather than to the rules is the consequence: **there 
 
 ---
 
-**The decision log used to be §9 here.** It is now
-[DECISIONS.md](./DECISIONS.md) — it had grown to two thirds of this file and was
-burying the plan. There is deliberately no `## 9.` heading any more, so that
-CI's citation guard can catch anything that still cites section nine; cite
-DECISIONS.md and the entry's date instead.
+**The decision log is [DECISIONS.md](./DECISIONS.md).** Cite it by the entry's
+date. ⚠️ This file has no `## 9.` heading, deliberately: CI's citation guard
+resolves `FILE.md §N` against the headings, so a surviving citation to section
+nine fails there rather than silently pointing at nothing.

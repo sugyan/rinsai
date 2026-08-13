@@ -41,5 +41,7 @@ path = "/Users/you/dev/sugyan/shogi/benchmarks/YaneuraOu/source/YaneuraOu-by-gcc
 # A node-limited search is only deterministic single-threaded.
 Threads = "1"
 USI_Hash = "256"
-# NodesLimit is deliberately NOT set: the harness sends `go nodes N`, which
-# YaneuraOu documents as overriding the option.
+# NodesLimit is deliberately NOT set: under `--nodes` the harness sends
+# `go nodes N`, which YaneuraOu documents as overriding the option. ⚠️ Under
+# `--time-ms`/`--byoyomi-ms` the `go` carries a clock instead, and NodesLimit
+# would then cap every search here rather than being overridden.

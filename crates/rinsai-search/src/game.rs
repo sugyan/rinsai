@@ -201,7 +201,8 @@ impl Game {
         })?;
         // USI drop notation carries no colour — `P*7f` is the same text for
         // either side — so `shogi_usi_parser` hard-codes Black and documents it
-        // (`src/mv.rs:5-7`). The colour has to come from the side to move.
+        // on its `impl FromUsi for Move`. The colour has to come from the side
+        // to move.
         let mv = match parsed {
             Move::Drop { piece, to } => Move::Drop {
                 piece: Piece::new(piece.piece_kind(), self.board.side_to_move()),

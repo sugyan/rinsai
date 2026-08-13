@@ -60,8 +60,9 @@ the alternatives lost; neither carries both.
   modelling choices worth naming: a **promoted minor is exactly a gold on the
   board**, because it moves exactly as a gold and anything else would be a claim
   about the position rather than the material; and **a piece in hand is worth
-  10–15% more than the same piece on the board**, most for the kinds whose board
-  placement is most constrained. "と金は金以上" then falls out on its own.
+  more than the same piece on the board**, by the widest margin for the kinds
+  whose board placement is most constrained. The margins themselves are the
+  table in `eval`. "と金は金以上" then falls out on its own.
   The one known simplification: 成銀 is genuinely worse than 銀 sometimes (a
   silver retreats diagonally, a promoted one does not) and this model says it is
   always 50 better. Left unmodelled deliberately; E3 replaces the whole table.
@@ -82,7 +83,7 @@ the alternatives lost; neither carries both.
   SPRT is where the number stops being inherited.
 
   ⚠️ **Quiescence has to poll, and the reason is not tidiness.** The test is
-  `nodes.is_multiple_of(1024)` — an *exact* multiple — which is safe only while
+  `nodes.is_multiple_of(POLL_INTERVAL_NODES)` — an *exact* multiple — safe only while
   every increment *inside the tree* is seen by something that polls. A
   quiescence search that counted nodes without polling would leave the values
   seen at interior-node entries non-consecutive, and they could then step clean
