@@ -220,8 +220,6 @@ pub fn play_game(
 ) -> Result<GameRecord, String> {
     let mut game =
         Game::from_usi_position(opening).map_err(|e| format!("unplayable opening: {e}"))?;
-    let mut args = opening.trim().to_owned();
-    let mut had_moves = args.split_whitespace().any(|t| t == "moves");
     let opening_plies = game.ply();
     let mut clock = Clock::new(control);
     let mut move_times: Vec<Duration> = Vec::new();
@@ -249,21 +247,12 @@ pub fn play_game(
             Color::White => &mut *white,
         };
         let spec = clock.spec(mover);
-        let TimedAnswer { answer, elapsed } = seat.bestmove(&args, spec);
+        let TimedAnswer { answer, elapsed } = seat.bestmove(&game.to_usi_position(), spec);
         move_times.push(elapsed);
         clock.charge(mover, elapsed);
         match answer {
-            Ok(BestmoveAnswer::Move(token)) => match game.play_usi(&token) {
-                Ok(_) => {
-                    if had_moves {
-                        args.push(' ');
-                    } else {
-                        args.push_str(" moves ");
-                        had_moves = true;
-                    }
-                    args.push_str(&token);
-                }
-                Err(e) => {
+            Ok(BestmoveAnswer::Move(token)) => {
+                if let Err(e) = game.play_usi(&token) {
                     break (
                         Winner::opponent_of(mover),
                         EndReason::IllegalMove,
@@ -273,7 +262,7 @@ pub fn play_game(
                         )),
                     );
                 }
-            },
+            }
             Ok(BestmoveAnswer::Resign) => {
                 break (Winner::opponent_of(mover), EndReason::Resign, None);
             }
@@ -540,14 +529,16 @@ mod tests {
         assert_eq!(record.moves_usi, "7g7f 3c3d");
     }
 
-    /// The `position` argument is the only channel carrying game state to
-    /// both players, and it is built by string append rather than by asking
-    /// the board — so it is worth asserting literally, at every ply, from
-    /// both a bare root and one that already carries moves.
+    /// The `position` argument is the only channel carrying game state to both
+    /// players, so it is worth asserting literally, at every ply, from both a
+    /// bare root and one that already carries moves. The referee asks the game
+    /// for it; what this pins is that the harness asks at the right moment and
+    /// of the right side, which `rinsai_game`'s own tests cannot see.
     ///
-    /// Sabotage: change either the `" moves "` separator or the `' '` join in
-    /// `play_game` and this fails; nothing else in the workspace does,
-    /// because every other test discards the argument.
+    /// Sabotage: hoist `game.to_usi_position()` out of `play_game`'s loop and
+    /// pass the same string every move — `["startpos", "startpos"]` here, and
+    /// all 42 of `rinsai-game`'s tests still green, which is the sentence above
+    /// demonstrated rather than asserted.
     #[test]
     fn each_seat_is_asked_about_the_game_so_far_in_usi() {
         let (mut black, mut white) = interleave(&["7g7f", "2g2f"], &["3c3d", "8c8d"]);
