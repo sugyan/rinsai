@@ -9,7 +9,7 @@ This file defines project rules that every implementation session (Claude Code) 
 - **Route**: **NNUE + αβ first**; DL/MCTS is a conditional later option, not a rejected one. The conditions are written down in DESIGN.md E6 — do not start DL work without checking them.
 - **Scope**: search, evaluation, NNUE inference and training, USI/CSA, time management, repetition (千日手), declaration (入玉宣言), self-play, the match harness. **Move generation is not in scope** — it belongs to shunsai. Neither is SFEN parsing (`shogi_usi_parser`) or mate solving (`tsumeshogi-solver`).
 - **Phases**: staged **E0–E6** (numbered so as not to collide with shunsai's M0–M7). See DESIGN.md §5. Know which phase a piece of work belongs to before starting it.
-- **Read [PROGRESS.md](./PROGRESS.md) first.** It is the ledger: which sub-step is next, what each step delivered, the surveyed shunsai API and its traps. Update it at the end of every pull request; a step's narrative lives in its pull request description, and the ledger keeps the state, the gates and the numbers.
+- **Read [PROGRESS.md](./PROGRESS.md) first.** It is the ledger: which sub-step is next, the gates, the numbers, and the surveyed shunsai API and its traps. Update it at the end of every pull request — which includes *deleting* the previous step's section. A step's narrative lives in its pull request description and is never copied back.
 
 **Each document has one job, and nothing is written in two of them.**
 
@@ -17,9 +17,18 @@ This file defines project rules that every implementation session (Claude Code) 
 |---|---|---|
 | [DESIGN.md](./DESIGN.md) | the plan — goal, scope, route, roadmap E0–E6 | forward-looking; edited when the plan changes |
 | CLAUDE.md | the rules a session must follow | this file |
-| [CONVENTIONS.md](./CONVENTIONS.md) | what is frozen and already built on, by subject | changing one needs a DECISIONS.md entry |
-| [DECISIONS.md](./DECISIONS.md) | what was decided and why, including what was rejected | dated, append-only, superseded rather than edited |
-| [PROGRESS.md](./PROGRESS.md) | the state, the next action, **and every measured number** | rewritten each pull request |
+| [CONVENTIONS.md](./CONVENTIONS.md) | what is frozen and already built on, by subject | the rule, not its argument; adding one retires a DECISIONS.md entry |
+| [DECISIONS.md](./DECISIONS.md) | what was decided, what was rejected and why it lost, and what would reopen it | one entry per decision, **live** until the rule freezes, then **retired in place** to a line. Conclusions are superseded, never revised |
+| [PROGRESS.md](./PROGRESS.md) | the state, the next action, **and every measured number** | present tense only; `## What step N delivered` is deleted when step N+1 merges |
+| — how something was found, which review caught it, what a draft said, the order events happened in | **the pull request description**, and nowhere in the repository | `git log` is the index |
+
+**One test, before writing any of it.** *Would a session holding this checkout,
+`git log` and the pull request descriptions get something **wrong** without this
+paragraph?* If it would only be less informed about how the work went, that is
+history, and history is already stored — do not write it. ⚠️ **The volume is
+mine to keep down; it is not a thing to measure or gate on.** The five documents
+above reached 250 KB against ~9 500 lines of Rust before this rule existed,
+because two of them had no stopping condition written into their shape.
 
 ## 2. ⚠️ Top rule: licensing (stay permissive, no GPL reuse)
 
@@ -75,7 +84,7 @@ A doc comment answers three questions and no others: **what is this**, **how do 
 
 Consequences worth stating outright:
 
-- **A comment that narrates history is a decision-log entry in the wrong file.** "It used to be X", "this was re-measured", "the note said otherwise", "a prediction that did not come true" — all of it belongs in DECISIONS.md.
+- **A comment that narrates history is a pull request description in the wrong file.** "It used to be X", "this was re-measured", "the note said otherwise" — none of that is a decision, and routing it to DECISIONS.md is how that file reached 113 KB in five days. Only the *conclusion* is an entry: do not do X, because Y was measured. ⚠️ The one exception is a prediction measurement **refuted** — that keeps a live entry, because losing it costs somebody the experiment again.
 - **A forward reference stays only if it is load-bearing.** Naming the caller that keeps an unused surface alive (CONVENTIONS.md's named-caller rule) is load-bearing and fits on one line. "E1 will add killers here" is not; it belongs in the roadmap.
 - **A test's doc says what the test would catch, not what it caught last time.** A sabotage note is the deliberate exception to "the argument lives elsewhere": it has to sit on the test it describes.
 - **Do not write a comment correcting an earlier version of itself.** Fix the comment; the correction, if it is interesting, is a DECISIONS.md entry.

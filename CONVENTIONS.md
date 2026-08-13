@@ -9,6 +9,18 @@ search. Where a convention has an argument behind it, the argument is in
 DECISIONS.md and the measurement is in [PROGRESS.md](./PROGRESS.md); this file
 carries the rule.
 
+A rule here is what the code assumes, stated in a few lines. If it takes a
+paragraph, what is being written is the argument — and the moment the rule
+lands here, **the DECISIONS.md entry behind it retires to a line**, in the same
+pull request. One file carries the rule, the other the shortest record of why
+the alternatives lost; neither carries both.
+
+## Source layout
+
+- **A module with children is `foo.rs` beside `foo/`, never `foo/mod.rs`.** It
+  is shunsai's layout too (`src/sliders.rs` beside `src/sliders/`), so it is the
+  family convention rather than a preference.
+
 ## Vocabulary and scores
 
 - **A bare `Position` means `shunsai::Position`** — the board a search walks,

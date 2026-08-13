@@ -4,15 +4,18 @@ Where the implementation is, what the next step is, and what a session needs to
 know before touching the code. [DESIGN.md](./DESIGN.md) is the plan,
 [CLAUDE.md](./CLAUDE.md) is the rules, [CONVENTIONS.md](./CONVENTIONS.md) is
 what is frozen and [DECISIONS.md](./DECISIONS.md) is why; **this file is the
-state, and the only home for a measured number.** Update it at the end of every
-step.
+state, and the only home for a measured number.** It is not the story:
+`## What step N delivered` is deleted when step N+1 merges, so at most one
+exists at a time — the step in flight. What survives a step is a *number*, and
+a number survives as a row in the tables below beside the fixture it belongs
+to, not as a section. A section title with a past-tense verb in it is the
+smell.
 
 ## E0 — baseline: play legal moves and don't hang pieces
 
-E0 is split into seven sub-steps, one per pull request — except step 3, which
-became two when building it showed that quiescence alone changes three frozen
-conventions and rebaselines every committed node count, and steps 5–7, which
-land as two pull requests with the harness first (DECISIONS.md, 2026-08-12).
+E0 is split into sub-steps, one per pull request — except step 3, which became
+3a/3b, and steps 5–7, which land as two with the harness first (DECISIONS.md,
+2026-08-12).
 
 | # | Step | Status |
 |---|---|---|
@@ -42,871 +45,29 @@ Everything below reached the engine from stdin and is now rejected or absorbed,
 each with a regression test. They are listed because the next protocol surface —
 the CSA client at E2 — has to survive the same shapes.
 
-- **A hand count no shogi set contains** (`position sfen … b 19P 1`). It parses:
-  `shogi_usi_parser` accepts a two-digit count and `Hand::added` has no cap.
-  shunsai then indexes a `[u64; 19]` Zobrist table by held count and the
-  nineteenth piece is an out-of-bounds panic **on the protocol thread**, so one
-  line from a GUI or a server ended the process. `Game::from_partial` now bounds
-  the total per kind, which also closes the indirect route (18 pawns in hand plus
-  one on the board, then capture it).
-- **A non-UTF-8 byte** (a CP932 path from a Japanese Windows GUI — and E3 is
-  going to ask for an `EvalFile` path). `BufRead::lines` reports it as
-  `InvalidData`, which the loop could not tell from a real I/O error, so the
-  engine exited silently with status 0. Lines are now read as bytes and
-  converted lossily, with a diagnostic.
+- **A hand count no shogi set contains** (`position sfen … b 19P 1`). It parses,
+  and the nineteenth piece is an out-of-bounds panic **on the protocol thread**.
+  `Game::from_partial` bounds the total per kind, board and hand together.
+- **A non-UTF-8 byte** — a CP932 path from a Japanese Windows GUI, and E3 asks
+  for an `EvalFile` path. It reached the loop as an I/O error and the engine
+  exited silently with status 0. Lines are read as bytes and converted lossily.
 - **An out-of-range SFEN move number.** `PartialPosition::from_usi` saturates and
-  discards — `0` becomes 1, 65536+ becomes 65535 — while rejecting a
-  *non-numeric* field. Now validated in `split_root` instead.
-- **Two kings of one colour** (`position sfen 4k4/…/3KK4 b - 1`). The piece-count
-  bound was per *set* — two kings total — which admits two black kings and no
-  white one, a position no set can produce. The king is the one kind that never
-  changes sides, so its bound is **per colour**, and it is *at most* one rather
-  than exactly one: a 詰将棋 diagram routinely omits the attacking king, and
-  shunsai's `king_square` returns `Option` with `None` documented as legal.
+  discards rather than rejecting. Validated in `split_root` instead.
+- **Two kings of one colour** (`position sfen 4k4/…/3KK4 b - 1`). The king is the
+  one kind that never changes sides, so its bound is **per colour**, and it is
+  *at most* one rather than exactly one: a 詰将棋 diagram routinely omits the
+  attacking king, and shunsai's `king_square` returns `Option` with `None`
+  documented as legal.
 
 ### Still unbounded: the length of one line
 
 `usi::run` reads with `read_until(b'\n')` and no cap, so a peer that never sends
 a newline grows the buffer until the process dies. Harmless at E0 — the peer is
 a local GUI — but **E2's CSA client takes its input from a network socket**, and
-that is the phase to bound it in. Recorded here rather than fixed now for the
-same reason as the move buffer: there is no consumer yet, and the bound wants to
-be chosen against the real longest line a CSA server sends, not guessed.
+that is the phase to bound it in: the bound wants choosing against the longest
+line a CSA server really sends, not guessing now.
 
-## What step 1 delivered
-
-`rinsai` starts, holds a USI conversation, and plays legal games. Verified
-against the local material-evaluation YaneuraOu (`../benchmarks`, `NodesLimit
-10000`): 22 plies to a resignation, no illegal move, no protocol stall, no
-diagnostics. It is extremely weak on purpose — there is no search.
-
-- `crates/rinsai-search` — `Game` (board + lockstep SFEN + history), `is_legal`,
-  `Score`/`Depth`, the `Searcher` seam (`SearchJob`, `Limits`, `SearchSignals`,
-  `BestMove`, `InfoSink`, `SearchDriver`), and `PlaceholderSearcher` (deleted at
-  step 2, as planned).
-- `crates/rinsai` — the USI protocol loop, its state machine, the option table
-  and the single output sink.
-- CI: fmt, clippy `-D warnings`, tests, `cargo doc` with `-D warnings` (it
-  catches a broken intra-doc link and nothing else — ⚠️ it does **not** see a
-  false claim, which is the defect class CLAUDE.md §4 exists for), an MSRV job
-  on 1.88, `cargo deny check advisories licenses bans sources`, and two CI
-  guards, both described under Traps below.
-
-**Deliberately not built**, so step 2 does not inherit guesses: no evaluation,
-no search, no move buffer, no transposition table, no repetition *queries* (the
-history is recorded, nothing reads it), no time management, no `bench`.
-
-## What step 2 delivered
-
-`rinsai` searches. Iterative-deepening negamax with alpha-beta, material
-evaluation, a principal variation, `info` lines and mate scoring;
-`PlaceholderSearcher` is gone.
-
-- `crates/rinsai-search/src/eval.rs` — the value tables and `evaluate`, plus a
-  `#[cfg(test)]` square-scan oracle it is differentially tested against.
-- `crates/rinsai-search/src/negamax.rs` — `NegamaxSearcher`, `Window`, `Budget`,
-  the deepening loop, the root and the interior node.
-- `crates/rinsai-search/src/info.rs` — `SearchInfo` and its USI `Display`,
-  testable without running a search.
-- `crates/rinsai-search/src/moves.rs` — `MoveBuf`, the shape decided in step 1.
-- `Game::search_board()` — the board a searcher does its do/undo on.
-
-**The step-1 seam held.** `Searcher::search` takes `&SearchJob`, `Game` hands
-out no `&mut Position`, and neither had to change: the searcher asks `Game` for
-a board of its own. Step 1's prediction was that only the lines *naming* the
-searcher would **need** to change, and that is what happened — six of them,
-every one naming it or pointing at where it lives:
-
-| File | Lines forced | What they are |
-|---|---|---|
-| `src/main.rs` | 2 | the `use`, and the `usi::run` call |
-| `tests/usi_conformance.rs` | 4 | the `use`, `dialogue`, its doc line, the module doc's pointer |
-| `tests/usi_process.rs` | 0 | — |
-
-Every pre-existing conformance and process test passed unmodified.
-
-**Not the same claim as "nothing else in the crate changed", which is false**:
-step 2 also added a helper and three tests to `usi_conformance.rs`, about eighty
-lines. Nothing forced those — they are new assertions about a search that did
-not exist before — so they say nothing either way about the seam. Keeping the
-two apart is the whole content of the result: a seam is verified by what a
-change *compelled*, not by a diffstat. (The looser wording shipped in this
-branch's first draft and was caught in review.)
-
-Measured, release build. Not a strength claim — E0 has no instrument for that
-(see below) — just what the thing does. **This table is the only home for these
-numbers**; nothing in the source repeats them, because the first draft of step 2
-put a timing in a doc comment and the two copies had already drifted apart by a
-factor of two when the branch was reviewed.
-
-| Position | Depth | Nodes, step 2 | Nodes, step 3a | Nodes, step 3b | seldepth, 3b | Time, step 2 |
-|---|---|---|---|---|---|---|
-| initial | 6 | 585 568 | 376 695 | **128 167** | 29 | 23 ms |
-| drop-heavy middlegame | 4 | 838 976 | 7 030 029 | **4 049 636** | 29 | 40 ms |
-| drop-heavy middlegame | 5 | 13 888 371 | 378 188 510 | **33 416 692** | 31 | 445 ms |
-| two lone kings | 6 | 1 431 | 1 431 | **747** | 6 | — |
-
-⚠️ **The step-3b column is at the advertised default table size (256 MiB) and
-is not the count at another size.** Table size moves a node count on its own —
-a bigger table evicts less — which is why `bench` fixes its own size rather than
-reading `USI_Hash`, and why a count quoted without a size is not a result. Each
-row was taken three times in one process and reproduces to the digit.
-
-Step 3a's counts were taken three times and reproduce to the digit. **Its times
-are not recorded, and that is deliberate**: the machine was not quiet — a
-criterion run belonging to another checkout held a core for the whole session —
-so the figures observed (about 45 ms, 770 ms and 36.8 s) are what the engine did
-under load and are not results. Re-measure them on a quiet machine before
-anything depends on them. The step-2 column stands; it was re-run untouched at
-the start of this step and reproduced to the digit, which is the check that says
-the two columns can be compared at all.
-
-Three things in that table are worth reading rather than skimming:
-
-- **The initial position got *cheaper*, by 36%.** Quiescence adds nodes at the
-  leaves and removes far more above them, because a leaf that has resolved its
-  captures returns a score alpha-beta can actually cut on. This is the direction
-  nobody predicts and it is the ordinary one.
-- **The drop-heavy middlegame got 8.4× and then 27× more expensive**, and that is
-  the honest cost of a quiescence search with **no ordering, no SEE and no delta
-  pruning** — E1 items 2, 8 and 9, in that order, each with its own SPRT. This
-  row is their baseline. Depth 5 at 378 M nodes is not a search anyone should run
-  under a clock; `DEFAULT_DEPTH` is 4 and every clocked search is bounded by its
-  budget, so nothing in the engine reaches it by accident.
-- **Two lone kings did not move at all.** A capture-only quiescence adds exactly
-  nothing in a position where no capture is reachable, so all six iterations are
-  byte-identical to step 2's. That is the cheapest possible check that the new
-  node type is only entered where it should be, and it is why the fixture is now
-  in the node-counting test.
-
-**The two columns are not the same kind of fact, and the difference matters from
-step 3b on.** The node counts are deterministic: every run reproduces all of them
-to the digit, which is why they are what `bench` freezes as a regression test. The
-times are one machine on one day — settled, the three rows sit at 22–23 ms,
-38–41 ms and 444–469 ms across two sessions — so a time that differs from this
-table is not by itself a result. Note that the spread does not track the
-magnitude: as a fraction the three rows sit at about ±2%, ±4% and ±3%, so the
-*widest* is a short row and a threshold cannot be read off row length either
-way. That is the whole reason
-a quiet machine is a precondition for the SPRT loop (CLAUDE.md §3): noise
-cannot move a node count and can move a time far enough to invent an
-improvement.
-
-**Node rate, and why it justifies nothing.** These rows imply roughly 8–10 M
-nodes/s. Step 2 measured 20–30 M, and the gap is not a regression: most of step
-2's nodes were depth-zero leaves that only evaluated, and quiescence replaced
-them with nodes that generate. ⚠️ The rate is therefore **not** an argument for
-the 1024-node poll interval. That interval is untuned, and step 5's SPRT is
-where it stops being inherited (CONVENTIONS.md).
-
-⚠️ **Exec the binary once after a build, before measuring anything.** The first
-run of a freshly linked binary costs about 20–25 ms more than the settled
-figure, and that is an *absolute* amount rather than a proportional one, so it
-is +87% on the 23 ms row and +5% on the 445 ms one.
-
-Two experiments pin it down, and each rules out an explanation the numbers
-otherwise fit:
-
-- **Reverse the order of the three rows after a rebuild** and the penalty moves
-  to whichever row now goes first — not to whichever row is shortest. So it is
-  not "short measurements are noisy".
-- **Run `rinsai --version` once after the build**, then measure. The penalty
-  disappears: 40 / 33 / 38 ms without it against 23 / 23 / 24 ms with it, three
-  alternating pairs. A process that prints one line and exits cannot warm a CPU
-  up or warm the search up, so it is neither of those either — and the earlier
-  wording here said "the CPU coming up to clock", which this is the experiment
-  that removes.
-
-What is left is the first *execution* of a newly written binary image: paged in
-from disk, and — **a candidate, not a finding, because it has not been
-instrumented** — on macOS the first-exec code-signature validation of a
-just-linked binary, which the kernel caches per file. Either way it is paid once
-per build rather than once per process, which is why the second and third
-processes of a batch pay nothing.
-
-The rule is written as "exec it once" rather than "discard the first
-measurement" because a throwaway `--version` costs nothing and can go in a
-script, where discarding costs a whole measurement. The reason to write it down
-at all rather than shrug: the E0 measurements that matter are tens of
-milliseconds long, so this one effect is larger than most of what step 5's
-time-management work will be looking for.
-
-**The depth-parity fingerprint is gone, and that is step 3a's headline result.**
-
-Step 2 recorded it as a prediction to be falsified: from the initial position,
-depths 3 and up reported +215 at odd depths and 0 at even ones. 215 is a pawn's
-board value plus a pawn's hand value — after `7g7f`, every White reply left Black
-a free pawn on ply 3, and at depth 4 White recaptured so the score fell back to
-0. Re-measured before touching anything, it reproduced exactly, and one row
-beyond what step 2 had recorded: depths 1–8 gave 0, 0, +215, 0, +215, 0, +215,
-**−215**. The last is the same effect seen from the other side and step 2 never
-went deep enough to notice it.
-
-After quiescence, **depths 1 through 8 all report 0**. The initial position is
-symmetric and the engine now says so at every depth. `the_horizon_effect_fingerprint_is_gone`
-asserts it against the recorded magnitude rather than against "the score is
-small" — the threshold *is* the fingerprint's magnitude, so the effect returning
-fails it whatever depths it returns at. ⚠️ It remains an upper bound and nothing
-more: a search that broke in some new way and reported ±90 would pass. Only the
-fingerprint is pinned, not the scores.
-
-And step 2 held a whole game: 70 plies against the local material-only YaneuraOu
-(`NodesLimit 10000` against `go byoyomi 200`), ending in rinsai being mated and
-answering `resign`. No illegal move, no protocol stall, nothing on stderr. Step
-1's game ended at 22 plies, and **the comparison means nothing** — different
-time controls, one game each, and E0 has no instrument for strength. It is
-recorded as "it plays", which is all it is.
-
-## What step 3a delivered
-
-Quiescence search, captures only, plus `seldepth` on the `info` line. The
-measurement table above is the result; what follows is what building it changed
-or found out.
-
-### Quiescence searches captures, and the shape of the node
-
-At a leaf, instead of evaluating, the search plays out the captures. In check it
-generates everything — shunsai restricts generation to evasions there — and does
-**not** stand pat, because declining a check is not a legal option and a score
-that assumes otherwise describes a position that does not exist. Otherwise it
-stands pat first (fail-soft, so a stand-pat above β returns immediately) and then
-searches only moves whose destination holds an enemy piece.
-
-Captures are selected by **intersecting two bitboards per `MoveSet`**, not by
-`piece_at` per generated move. shunsai hands destinations over as `Bitboard`s, so
-a `Move` is only ever constructed for a capture, and `MoveSet::Drop` is discarded
-whole — a drop can never capture, and drops are most of what a shogi move list
-is. Where promotion is optional a capture is emitted **both ways**; both are
-legal and choosing between them is ordering, which is E1's.
-
-**Deliberately absent, each with the step that owns it**: non-capture promotions
-(E1 item 8, beside SEE), checks (E1 item 8 as well — they need `gives_check`,
-which shunsai does not have), SEE (E1 item 8 — needs `attackers_to`), delta
-pruning (E1 item 9). DESIGN.md's item 8 groups all three of the first in one
-sentence; item 7 is check *extension*, which is a main-search feature and not
-this.
-The と金作り argument E1 inherits, with its number: in rinsai's own table a pawn
-is 100 and a promoted pawn 600, so 歩→と is a **500 cp event** that a capture-only
-quiescence is blind to. That is the largest single thing this design gives up,
-it is shogi-specific rather than inherited from chess practice, and E0 has no
-instrument to decide it — which is exactly why it goes to the phase that does.
-
-### ⚠️ Counting *checks*, not plies — the one design decision that was got wrong first
-
-The first implementation capped total quiescence depth (`QS_MAX_PLIES = 32`).
-It was wrong, and the numbers say so plainly. Measured on the drop-heavy fixture
-at depth 4, with the total-ply cap:
-
-| cap | nodes, depth 4 | nodes, depth 5 |
-|---|---|---|
-| 32 | 8 138 236 | 1 485 819 624 |
-| 16 | 7 416 958 | — |
-| 8 | 4 735 764 | — |
-| 4 | 1 870 111 | — |
-
-The depth-5 run took over two minutes and hit the floor **24.4 million times**;
-at cap 4 the floor fired on 22% of quiescence nodes. That last figure is the tell:
-a cap low enough to cut the cost is cutting *capture chains* off in the middle,
-which is the horizon effect reintroduced two plies further down — the search
-paying full price for quiescence and getting a worse version of the thing it
-replaced.
-
-**The two kinds of quiescence ply are not alike.** A capture chain is
-self-limiting: every capture moves a piece off the board and into a hand,
-quiescence plays no drops, so occupancy strictly decreases and no position
-affords more than about forty in a row. A check-evasion chain has no such
-argument — an evasion may give check back, an evasion need not be a capture, and
-an evasion list is *every* legal move including drops, so the node is an order of
-magnitude wider. So the counter counts checks. `QS_MAX_CHECK_PLIES` bounds how
-many times one quiescence line may be checked; capture chains run to exhaustion,
-which is what they are for.
-
-Choosing the value, measured (drop-heavy depth 4 / initial depth 6 / 頭金 at
-depth 1):
-
-| checks allowed | nodes, depth 4 | nodes, depth 6 | mate in 1 at depth 1 |
-|---|---|---|---|
-| 0 | 30 824 360 | 221 351 | **`cp 1260` — wrong** |
-| 1 | 22 131 829 | 239 094 | `mate 1` |
-| **2** | **7 030 029** | **376 695** | `mate 1` |
-| 4 | 7 681 868 | 459 396 | `mate 1` |
-
-Two results, and neither was predicted:
-
-- **Zero is not a cheap approximation, it is incorrect.** It evaluates while in
-  check, so the engine misses a mate one ply away and reports a material score
-  instead. One is the correctness floor, and `quiescence_does_not_stand_pat_in_check`
-  is what says so.
-- **The node count is not monotone in the cap.** Allowing two checked plies costs
-  a third of what allowing one costs. Resolving a check properly returns a score
-  the search above can cut on; refusing to resolve it returns a number that
-  defeats pruning for the rest of the tree. "Search less, spend less" is not a
-  safe assumption anywhere near a check.
-
-Two is the measured minimum and it is correct. Revisit at E1, where the check
-extension and SEE arrive together and there is an SPRT to decide it with.
-
-### The cost this leaves on the table for E1's staged generation
-
-Every quiescence node runs shunsai's **full legal generation** and keeps a
-handful of moves, because there is no captures-only generator (DESIGN.md §6 puts
-staged generation at E1). Measured over a whole search, moves generated against
-moves kept:
-
-| Position | Depth | Quiescence share of nodes | Generated | Kept | Ratio |
-|---|---|---|---|---|---|
-| initial | 6 | 91.5% | 18 655 208 | 385 110 | **48×** |
-| drop-heavy middlegame | 4 | 99.3% | 788 675 461 | 9 216 400 | **86×** |
-
-That is the size of the prize DESIGN.md §6 assigns to staged generation, as a
-number rather than a prediction, and it is the caller that finally justifies it.
-The instrumentation that produced it was throwaway and is not in the tree — it
-had no caller once the number existed.
-
-A second, smaller API want fell out of the same place: **every quiescence node
-calls `in_check()`**, which recomputes `attackers_to(king)` that `generate_moves`
-computes internally one line later and does not expose. That is shunsai's own
-parked "expose rather than recompute" (its log, 2026-07-29), and step 3a is the
-consumer it was waiting for.
-
-### It still plays
-
-84 plies against the local material-only YaneuraOu (`NodesLimit 10000` against
-`go byoyomi 200` both ways), ending in rinsai being mated and answering
-`resign`. No illegal move, no protocol stall, nothing on stderr. Step 2's game
-ran 70 plies and step 1's 22, and **the comparison still means nothing** — one
-game each, different opponents' settings, and E0 has no instrument for strength.
-Recorded as "it plays", which is all it is.
-
-## What step 3b delivered
-
-A transposition table, the transposition move searched first, `hashfull` on the
-`info` line, an honoured `USI_Hash`, and `rinsai bench`. The column above is the
-result; what follows is what building it changed or found out.
-
-### The table, and what it is worth
-
-16-byte slots, a power-of-two count indexed by `key & mask`, the **full** 64-bit
-key stored so a hit is never an index accident, and depth-preferred replacement
-with entries from earlier searches giving way first. The move is stored as a
-`CompactMove` — `Option<CompactMove>` is two bytes *guaranteed*, being a
-`#[repr(transparent)] NonZeroU16`, where `Move` carries no `#[repr]` at all.
-
-**The transposition move being searched first is worth more than the scores are,
-and by a lot.** Node counts with the stored move swapped to the front of the
-list against the same search without that one line, one MiB, release:
-
-| Position | d=2 | d=3 | d=4 | d=5 |
-|---|---|---|---|---|
-| initial | 1.00× | 1.00× | 1.01× | 1.00× |
-| initial + `7g7f 3c3d` | 1.00× | 1.46× | 1.39× | 1.44× |
-| initial + `2g2f 8c8d 2f2e 8d8e` | 1.00× | 1.00× | 1.94× | **14.02×** |
-| an open middlegame | 1.00× | 1.53× | 1.57× | 2.13× |
-| drop-heavy middlegame | 1.00× | 1.12× | 1.55× | **8.08×** |
-
-Two things worth reading rather than skimming:
-
-- **The initial position gains nothing at all**, at any depth measured. It is the
-  one fixture where the ordering is worth 1.00×, and the first draft of
-  `a_repeated_search_reuses_what_the_last_one_proved` used it — so deleting the
-  swap left that test green. This is why
-  `the_transposition_move_is_searched_first` uses a different fixture, and why
-  the fixture is named as load-bearing in its doc.
-- **The effect is strongly super-linear in depth**, 1.00× → 1.94× → 14.02× on one
-  fixture across two plies. E1's ordering work (MVV-LVA, killers, history) is
-  measured against a search that already has this.
-
-### Quiescence does **not** probe the table, and the reason is not the measured one
-
-Whether quiescence should probe and store as well was left to measurement rather
-than decided up front. It was measured, by patching it in and taking it out
-again — the instrumentation was throwaway and is not in the tree.
-
-| Position | Depth | Nodes, table in interior nodes | Nodes, in quiescence too | Ratio | ms | ms |
-|---|---|---|---|---|---|---|
-| initial | 6 | 128 167 | 99 267 | 0.77× | 15 | 17 |
-| drop-heavy middlegame | 4 | 4 049 636 | 2 036 973 | **0.50×** | 432 | 419 |
-| drop-heavy middlegame | 5 | 33 416 692 | 15 649 522 | **0.47×** | 3 379 | 2 926 |
-
-**The expectation was that it would lose, and it does not — it halves the tree.**
-The argument for expecting a loss is the ordinary one: quiescence is 91–99% of
-all nodes, so probing there would thrash the table with shallow entries and evict
-the interior ones that pay. That argument is refuted on every row, and it is
-recorded here because it is what would otherwise have been written down as the
-*reason*, unmeasured, and believed.
-
-It is nonetheless **not shipped in 3b**, and DECISIONS.md carries why. The number
-is here so that E1 does not re-derive it.
-
-### `bench`, and what fixes a baseline
-
-`rinsai bench [depth]`, a binary subcommand following the Stockfish convention
-rather than a criterion target. The position set is `positions/bench-v1.sfen`,
-compiled in with `include_str!` so the counts cannot depend on the working
-directory, and every line carries its provenance in the file's header.
-
-⚠️ **The per-position counts live in `crates/rinsai/src/bench.rs`, not here, and
-that is the one deliberate exception to "a number goes in a PROGRESS.md table
-and nowhere else".** A regression baseline has to be executable to be a
-regression test; a copy of it here would be a second copy that drifts. What
-belongs here is the total and the conditions:
-
-| | |
-|---|---|
-| positions | 7 |
-| depth | 4 |
-| table | 16 MiB, fixed — **not** `USI_Hash` |
-| total nodes | 4 133 205 |
-| reproducibility | three runs, identical to the digit |
-| debug and release | identical counts |
-| release, one run | 451 ms, 9.16 M nodes/s — ⚠️ **not a result**, see below |
-
-⚠️ **The time is the one figure here that is not evidence of anything.** The
-machine was not certified quiet — this session had been building and running
-tests throughout — so it is recorded as "what the thing did", the same standing
-step 3a gave its own times. The node count is the measurement; the same rule as
-everywhere else in this file, and the reason CLAUDE.md §3 makes a quiet machine
-a precondition for the SPRT loop rather than for this.
-
-**Three inputs are fixed rather than inherited, and each of them would otherwise
-be a hidden variable in the baseline**: the table size (an operator's option
-must not move a regression count), the position order together with a
-`new_game` between positions (or position *n* is searched against whatever
-1..n−1 left in the table), and the depth.
-
-### Allocating the default table costs about as much as an E0-depth search
-
-Three measurements of allocating a 256 MiB table alone, in one process: **20.6
-ms, 12.1 ms, 6.3 ms** — the spread is the usual first-touch effect, not noise
-between runs. A whole depth-6 search from the initial position is 13–20 ms on
-the same machine and in the same session, which is what makes the two
-comparable despite neither being a certified-quiet figure. It is paid **once per
-searcher**: in `main`, before the protocol loop starts, and again on the worker
-for a `setoption name USI_Hash`. ⚠️ Not at `isready`, whatever that method's
-comment used to say. Recorded because the two figures being the same order is
-not obvious, and because a future change that moved allocation onto the `go`
-path would look harmless and would not be.
-
-### `hashfull` is honest and, at E0 depths, uninformative
-
-Permille of the first thousand slots holding an entry from the current search.
-At the advertised 256 MiB it reads **0, 2, 6, 0** on the four fixtures above —
-an E0-depth search fills almost none of a quarter-gigabyte table. It is real
-data (it rises with depth, and reads 0 in the depth-1 iteration because the root
-dispatches straight into quiescence, which stores nothing), but the field only
-becomes interesting when E1 and E2 search deeper.
-
-⚠️ Consequence for tests: `hashfull_reports_the_table_filling_up` needs the
-1 MiB table its helper builds. The same assertion at the default would be a test
-that cannot **pass**.
-
-### Findings carried in from step 3a's planning, and how each turned out
-
-- **`Option<CompactMove>` is 2 bytes, guaranteed** — held, and used.
-- **Validate the transposition move by list membership, not `is_legal`** — held.
-  `is_legal`'s doc has been corrected: it named a second caller "from E0 step 3b"
-  that does not arrive.
-- **An Exact-bound hit may cut only when its score falls outside the window** —
-  implemented, and **the end-to-end hazard it predicts could not be
-  demonstrated.** Letting the `Bound::Exact` arm cut unconditionally leaves every
-  published line byte-identical across three fixtures at depths 1–8, moving only
-  the node count — not at all through depth 5, and by at most 1.2% after that.
-  The restriction is kept, because the path it
-  guards is reachable and the cost of guarding it is that 1%; but the sabotage
-  note that claimed a shortened line was **false**, and the test that claimed to
-  catch it could not. Both are replaced by a unit test on the rule itself.
-- **Route `USI_Hash` through the existing FIFO** — held (`Command::SetHash`).
-- **The test suite must not allocate 256 MB per searcher** — held.
-  `NegamaxSearcher::with_hash_mb` exists for it and every test uses 1 MiB.
-- **`shogi_core`'s `hash` and `ord` features are off in this graph** — still
-  true. The table needed neither: it compares keys as `u64` and moves by
-  `PartialEq`. ⚠️ **It was also named as step 4's first obstacle, and it was not
-  one.** Repetition compares keys as `u64` and hands by the `PartialEq`
-  `HistoryEntry` derives, so nothing wanted `Hash` or `Ord` either. Two steps
-  have now been predicted to need those features and neither did.
-
-### It still plays
-
-104 plies against the local material-only YaneuraOu (`NodesLimit 10000` against
-`go byoyomi 200`), ending in rinsai being mated and answering `resign`. Every
-move was replayed through rinsai's own parser afterwards, so "no illegal move"
-is checked rather than assumed; no protocol stall, nothing on stderr from either
-side. Step 3a's game ran 84 plies, step 2's 70 and step 1's 22, and **the
-comparison still means nothing** — one game each, and E0 has no instrument for
-strength. Recorded as "it plays", which is all it is.
-
-## What step 4 delivered
-
-千日手 and 連続王手の千日手 — the first thing in the project to *read* the
-history `Game` has been recording since step 1 — and the mate-in-1..5 suite.
-The protocol layer is unchanged: USI has no draw claim, the GUI or the server
-adjudicates 千日手, and what the engine owes is a score that stops it walking
-into a repetition it loses. That score is the whole feature.
-
-### The rule, and the one place it is asked
-
-`repetition.rs` holds it as a pure function over `&[HistoryEntry]` — no board,
-no shunsai call — so the rule is testable without a search. Four occurrences of
-one position, `key` filtering and hands confirming; the perpetual-check window
-is the four occurrences themselves, and the side whose every move left the
-opponent in check loses.
-
-The searcher carries the game's history and extends it as it descends, and the
-verdict is asked for **once, where a child is dispatched**. CONVENTIONS.md
-carries why that site and not the top of the interior node; the short version is
-that the depth-1 iteration dispatches straight into quiescence, and depth 1 is
-the iteration that always completes.
-
-⚠️ **One end-to-end case is not covered: the engine declining the check that
-loses.** The verdict's *win* direction is asserted through a search
-(`score cp 30000` from a side that is a rook down), and both directions are
-asserted on the rule itself; the sign at the search seam is pinned by the
-offset-swap sabotage. What has no search-level test is the behaviour that
-actually loses games — the perpetual checker refusing the move that makes the
-fourth occurrence.
-
-The obstacle is fixture construction rather than effort, and it is worth writing
-down because it will be met again. To discriminate, the repeating check must be
-**strictly** best without the verdict and refused with it. Material cannot
-supply that: a check forces the reply, so any threat the alternatives run into
-is postponed by the check rather than avoided, and every quiet alternative
-scores the same. Making the alternatives *lose* needs the losing side to be
-otherwise mated — but a mate scores below the repetition band, so the engine
-prefers the repetition either way, which is correct and non-discriminating. A
-drawing alternative would do it, and that needs two four-fold repetitions
-reachable from one position, which one line of history cannot offer. Left
-undone rather than written weakly: a version that passes without the verdict is
-the failure mode this log records more often than any other.
-
-### Reading the history costs 1–8%, and it shrinks with depth
-
-The same position searched two ways — through its whole 121-ply move list, and
-from its own SFEN with no history at all. Node counts are identical on every
-row, so this is the scan and nothing else. Release, three runs each:
-
-| Depth | Nodes | With a 121-ply history | From a bare SFEN | Cost |
-|---|---|---|---|---|
-| 4 | 16 300 | 1.58 / 1.60 / 1.61 ms | 1.47 / 1.49 / 1.47 ms | **+8%** |
-| 5 | 103 912 | 11.46 / 11.54 / 11.62 ms | 11.14 / 11.20 / 11.24 ms | **+3%** |
-| 6 | 2 019 944 | 208.4 / 208.6 / 210.0 ms | 205.4 / 205.8 / 206.7 ms | **+1.5%** |
-
-**The cost falls as the search deepens, which is the opposite of the shape a
-per-node overhead usually has.** The reason is that the path is extended and
-scanned at interior nodes only: quiescence is 91–99% of all nodes and pays
-nothing, so the deeper the search the smaller the fraction of it that scans.
-
-⚠️ **`bench` cannot see this and is not evidence about it.** Its seven positions
-carry histories one to seven plies long, which is a scan of about three
-comparisons. A position set with real game histories would be `bench-v2`, and
-there is no consumer asking for one yet.
-
-### `bench` did not move, and the prediction that it would was wrong
-
-This file's step-4 note said to expect `the_frozen_counts_are_what_the_search_produces`
-to fire. It did not — every per-position count is identical and so is the total,
-`counts match`, in debug and release alike. It could not have fired: a depth-4
-search from a history of at most seven plies cannot reach a fourth occurrence.
-DECISIONS.md carries what the non-event is evidence *for*.
-
-The time either side of the change, on one machine in one session, alternating
-the two binaries so that drift cannot masquerade as a difference:
-
-| | step 3b | step 4 |
-|---|---|---|
-| total nodes | 4 133 205 | **4 133 205** |
-| alternating pairs, ms | 427 / 435 / 432 | 431 / 443 / 430 |
-| runs of three, ms | 437 / 434 / 431 | 444 / 435 / 432 |
-
-⚠️ **Not a result, and the machine was not certified quiet** — this session had
-been building and running tests throughout. One of the three alternating pairs
-goes the other way, which is the honest summary: the `in_check()` per interior
-`do_move` and the three-comparison scan are below what this instrument can
-separate from noise.
-
-### The mate suite reaches five, and the estimate that said it would not was out by two orders of magnitude
-
-The plan reasoned from branching — nine plies of full-width search with only
-transposition-move ordering — and expected mate-in-4 and mate-in-5 to be too
-expensive for `cargo test`. Measured, in the **dev** profile:
-
-| Mate in | Depth limit | Nodes | Iteration that found it |
-|---|---|---|---|
-| 1 | 1 | 20 | 1 |
-| 2 | 3 | 31 | 1 |
-| 3 | 5 | 130 | 2 |
-| 4 | 7 | 1 678 | 4 |
-| 5 | 9 | **18 924** | 6 |
-
-Depth 9 costs under six milliseconds. **The last column is why**: the mate is
-found several iterations before the depth that nominally contains it — mate 3
-at depth 1, mate 9 at depth 6 — because quiescence resolves a forced checking
-sequence, and a forced sequence is the input alpha-beta prunes best. The
-branching estimate was not wrong about full-width search; it was wrong about
-which tree this is.
-
-**The ladder built with golds in White's hand answered `mate 5` where `mate 9`
-was intended, at 8 443 nodes.** Black captures whatever is interposed and may
-drop it straight back, and a gold beside the bare king is mate at once. A pawn
-there is 打ち歩詰め and illegal, which is what makes the pawn version hold its
-length — recorded because it is a shogi rule doing load-bearing work in a test
-fixture, and because the collapse is what found it.
-
-### It still plays
-
-142 plies against the local material-only YaneuraOu (`NodesLimit 10000` against
-`go byoyomi 200` both ways), ending in rinsai being mated and answering
-`resign`. Every move was replayed through rinsai's own parser afterwards, so "no
-illegal move" is checked rather than assumed; no protocol stall, and nothing on
-stderr from either side. Step 3b's game ran 104 plies, step 3a's 84, step 2's 70
-and step 1's 22, and **the comparison still means nothing** — one game each, and
-E0 has no instrument for strength. Recorded as "it plays", which is all it is.
-
-⚠️ **This game reached no repetition, so it is not evidence about the feature.**
-That is the ordinary case and the reason the rule needed constructed fixtures:
-against an opponent playing to win, a fourfold repetition at these strengths is
-rare, and waiting for one to occur naturally is not a test.
-
-## What steps 6+7 delivered
-
-The measurement loop's instrument, as one batch pull request: a frozen opening
-set extracted from floodgate, an own Rust match harness refereeing on an
-independent rules library, and a pentanomial SPRT driver. Two new workspace
-members — `crates/rinsai-game`, the rules layer moved from tuishogi
-(DECISIONS.md, 2026-08-12), and `crates/xtask` with `fetch-floodgate`,
-`gen-openings` and `sprt` — plus `positions/openings-v1.sfen` and
-`tools/opponents.toml.example`. **The engine is untouched**: `crates/rinsai`
-did not change at all, `crates/rinsai-search` gained only tests and a
-dev-dependency, and `rinsai bench` reproduces every frozen count.
-
-### openings-v1, and the two regenerations that freeze it
-
-| | |
-|---|---|
-| source days | 2026-06-01..07 — 2 577 records |
-| qualifying games | 1 422 (both rates ≥ 3000, %TORYO/%KACHI, ≥ 60 plies) |
-| rejected on replay | **0 of 1 422** — every replayed move (each game through ply 24) legal for `shogi_legality_lite` |
-| lines | 256 — ≤ 2 per game, plies 12..=24 outside check, own eval within ±100 cp |
-| seed / rev | `0x52494E5341492D31` / the rev in the file's own header |
-| regeneration | twice, same cache, `--rev` as recorded — **byte-identical both times** |
-
-The full pass-by-pass counters live in the file's own header, which the
-generator interpolates — the one place they cannot drift from the code. The
-fixture-scale golden test in `crates/xtask/tests/` is the half of the
-reproducibility claim CI runs on every push.
-
-### The mirror gate: exactly 50%, and why "exactly"
-
-Fresh processes and fixed nodes make each game deterministic, so a pair's two
-games are one game with the seats exchanged — any deviation from exact
-symmetry would be a harness bug (a colour bias, an opening applied per seat, a
-state leak), not noise. That is what makes this gate sharp:
-
-| pairs | nodes | score | pentanomial 0/¼/½/¾/1 | candidate W-D-L | LLR |
-|---|---|---|---|---|---|
-| 200 | 10 000 both | **exactly 50.00%** | 0/0/200/0/0 | 157-86-157 | 0.000 |
-
-Every pair scored exactly ½. The all-one-cell sample is the zero-variance
-degenerate case of the GSPRT, and the guard that reports "no evidence" instead
-of dividing by zero idled correctly for the whole run, live.
-
-### The ladder gate: the rungs order themselves, and rinsai sits on the bottom one
-
-rinsai at 100 000 nodes against the node-limited material YaneuraOu
-(`Threads 1`, fresh process per game, `go nodes` on both sides), 100 pairs per
-rung from `openings-v1`, seed 1:
-
-| YaneuraOu nodes | rinsai score | candidate W-D-L | pentanomial |
-|---|---|---|---|
-| 1 000 | **50.00%** | 97-6-97 | 21/4/51/2/22 |
-| 10 000 | 2.50% | 4-2-194 | 94/2/4/0/0 |
-| 100 000 | 0.00% | 0-0-200 | 100/0/0/0/0 |
-| 1 000 000 | 0.00% | 0-0-200 | 100/0/0/0/0 |
-
-Two readings. **rinsai's E0 search at 100k nodes measures level with
-YaneuraOu's material search at 1k** — a 100× node handicap, which is the
-honest price of a search with no ordering beyond the transposition move and no
-pruning; E1 exists to close it. And **the measuring stick saturates**: from
-the 10k rung up rinsai wins almost nothing, so the bottom rows say the rungs
-are above it, not how far apart they are. The rung spacing itself is measured
-directly, rung against rung:
-
-| pairing (nodes) | higher rung's score | W-D-L | pentanomial 0/¼/½/¾/1 |
-|---|---|---|---|
-| 10 000 vs 1 000 | **99.00%** | 99-0-1 | 0/0/1/0/49 |
-| 100 000 vs 10 000 | **100.00%** | 100-0-0 | 0/0/0/0/50 |
-
-50 pairs each, seed 1. The rungs order decisively everywhere they were
-measured. ⚠️ **The 1 000 000-vs-100 000 pairing is deliberately unmeasured**:
-it is the one expensive pairing (both sides think for real), and nothing yet
-consumes its calibration — rinsai measures level with the *bottom* rung, so
-the ladder work E1 starts with happens at 1k–10k. The number can be taken
-overnight the day something needs it, at low concurrency: results are
-load-immune (CLAUDE.md §3), but the machine is not, and a match fleet's
-concurrency is chosen for the machine, not for the statistics.
-
-### The review pass, and what it found the tests could not
-
-A max-effort review of the finished batch — ten reading angles, each finding
-verified against the code — found no defect the deterministic suites had been
-built to catch and several they could not:
-
-| | |
-|---|---|
-| findings reported | 15 |
-| confirmed by running the failure, not by reading | 13 |
-| defects in the harness's *decision* path | 5 |
-| dropped tests, i.e. rules with no remaining guard | 4 |
-| false claims in prose | 9 |
-
-⚠️ **The largest single finding was a hole, not a bug**: turning the
-perpetual-check rule from "checked on every move" into "checked at least once"
-left the entire workspace green, so the referee could have awarded a game win
-in a drawn position with nothing to say so. Four tests had come across from
-tuishogi with the rules layer and been lost in the move; they are restored,
-each verified by applying the mutation its note names.
-
-The rest of the confirmed list, each fixed in this branch: the SPRT summary
-recomputed its verdict from counts that include pairs landing after the bound
-was crossed, so a decided test could print "inconclusive"; `--alpha`/`--beta`
-were unvalidated, and out of range they make the stopping bounds infinite or
-NaN, deciding a test on its first pair; openings were validated against the
-referee's parser but not the engine's, which turns a line only one of them
-accepts into a fabricated loss on every pair it appears in — and a mirror gate
-cannot see that, because one colour loses every game and the pair still sums
-to a half; two runs of one pairing in the same second wrote one log file
-through two cursors, producing a record that reads as a single coherent run
-while attributing one run's games to the other's parameters; and the
-`position` string carrying game state to both engines was asserted by no test
-at all.
-
-### The sabotage re-run at steps 6+7: six mutations, six fired, no false notes
-
-The diff touched two files carrying standing sabotage notes —
-`rinsai-search/src/repetition.rs` (five) and the note `rinsai-game`'s
-`an_illegal_move_leaves_the_game_untouched` inherited from tuishogi (one).
-Each mutation applied at the site its note names, the suite run, the tree
-restored:
-
-| | |
-|---|---|
-| mutations applied | 6 |
-| fired on the test their note names | 6 |
-| notes that were **false** | 0 |
-
-One addition worth recording: the `OCCURRENCES - 2` mutation now also fires
-`the_referee_and_the_search_agree_that_three_occurrences_decide_nothing` —
-the cross-implementation differential net catches a rule mutation from either
-side, which no single-implementation test could.
-
-### ⚠️ The balance filter scores an interrupted search, and the frozen set is built on it
-
-The generator's own doc claimed the balance score was "the last completed
-iteration's". It is not: the deepening loop publishes an `info` line for the
-iteration the node cap interrupted, and that score is the best over a *prefix*
-of the root move list — a lower bound. ⚠️ **"And never the reverse" stood here
-until v2 measured it, and it was false**: the filter is the two-sided
-`|cp| <= 100`, so a lower bound errs *both* ways — inside the band while the
-finished value is above `+100`, and below `−100` while the finished value is
-inside. v2's section below counts each direction, and the second is the more
-common one. The positions that get lower bounds at all are the open,
-capture-rich ones the filter exists to exclude. Found by review after the set
-was frozen, and measured by
-re-scoring all 256 committed lines at the header's own settings — every
-`eval=` reproduced to the digit, so this is the pipeline's behaviour and not
-an artefact:
-
-| how the emitted `eval=` was produced | lines |
-|---|---|
-| a completed depth-6 search, as the header's wording implies | **24** |
-| a completed iteration at depth 2–5 | 82 |
-| an iteration cut off at the cap | **150** |
-
-One line's verdict actually turns on it. `openings-v1.sfen:350` records
-`eval=+0`; its depth-4 iteration *completes* at `cp 115`, outside the ±100
-window, and the depth-5 iteration is cut off and publishes `cp 0`. Of the
-eight lines whose partial score differs from their last completed one, it is
-the only one that would not have been picked. Re-scoring the eighty shallowest
-at twenty times the cap moved five outside ±100, and twenty-one still had not
-finished depth 6.
-
-**The file is not wrong — the claim about how it was made was.** The open
-question this section left to "whoever runs the first SPRT that these openings
-decide" is closed below: `openings-v2` is that decision, taken before step 5's
-SPRTs open from the set.
-
-⚠️ **The CI reproducibility gate cannot see this.** The fixture pipeline runs
-at depth 3 and no fixture search reaches the cap, so the golden test exercises
-none of the behaviour that decided 232 of the 256 real lines. **Nor can any
-test written against that corpus** — see v2's section below, which is what a
-second corpus exists for.
-
-## `openings-v2` — the balance score comes from an iteration that finished
-
-`positions/openings-v2.sfen`, 256 lines, the harness's default. The rule and
-the alternative it beat are in DECISIONS.md; the engine change it needed is
-`completed_depth` on `BestMove::Play`, and `rinsai bench` reproduces every
-frozen count either side of it.
-
-All 256 of **v1's** lines re-scored at the frozen settings — depth 6, a
-2 000 000-node cap, a 16 MiB table, one cleared searcher per line. Completed
-depth: 1 line at 2, 48 at 3, 42 at 4, 141 at 5, 24 at 6.
-
-| | |
-|---|---|
-| lines whose last iteration was interrupted | 150 |
-| of those, whose completed score differs from the partial one | **6** |
-| of those, whose ±100 cp verdict differs | **1** |
-
-⚠️ **That middle figure is 6 where this file previously recorded 8**, against
-the same comparison; both stand, since neither reconciles from the page. The
-two passes agree on 150, on 1, and on the line it names.
-
-| | v1 | v2 |
-|---|---|---|
-| candidates searched to fill the target | 309 | **305** |
-| rejected on balance | 53 | 49 |
-| lines shared with the other set | — | **252 of 256** |
-| regeneration at the recorded rev and seed | byte-identical | **byte-identical, twice** |
-
-The eight lines the sets disagree about, re-scored the same way — the four
-gained are the reverse direction, which v1's prose said could not happen:
-
-| | lines | completed verdict | partial verdict |
-|---|---|---|---|
-| gained by v2 | **4** | keep — `+15, 0, 0, 0` | **reject** — `−200, −115, −115, −215` |
-| lost from v1 | 1 | reject — `+115` | keep — `0` |
-| lost from v1 | 3 | keep | keep — no verdict change at all |
-
-The three that left with no verdict change are the lazy pass: four candidates
-kept sooner ends the walk at 305, so the tail v1 reached is never visited.
-
-⚠️ **The committed fixture corpus cannot tell the two rules apart, at any cap
-tried** — the interrupted and completed scores are equal on every candidate it
-holds:
-
-| candidates | nominal depth | node caps | divergent |
-|---|---|---|---|
-| 4 | 3 | 100 … 50 000, nine values | **0** |
-| 14 | 4, 5, 6 | 2 000 … 500 000, eight pairs | **0** |
-
-Six of 256 real lines diverge, so eleven games will not hold one by chance.
-The gate is a second corpus of **one** game,
-`crates/xtask/tests/fixtures/floodgate-capped/`, chosen for a position that
-scores 0 on the depth-2 iteration it completes and −1380 on the depth-3 one a
-5 000-node cap interrupts — inside and outside ±100 cp, so the two rules
-disagree about keeping it at all.
-
-### What the balance searches measured about the engine
-
-Not a strength claim — a cost. Real floodgate middlegames at plies 12–24 cost
-**8.8 M to over 40 M nodes** for a depth-6 search, against 13–20 ms from the
-initial position. That is the same gap E1's items 2, 8 and 9 (move ordering,
-SEE, futility) exist to close, measured on positions the engine will actually
-be asked about rather than on the opening. It is recorded here because
-CLAUDE.md §3 keeps the numbers that argue for work as well as the ones that
-argue against it.
-
-### Deliberately not built, each with its owner
+## Deliberately not built, each with its owner
 
 - **Time-based games.** The harness sends `go nodes` and nothing clock-shaped;
   its only clocks are hang detectors, which can turn a wedged engine into a
@@ -941,7 +102,392 @@ argue against it.
 
 [CONVENTIONS.md](./CONVENTIONS.md) carries the rules these produced and
 [DECISIONS.md](./DECISIONS.md) the arguments; **the numbers live here and only
-here.** Release build, one quiet machine, same caveat as the table above.
+here.** Release build, one quiet machine: node counts are deterministic and
+reproduce anywhere, times are that machine's.
+
+
+### Search cost, and what moves a node count
+
+Release build, one quiet machine. Step 2's column was re-run untouched at the
+start of step 3a and reproduced to the digit, which is the check that says the
+columns can be compared at all.
+
+| Position | Depth | Nodes, step 2 | Nodes, step 3a | Nodes, step 3b | seldepth, 3b | Time, step 2 |
+|---|---|---|---|---|---|---|
+| initial | 6 | 585 568 | 376 695 | **128 167** | 29 | 23 ms |
+| drop-heavy middlegame | 4 | 838 976 | 7 030 029 | **4 049 636** | 29 | 40 ms |
+| drop-heavy middlegame | 5 | 13 888 371 | 378 188 510 | **33 416 692** | 31 | 445 ms |
+| two lone kings | 6 | 1 431 | 1 431 | **747** | 6 | — |
+
+⚠️ **The step-3b column is at the advertised default table size (256 MiB).**
+Table size moves a node count on its own, so a count quoted without a size is
+not a result. Settled, the three time rows sit at 22–23 / 38–41 / 444–469 ms
+across two sessions; a time that differs from this table is not by itself a
+result.
+
+⚠️ **Exec the binary once after a build, before measuring anything.** The first
+run of a freshly linked binary costs about 20–25 ms more than the settled
+figure, and it is an *absolute* amount rather than a proportional one — +87% on
+the 23 ms row and +5% on the 445 ms one. Two experiments pin it: reversing the
+row order after a rebuild moves the penalty to whichever row now goes first,
+not to the shortest; and a throwaway `rinsai --version` removes it entirely
+(40 / 33 / 38 ms without against 23 / 23 / 24 ms with, three alternating
+pairs). What is left is the first *execution* of a newly written binary image.
+
+**Node rate, and why it justifies nothing.** These rows imply 8–10 M nodes/s
+against step 2's 20–30 M, and the gap is not a regression: step 2's nodes were
+mostly depth-zero leaves that only evaluated. ⚠️ The rate is **not** an argument
+for the 1024-node poll interval, which is untuned; step 5's SPRT is where it
+stops being inherited.
+
+**Two lone kings did not move between steps 2 and 3a**, byte-identically over
+six iterations — the cheapest check that a capture-only quiescence is entered
+only where a capture is reachable.
+
+**The depth-parity fingerprint is gone.** Step 2 reported +215 at odd depths
+and 0 at even ones from the initial position (depths 1–8: 0, 0, +215, 0, +215,
+0, +215, **−215**). After quiescence all eight report 0.
+`the_horizon_effect_fingerprint_is_gone` asserts against the recorded
+magnitude, so the effect returning fails it whatever depth it returns at. ⚠️ An
+upper bound and nothing more: a search reporting ±90 would pass.
+
+### Quiescence: the check cap, and what it costs
+
+⚠️ **The first implementation capped total quiescence plies, and that was
+wrong.** Drop-heavy fixture, depth 4, with the total-ply cap:
+
+| cap | nodes, depth 4 | nodes, depth 5 |
+|---|---|---|
+| 32 | 8 138 236 | 1 485 819 624 |
+| 16 | 7 416 958 | — |
+| 8 | 4 735 764 | — |
+| 4 | 1 870 111 | — |
+
+At cap 4 the floor fired on 22% of quiescence nodes — a cap low enough to cut
+the cost is cutting *capture chains* mid-way, which is the horizon effect
+reintroduced two plies down. Counting **checks** instead (drop-heavy depth 4 /
+initial depth 6 / 頭金 at depth 1):
+
+| checks allowed | nodes, depth 4 | nodes, depth 6 | mate in 1 at depth 1 |
+|---|---|---|---|
+| 0 | 30 824 360 | 221 351 | **`cp 1260` — wrong** |
+| 1 | 22 131 829 | 239 094 | `mate 1` |
+| **2** | **7 030 029** | **376 695** | `mate 1` |
+| 4 | 7 681 868 | 459 396 | `mate 1` |
+
+⚠️ **Two predictions refuted here.** Zero is not a cheap approximation but
+*incorrect* — it evaluates while in check and misses a mate one ply away. And
+**the node count is not monotone in the cap**: two checked plies cost a third
+of what one costs, because resolving a check returns a score the search above
+can cut on. "Search less, spend less" is not safe anywhere near a check.
+
+**What a captures-only quiescence leaves for E1's staged generation** — moves
+generated against moves kept, over a whole search:
+
+| Position | Depth | Quiescence share of nodes | Generated | Kept | Ratio |
+|---|---|---|---|---|---|
+| initial | 6 | 91.5% | 18 655 208 | 385 110 | **48×** |
+| drop-heavy middlegame | 4 | 99.3% | 788 675 461 | 9 216 400 | **86×** |
+
+### The transposition table
+
+**The stored move searched first, against the same search without that one
+line** — node-count ratios, one MiB, release:
+
+| Position | d=2 | d=3 | d=4 | d=5 |
+|---|---|---|---|---|
+| initial | 1.00× | 1.00× | 1.01× | 1.00× |
+| initial + `7g7f 3c3d` | 1.00× | 1.46× | 1.39× | 1.44× |
+| initial + `2g2f 8c8d 2f2e 8d8e` | 1.00× | 1.00× | 1.94× | **14.02×** |
+| an open middlegame | 1.00× | 1.53× | 1.57× | 2.13× |
+| drop-heavy middlegame | 1.00× | 1.12× | 1.55× | **8.08×** |
+
+⚠️ **The initial position gains nothing at any depth measured**, which is why
+`the_transposition_move_is_searched_first` uses another fixture and names it as
+load-bearing. The effect is strongly super-linear in depth.
+
+⚠️ **Quiescence probing the table was expected to lose and does not — it halves
+the tree.** Measured by patching it in and out; not shipped at 3b, and E1 item
+11 owns it. The conventional argument (quiescence is 91–99% of nodes, so it
+would thrash the table) is refuted on every row:
+
+| Position | Depth | Nodes, table in interior nodes | Nodes, in quiescence too | Ratio | ms | ms |
+|---|---|---|---|---|---|---|
+| initial | 6 | 128 167 | 99 267 | 0.77× | 15 | 17 |
+| drop-heavy middlegame | 4 | 4 049 636 | 2 036 973 | **0.50×** | 432 | 419 |
+| drop-heavy middlegame | 5 | 33 416 692 | 15 649 522 | **0.47×** | 3 379 | 2 926 |
+
+**Allocating the default table costs about as much as an E0-depth search** —
+20.6 / 12.1 / 6.3 ms for 256 MiB in one process, against 13–20 ms for a whole
+depth-6 search from the initial position. Paid once per searcher, in `main` and
+again on `setoption name USI_Hash`. ⚠️ A change that moved allocation onto the
+`go` path would look harmless and would not be.
+
+**`hashfull` reads 0, 2, 6, 0 permille at 256 MiB** on the four fixtures above:
+real data, but an E0-depth search fills almost none of a quarter-gigabyte
+table. ⚠️ Consequence: `hashfull_reports_the_table_filling_up` needs the 1 MiB
+table its helper builds — the same assertion at the default is a test that
+cannot **pass**.
+
+### `bench`
+
+| | |
+|---|---|
+| positions | 7 |
+| depth | 4 |
+| table | 16 MiB, fixed — **not** `USI_Hash` |
+| total nodes | 4 133 205 |
+| reproducibility | three runs, identical to the digit |
+| debug and release | identical counts |
+| release, one run | 451 ms, 9.16 M nodes/s — ⚠️ **not a result**: the machine was not certified quiet |
+
+**Step 4 did not move it, and the prediction that it would was wrong** — it
+could not have been right, since a depth-4 search from a history of at most
+seven plies cannot reach a fourth occurrence:
+
+| | step 3b | step 4 |
+|---|---|---|
+| total nodes | 4 133 205 | **4 133 205** |
+| alternating pairs, ms | 427 / 435 / 432 | 431 / 443 / 430 |
+| runs of three, ms | 437 / 434 / 431 | 444 / 435 / 432 |
+
+⚠️ **Not a result, and one of the three alternating pairs goes the other way**
+— the `in_check()` per interior `do_move` and the three-comparison scan are
+below what this instrument can separate from noise.
+
+### Repetition
+
+**Reading the history costs 1–8%, and the cost falls as the search deepens** —
+the same position through its whole 121-ply move list against from its own
+SFEN. Node counts identical on every row, so this is the scan and nothing else:
+
+| Depth | Nodes | With a 121-ply history | From a bare SFEN | Cost |
+|---|---|---|---|---|
+| 4 | 16 300 | 1.58 / 1.60 / 1.61 ms | 1.47 / 1.49 / 1.47 ms | **+8%** |
+| 5 | 103 912 | 11.46 / 11.54 / 11.62 ms | 11.14 / 11.20 / 11.24 ms | **+3%** |
+| 6 | 2 019 944 | 208.4 / 208.6 / 210.0 ms | 205.4 / 205.8 / 206.7 ms | **+1.5%** |
+
+The shape is the opposite of a per-node overhead's because the path is scanned
+at interior nodes only, and quiescence — 91–99% of all nodes — pays nothing.
+
+⚠️ **`bench` cannot see this and is not evidence about it.** Its seven
+positions carry histories one to seven plies long. A set with real game
+histories would be `bench-v2`, and no consumer is asking for one.
+
+⚠️ **One end-to-end case is not covered: the engine declining the check that
+loses.** To discriminate, the repeating check must be strictly best without the
+verdict and refused with it — and material cannot supply that, because a check
+forces the reply. A drawing alternative would, and that needs two four-fold
+repetitions reachable from one position, which one line of history cannot
+offer. Left undone rather than written weakly.
+
+### The mate suite
+
+Dev profile. ⚠️ **The estimate that mate-in-4 and mate-in-5 would be too
+expensive for `cargo test` was wrong by two orders of magnitude** — depth 9
+costs under six milliseconds. The last column is why: the mate is found several
+iterations before the depth that nominally contains it, because quiescence
+resolves a forced checking sequence and a forced sequence is what alpha-beta
+prunes best.
+
+| Mate in | Depth limit | Nodes | Iteration that found it |
+|---|---|---|---|
+| 1 | 1 | 20 | 1 |
+| 2 | 3 | 31 | 1 |
+| 3 | 5 | 130 | 2 |
+| 4 | 7 | 1 678 | 4 |
+| 5 | 9 | **18 924** | 6 |
+
+**A ladder built with golds in White's hand answered `mate 5` where `mate 9`
+was intended**, at 8 443 nodes: Black captures whatever is interposed and drops
+it straight back, and a gold beside the bare king is mate at once. A pawn there
+is 打ち歩詰め and illegal, which is what makes the pawn version hold its length.
+
+### The opening sets
+
+`openings-v1`, and the two regenerations that froze it:
+
+| | |
+|---|---|
+| source days | 2026-06-01..07 — 2 577 records |
+| qualifying games | 1 422 (both rates ≥ 3000, %TORYO/%KACHI, ≥ 60 plies) |
+| rejected on replay | **0 of 1 422** — every replayed move (each game through ply 24) legal for `shogi_legality_lite` |
+| lines | 256 — ≤ 2 per game, plies 12..=24 outside check, own eval within ±100 cp |
+| seed / rev | `0x52494E5341492D31` / the rev in the file's own header |
+| regeneration | twice, same cache, `--rev` as recorded — **byte-identical both times** |
+
+⚠️ **v1's `eval=` came from whichever iteration the node cap interrupted, not
+from a completed one** — a lower bound over a prefix of the root move list, and
+against a two-sided window that errs both ways. `openings-v2` is the correction
+(CONVENTIONS.md carries the rule):
+
+| how v1's emitted `eval=` was produced | lines |
+|---|---|
+| a completed depth-6 search, as its header's wording implies | **24** |
+| a completed iteration at depth 2–5 | 82 |
+| an iteration cut off at the cap | **150** |
+
+All 256 of v1's lines re-scored at the frozen settings — depth 6, a
+2 000 000-node cap, a 16 MiB table, one cleared searcher per line. Completed
+depth: 1 line at 2, 48 at 3, 42 at 4, 141 at 5, 24 at 6.
+
+| | |
+|---|---|
+| lines whose last iteration was interrupted | 150 |
+| of those, whose completed score differs from the partial one | **6** |
+| of those, whose ±100 cp verdict differs | **1** |
+
+⚠️ **That middle figure is 6 where this file previously recorded 8**, against
+the same comparison; both stand, since neither reconciles from the page. The
+two passes agree on 150, on 1, and on the line it names.
+
+| | v1 | v2 |
+|---|---|---|
+| candidates searched to fill the target | 309 | **305** |
+| rejected on balance | 53 | 49 |
+| lines shared with the other set | — | **252 of 256** |
+| regeneration at the recorded rev and seed | byte-identical | **byte-identical, twice** |
+
+The eight lines the sets disagree about — the four gained are the reverse
+direction, which v1's prose said could not happen. The three that left with no
+verdict change are the lazy pass: four candidates kept sooner ends the walk at
+305, so the tail v1 reached is never visited.
+
+| | lines | completed verdict | partial verdict |
+|---|---|---|---|
+| gained by v2 | **4** | keep — `+15, 0, 0, 0` | **reject** — `−200, −115, −115, −215` |
+| lost from v1 | 1 | reject — `+115` | keep — `0` |
+| lost from v1 | 3 | keep | keep — no verdict change at all |
+
+⚠️ **The committed fixture corpus cannot tell the two balance rules apart, at
+any cap tried** — the interrupted and completed scores are equal on every
+candidate it holds, which is why the gate is a second corpus of one game chosen
+for a position that diverges (0 on the depth-2 iteration it completes, −1380 on
+the depth-3 one a 5 000-node cap interrupts):
+
+| candidates | nominal depth | node caps | divergent |
+|---|---|---|---|
+| 4 | 3 | 100 … 50 000, nine values | **0** |
+| 14 | 4, 5, 6 | 2 000 … 500 000, eight pairs | **0** |
+
+**What the balance searches measured about the engine.** Not a strength claim,
+a cost: real floodgate middlegames at plies 12–24 cost **8.8 M to over 40 M
+nodes** for a depth-6 search, against 13–20 ms from the initial position. That
+is the gap E1's items 2, 8 and 9 exist to close, measured on positions the
+engine will actually be asked about.
+
+### The harness's own gates
+
+**The mirror gate.** Fresh processes and fixed nodes make each game
+deterministic, so a pair's two games are one game with the seats exchanged —
+any deviation from exact symmetry would be a harness bug, not noise. Every pair
+scored exactly ½, and the zero-variance guard reported "no evidence" instead of
+dividing by zero for the whole run:
+
+| pairs | nodes | score | pentanomial 0/¼/½/¾/1 | candidate W-D-L | LLR |
+|---|---|---|---|---|---|
+| 200 | 10 000 both | **exactly 50.00%** | 0/0/200/0/0 | 157-86-157 | 0.000 |
+
+**The ladder.** rinsai at 100 000 nodes against the node-limited material
+YaneuraOu, 100 pairs per rung from `openings-v1`, seed 1:
+
+| YaneuraOu nodes | rinsai score | candidate W-D-L | pentanomial |
+|---|---|---|---|
+| 1 000 | **50.00%** | 97-6-97 | 21/4/51/2/22 |
+| 10 000 | 2.50% | 4-2-194 | 94/2/4/0/0 |
+| 100 000 | 0.00% | 0-0-200 | 100/0/0/0/0 |
+| 1 000 000 | 0.00% | 0-0-200 | 100/0/0/0/0 |
+
+**rinsai's E0 search at 100k nodes measures level with YaneuraOu's material
+search at 1k** — a 100× node handicap, which E1 exists to close. The measuring
+stick saturates from the 10k rung up, so those rows say the rungs are above
+rinsai, not how far apart they are. Rung against rung, 50 pairs each, seed 1:
+
+| pairing (nodes) | higher rung's score | W-D-L | pentanomial 0/¼/½/¾/1 |
+|---|---|---|---|
+| 10 000 vs 1 000 | **99.00%** | 99-0-1 | 0/0/1/0/49 |
+| 100 000 vs 10 000 | **100.00%** | 100-0-0 | 0/0/0/0/50 |
+
+⚠️ **The 1 000 000-vs-100 000 pairing is deliberately unmeasured**: it is the
+one expensive pairing, and nothing consumes its calibration yet — the E1 ladder
+work happens at 1k–10k. Take it overnight at low concurrency the day something
+needs it.
+
+### Review and sabotage tallies
+
+**The steps 6+7 review**, over a batch whose own gates all passed:
+
+| | |
+|---|---|
+| findings reported | 15 |
+| confirmed by running the failure, not by reading | 13 |
+| defects in the harness's *decision* path | 5 |
+| dropped tests, i.e. rules with no remaining guard | 4 |
+| false claims in prose | 9 |
+
+| | mutations | fired on the named test | notes that were **false** |
+|---|---|---|---|
+| steps 6+7 | 6 | 6 | 0 |
+
+**The sabotage re-run at step 4** — every note in the tree, applied at the site
+the note names, the whole suite run against each:
+
+| | |
+|---|---|
+| mutations applied | 59 |
+| fired on the test their note names | 55 |
+| expected not to fire, and did not | 1 |
+| notes that were **false** | 3 |
+| notes naming the wrong **symptom** | 1 |
+
+The one expected not to fire is `negamax`'s own `pv[ply].clear()`. This sweep
+found a second line of that kind in the same node, `mated_in(ply)`; both are
+below.
+
+⚠️ **Four of the sweep's own mutations were defective on the first pass** — two
+did not compile, two were no-ops, and a no-op reports GREEN and reads exactly
+like a false note (DECISIONS.md, 2026-08-11).
+
+**The sabotage re-run at step 3b**, same method:
+
+| | |
+|---|---|
+| mutations applied | 39 |
+| fired on the test their note names | 34 |
+| expected not to fire, and did not | 1 |
+| notes that were **false** | 2 |
+| behaviour with **no test at all** | 1 |
+| pre-existing tests found **hollowed out** | 1 |
+
+The hollowed-out test is `each_iteration_starts_from_the_last_answer`, and what
+hollowed it is which fixtures discriminate: **only the drop-heavy middlegame
+answers with a move other than the one shunsai generates first, of five
+measured**, so on the other four the test says nothing.
+
+⚠️ **`negamax`'s own `pv[ply].clear()` cannot be shown to matter, and
+[`qsearch`]'s can.** Deleting the clear at the top of the *interior* node leaves
+the whole workspace green, and a sweep over 9 fixtures × depths 1–6 — 101 `info`
+lines — reproduces `depth`, `seldepth`, `score` and `pv` **byte-identically**.
+Deleting the *quiescence* copy turns `finds_the_mate_in_one` and
+`the_reported_pv_is_playable` red. The asymmetry has a reason: an interior node
+that never raises alpha has failed low, so its parent fails high and never reads
+its line, whereas a quiescence node can return an exact score without writing
+one — a stand-pat that beats alpha but no capture, or an evaluation forced by
+`ply >= MAX_PLY` or by `QS_MAX_CHECK_PLIES`. The line stays: it costs nothing,
+and E1's aspiration windows give the root a real beta, which is exactly the
+condition this argument assumes away. Recorded so a future "delete the dead
+line" has something to check itself against.
+
+⚠️ **`negamax`'s `mated_in(ply)` is the second line of that kind, found at step
+4**, and both sit in the same node for related reasons. Scoring it `mated_in(0)`
+leaves the whole suite green including `bench`, while `qsearch`'s copy fires
+three tests. Here the cause is the deepening loop rather than the window:
+quiescence searches past the nominal depth, so a mate that reaches a reported
+line is proved there first and the loop breaks before any interior node meets an
+empty move list on the principal variation. Also reachable, also unfalsifiable,
+also kept.
+
+### The budget and the poll
 
 **Poll starvation in a sparse position** — two lone kings,
 `4k4/9/9/9/9/9/9/9/4K4 b - 1`, about five legal moves a side. The nodes spent
@@ -984,125 +530,10 @@ move scoring 1 590 cp below what the last completed iteration had chosen.
 **`a_stated_budget_deepens_past_the_default`'s 300 000-node budget reaches depth
 6**, so its `> DEFAULT_DEPTH` assertion is not on a knife edge.
 
-**The sabotage re-run at step 4: 59 mutations, three false notes and one with
-the wrong symptom.** Every note in the tree, applied at the site the note names
-— which is what step 3b's review said the rule had been missing — with the whole
-suite run against each and the failing tests recorded.
+### The documents themselves
 
-| | |
-|---|---|
-| mutations applied | 59 |
-| fired on the test their note names | 55 |
-| expected not to fire, and did not | 1 |
-| notes that were **false** | 3 |
-| notes naming the wrong **symptom** | 1 |
-
-The one expected not to fire is `negamax`'s own `pv[ply].clear()`, still
-unfalsifiable and recorded below. The other four:
-
-- ⚠️ **`negamax`'s `mated_in(ply)` has no test at all, and three notes claimed
-  otherwise.** Scoring it `mated_in(0)` leaves the **entire suite green, `bench`
-  included**; the same mutation in `qsearch` fires all three tests the notes
-  name. The reason is structural and is the same one that makes the mate ladder
-  cheap: quiescence runs past the nominal depth, so a mate that reaches a
-  reported line is resolved there first, and the deepening loop stops at the
-  first iteration that returns a mate score. The interior arm still *runs* —
-  every refuted line with a mate in it enters it — but nothing surfaces whether
-  it used `ply` or `0`. **This is the second reachable-but-unfalsifiable line in
-  `negamax`, beside the `pv[ply].clear()` below, and both have the same cause.**
-- **"Make `generate_captures` return nothing and this falls back to exactly
-  `1 + N`" is false.** A check is reachable one ply into that fixture, and a
-  quiescence node in check takes the evasion branch, which generates every legal
-  move and recurses whatever the capture filter returns. The note's other half —
-  `child` evaluating instead of dispatching — does fire it.
-- **"Drop the `us`/`us.flip()` distinction in either loop" is false for one of
-  the two loops.** The fixture holds a rook in hand and nothing but kings on the
-  board, so only the *hand* loop's copy is reachable; the board loop's is caught
-  by the oracle comparison instead.
-- **"Drop the deadline arm and this hangs rather than failing" names the wrong
-  symptom.** It fails, in ten seconds, because that test searches off-thread
-  behind a `recv_timeout` precisely so it cannot wedge the suite. What *does*
-  wedge on that mutation is `the_first_iteration_is_never_abandoned`, which
-  searches on the calling thread and carries no note.
-
-⚠️ **Four of the sweep's own mutations were defective on the first pass**, and
-finding that out is the reason the tally is worth anything: two did not compile,
-and two were accidental no-ops — one replaced a constant with the literal it
-already equals, the other only added a comment. A no-op mutation reports GREEN
-and reads exactly like a false note. **The sweep needs its own check that the
-mutation changed the behaviour**, not only that it changed the text.
-
-**The sabotage re-run at step 3b: 35 mutations, three findings.** CONVENTIONS.md
-requires re-running every sabotage after a change, previously verified ones
-included. Step 3b is the second step to actually execute it. Each mutation was
-applied to the tree, the whole suite run, and the failing tests recorded.
-
-| | |
-|---|---|
-| mutations applied | 39 |
-| fired on the test their note names | 34 |
-| expected not to fire, and did not | 1 |
-| notes that were **false** | 2 |
-| behaviour with **no test at all** | 1 |
-| pre-existing tests found **hollowed out** | 1 |
-
-The one expected not to fire is `negamax`'s own `pv[ply].clear()`, recorded
-below and still unfalsifiable with a transposition table in the search. The one
-with no test was the transposition move being searched first — deleting the
-`swap` left the suite green, and `the_transposition_move_is_searched_first` is
-what closed that. The other three are each a different failure mode:
-
-⚠️ **This sweep mutated the two mate-adjustment *functions* and not their call
-sites, and missed the largest hole in the step because of it.** A review
-afterwards deleted the `to_table` call from `store` and the `from_table` call
-from `probe` and found the whole suite green — DECISIONS.md, 2026-08-11. A
-mutation has to be made where the note is attached, not merely somewhere the
-note's subject appears.
-
-- **A note naming a mutation the test cannot see.** "Store a `Move` instead of a
-  `CompactMove` and the size assertion fires" — it does not. `Option<Move>`
-  happens to fit the same sixteen bytes on today's compiler, so the suite stays
-  green. The rule is still right and the *reason* is now stated correctly: `Move`
-  is forbidden because its size is **unpromised**, and "unpromised" is exactly
-  what no size assertion can test.
-- **A note predicting an end-to-end symptom that does not occur.** Above, under
-  the Exact-bound cut.
-- **A pre-existing test hollowed out by this step's own change.**
-  `each_iteration_starts_from_the_last_answer` compares the search's answer
-  against the head of the root list, which says nothing unless the answer differs
-  from the move shunsai generates first. At the initial position it used to; with
-  a transposition table in the search it no longer does, so deleting the
-  re-seeding left the test green. Only the drop-heavy fixture still disagrees, of
-  five measured, and the test now asserts that disagreement out loud *before* the
-  assertion that matters — so the day that fixture stops discriminating, it says
-  so instead of going quiet.
-
-⚠️ **`negamax`'s own `pv[ply].clear()` cannot be shown to matter, and
-[`qsearch`]'s can.** Deleting the clear at the top of the *interior* node leaves
-the whole workspace green, and a sweep over 9 fixtures × depths 1–6 — 101 `info`
-lines — reproduces `depth`, `seldepth`, `score` and `pv` **byte-identically**.
-Deleting the *quiescence* copy turns `finds_the_mate_in_one` and
-`the_reported_pv_is_playable` red. The asymmetry has a reason: an interior node
-that never raises alpha has failed low, so its parent fails high and never reads
-its line, whereas a quiescence node can return an exact score without writing
-one — a stand-pat that beats alpha but no capture, or an evaluation forced by
-`ply >= MAX_PLY` or by `QS_MAX_CHECK_PLIES`. The line stays: it costs nothing,
-and E1's aspiration windows give the root a real beta, which is exactly the
-condition this argument assumes away. Recorded so a future "delete the dead
-line" has something to check itself against.
-
-⚠️ **`negamax`'s `mated_in(ply)` is the second line of that kind, found at step
-4**, and both sit in the same node for related reasons. Scoring it `mated_in(0)`
-leaves the whole suite green including `bench`, while `qsearch`'s copy fires
-three tests. Here the cause is the deepening loop rather than the window:
-quiescence searches past the nominal depth, so a mate that reaches a reported
-line is proved there first and the loop breaks before any interior node meets an
-empty move list on the principal variation. Also reachable, also unfalsifiable,
-also kept.
-
-**Prose volume, as of this step.** The figures the 2026-08-09 DECISIONS.md entry
-rests on, measured over `crates/**/*.rs` by bytes of comment lines against bytes
-of non-blank non-comment lines:
+**Prose volume**, either side of the 2026-08-09 cleanup: bytes of comment lines
+over `crates/**/*.rs` against bytes of non-blank non-comment lines.
 
 | | before | after |
 |---|---|---|
@@ -1110,13 +541,8 @@ of non-blank non-comment lines:
 | code bytes | 138 206 | 138 206 |
 | comments as a share of non-blank text | 48.0% | 41.3% |
 
-DESIGN.md was 63 426 bytes of which §9 was 40 482 (63.8%), and §9 accounted for
-37 241 of the file's 39 785 bytes of lifetime growth (93.6%).
-
-**What the per-step ritual cost, one pass over the session transcripts
-(2026-08-12).** The figures the 2026-08-12 DECISIONS.md entry rests on.
-Transcript analysis is a proxy — operations and bytes, not minutes — and this
-is one pass, not a maintained series.
+**What the per-step ritual cost** (2026-08-12). ⚠️ A proxy — operations and
+bytes, not minutes — and one pass, not a maintained series.
 
 | | |
 |---|---|
@@ -1124,6 +550,21 @@ is one pass, not a maintained series.
 | Edit/Write operations targeting `.md` files | 33% of 530 |
 | transcript bytes, review-dedicated worktree vs the implementation worktree it began by reviewing | ~12 MB vs ~6.7 MB |
 | `main` commits since code exists that are substantively prose-only | 2 of 6 |
+
+**The consolidation that followed**, at the pull request that gave DECISIONS.md
+and PROGRESS.md a stopping condition. ⚠️ The reduction is a one-off; the rule
+change beside it is what keeps the slope down, and the slope is what mattered —
+over the six pull requests before it, DECISIONS.md grew 8.8 KB each and
+PROGRESS.md 7.0 KB, against CONVENTIONS.md's 1.8 KB.
+
+| | before | after |
+|---|---|---|
+| DECISIONS.md | 108 813 | **46 133** |
+| PROGRESS.md | 73 567 | **37 984** |
+| the five documents together | 244 299 | **148 025** |
+| against Rust, non-blank | 12 599 lines | 12 599 lines |
+
+### Portability and the browser
 
 **⚠️ The wasm target compiles and the binary has no engine in it.** Measured on
 rustc 1.94.1, `wasm32-unknown-unknown`, at `1dbf0cd`. `cargo check` for the
@@ -1134,19 +575,11 @@ target passes unmodified; the release binary does not run:
 | `rinsai.wasm`, release | 89 223 bytes |
 | imports | **none** |
 | `main()` | traps — `RuntimeError: unreachable` |
-| exports | `main`, `memory`, the `__data_end` / `__heap_base` globals, and the `#[no_mangle]` C ABI of `shogi_core` and `shogi_usi_parser` |
 | deepest surviving rinsai symbol | `rinsai_search::search::SearchDriver::spawn` |
 | absent | `qsearch`, `generate_moves`, `undo_move`, `evaluate`, `legal_moves` |
-| rinsai source paths referenced | one — `crates/rinsai-search/src/search.rs` |
 
-`thread::Builder::spawn` returns `io::Result` and cannot succeed on this target,
-so `search.rs`'s `.expect("the operating system can start a thread")` always
-fires and everything downstream of it — the entire search — is dead code. That
-panic message and that one path are what survive: the string `the operating
-system can start a thread` is in the binary and the search is not. The std paths
-it references say the rest — `unsupported/time.rs`, `sync/mutex/no_threads.rs`,
-`thread_local/no_threads.rs`.
-
+`thread::Builder::spawn` cannot succeed on this target, so the `expect` on it
+always fires and everything downstream — the entire search — is dead code.
 **So a green `cargo check` on this target is not evidence of portability**, and
 the CI step that runs it is scoped accordingly — see the comment on it.
 
@@ -1157,12 +590,11 @@ the CI step that runs it is scoped accordingly — see the comment on it.
 | HalfKP 125 388 × 256, int16 — the E3 plan | 64 198 656 | 61.22 MiB |
 | P-only 1 548 × 256, int16 | 792 576 | 774 KiB |
 
-The rest of `halfkp_256x2-32-32` is the 512→32→32→1 head, 17 440 int8 MACs and
-about 17.5 KB — **99.97% of the file is the feature transformer**, so the
-feature set is the only dimension that moves the download. One external figure,
-attributed rather than measured here: `@mizarjp/yaneuraou.k-p` ships a playable
-browser shogi engine with a small net embedded in about 2.6 MB, which is the
-order a web build has to reach.
+The rest of `halfkp_256x2-32-32` is about 17.5 KB of head — **99.97% of the file
+is the feature transformer**, so the feature set is the only dimension that moves
+the download. One external figure, attributed rather than measured here:
+`@mizarjp/yaneuraou.k-p` ships a playable browser shogi engine with a small net
+embedded in about 2.6 MB, which is the order a web build has to reach.
 
 ## After `openings-v2` — step 5 is E0's last, and it is two pull requests
 
