@@ -38,7 +38,7 @@ use crate::tt::{Bound, DEFAULT_HASH_MB, Hit, Table};
 ///
 /// Four rather than six because there is no interior move ordering yet, so the
 /// tree is close to a full minimax and each further pair of plies costs an
-/// order of magnitude. PROGRESS.md carries the counts.
+/// order of magnitude.
 const DEFAULT_DEPTH: Depth = 4;
 
 /// How often the search asks whether it is out of budget.
@@ -78,7 +78,8 @@ const MAX_DEPTH: Depth = MAX_PLY as Depth - 1;
 /// plies down. A check-evasion chain has no such argument: an evasion may give
 /// check back, need not be a capture, and its move list is *every* legal move
 /// including drops. Left uncounted those chains dominate the whole search.
-/// PROGRESS.md carries the sweep that settled the value.
+/// ⚠️ Two is the measured minimum that is also correct, and the cost is **not**
+/// monotone in the cap — DECISIONS.md carries the sweep and why that surprises.
 ///
 /// ⚠️ Evaluating a position that is still in check is a known lie, bounded by
 /// how many times a line may be checked rather than by how long it is. E1's
@@ -127,8 +128,8 @@ impl Neg for Window {
 /// loop, so the parent raises alpha on an empty line. Every other arm leaves the
 /// parent failing high — its line then never surfaces — or untouched.
 ///
-/// ⚠️ **That is a reading of the code, not an observation** — PROGRESS.md
-/// carries the sweep that could not reproduce it, and why this is kept anyway.
+/// ⚠️ **That is a reading of the code, not an observation.** A sweep could not
+/// reproduce it end to end; DECISIONS.md carries it and why the rule is kept.
 fn cuts(hit: &Hit, window: &Window) -> bool {
     match hit.bound {
         Bound::Lower => hit.score >= window.beta,
@@ -248,7 +249,7 @@ pub struct NegamaxSearcher {
     /// ⚠️ **Extended at interior nodes only, and [`Self::qsearch`] is a hole in
     /// it on purpose.** Quiescence is the overwhelming majority of all nodes,
     /// so keeping the push and the scan out of it is most of what the feature
-    /// costs — PROGRESS.md carries the share. Two things
+    /// costs — quiescence is 91–99% of all nodes. Two things
     /// make the hole narrow: the position a quiescence subtree *starts* from is
     /// one its interior parent already pushed, and a quiescence line cannot
     /// come back to that starting position — every ply but at most
@@ -1013,8 +1014,8 @@ mod tests {
     /// green, `bench` included** — no test here or anywhere reaches it. A mate
     /// that surfaces in a reported line is always resolved in quiescence
     /// first, because quiescence runs past the nominal depth and the deepening
-    /// loop stops at the first iteration that returns a mate score. PROGRESS.md
-    /// records the measurement beside the same asymmetry in `pv[ply].clear()`.
+    /// loop stops at the first iteration that returns a mate score. DECISIONS.md
+    /// records it beside the same asymmetry in `pv[ply].clear()`.
     #[test]
     fn finds_a_mate_at_every_distance_from_one_to_five() {
         for (moves, hand) in [(1, "-"), (2, "p"), (3, "2p"), (4, "3p"), (5, "4p")] {
@@ -1505,7 +1506,7 @@ mod tests {
     /// The explosion tripwire. Quiescence with no ordering, no SEE and no delta
     /// pruning is the widest it will ever be.
     ///
-    /// The ceiling is measured (PROGRESS.md) and loose on purpose: it catches
+    /// The ceiling is measured and loose on purpose: it catches
     /// an unbounded recursion, not a number every future patch must update.
     #[test]
     fn quiescence_is_bounded_on_the_drop_heavy_fixture() {
@@ -1525,7 +1526,7 @@ mod tests {
     ///
     /// ⚠️ **The fixture is load-bearing**: it is the only one found whose
     /// depth-1 iteration is expensive enough for the poll to fire inside it
-    /// (PROGRESS.md carries the costs). Every other fixture in this repository
+    /// — 49 006 depth-1 nodes against at most 634 for the rest. Every other one
     /// makes this test unable to fail. `movetime 0` is the sharpest form of the
     /// question — the deadline has already passed when the search starts.
     ///
@@ -1612,8 +1613,8 @@ mod tests {
     /// `Score::mated_in(0)` instead of `mated_in(ply)` and the announced
     /// distance is wrong, or drop its `pv[ply].clear()` and a stale line from
     /// an earlier subtree hangs off the mate. ⚠️ Making *either* mutation in
-    /// [`Self::negamax`] instead changes nothing here or anywhere — see
-    /// PROGRESS.md, which now records both halves of that asymmetry.
+    /// [`Self::negamax`] instead changes nothing here or anywhere — DECISIONS.md
+    /// records both halves of that asymmetry.
     #[test]
     fn finds_the_mate_in_one() {
         let (_, lines) = run("sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1", depth(4));
@@ -1633,7 +1634,7 @@ mod tests {
     ///
     /// Sabotage: append the child line before the move in `update_pv`, or drop
     /// **[`Self::qsearch`]'s** `pv[ply].clear()`. ⚠️ Not [`Self::negamax`]'s —
-    /// that copy has no observable effect, which PROGRESS.md records.
+    /// that copy has no observable effect, which DECISIONS.md records.
     ///
     /// ⚠️ **The replay is the part with teeth; the head comparison at the end
     /// is nearly free.** `best` is `self.pv[0][0]` and the printed line is
@@ -1669,7 +1670,7 @@ mod tests {
     /// Sabotage: score a mated node `Score::mated_in(0)` instead of
     /// `mated_in(ply)` **in [`Self::qsearch`]** and the announced distance
     /// stops matching the line. ⚠️ Not [`Self::negamax`]'s copy, which no test
-    /// reaches — see PROGRESS.md.
+    /// reaches — see DECISIONS.md.
     #[test]
     fn a_reported_mate_is_a_real_mate() {
         let args = "sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1";
@@ -1777,8 +1778,8 @@ mod tests {
     /// ⚠️ **Vacuous unless the answer differs from the move shunsai generates
     /// first**, which is why the first assertion is there — it fails loudly
     /// when the fixture stops discriminating, rather than leaving the second
-    /// one passing for no reason. Not every fixture does; PROGRESS.md says
-    /// which.
+    /// one passing for no reason. ⚠️ Only one of the five
+    /// fixtures measured still discriminates, which is why this one is named.
     ///
     /// Sabotage: delete the `root_moves.swap` in the deepening loop.
     #[test]
@@ -1928,8 +1929,8 @@ mod tests {
     ///
     /// A ceiling with room on both sides, like
     /// [`quiescence_is_bounded_on_the_drop_heavy_fixture`]. ⚠️ **The fixture is
-    /// load-bearing** — the ordering is worth nothing at the initial position;
-    /// PROGRESS.md carries the sweep that picked this one.
+    /// load-bearing** — the ordering is worth nothing at the initial position and
+    /// up to 14.02× here; DECISIONS.md carries the sweep that picked it.
     ///
     /// Sabotage: drop the `buf.swap`.
     #[test]
@@ -1990,7 +1991,7 @@ mod tests {
     /// The rule [`cuts`] exists for, as a table.
     ///
     /// ⚠️ **A unit test on purpose: no end-to-end test catches an in-window
-    /// exact cut.** PROGRESS.md carries the sweep that failed to, and why the
+    /// exact cut.** DECISIONS.md carries the sweep that failed to, and why the
     /// restriction is kept anyway.
     ///
     /// Sabotage: `Bound::Exact => true`.

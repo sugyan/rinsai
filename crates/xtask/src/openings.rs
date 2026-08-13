@@ -337,7 +337,7 @@ fn build_move(game: &Game, mv: &CsaMove) -> Result<Move, String> {
 /// ⚠️ **A lower bound against `|cp| <= max` errs in both directions**, which
 /// is the half that is easy to get wrong: it can sit inside the band while
 /// the finished value is above `+max`, and it can sit below `−max` while the
-/// finished value is inside. PROGRESS.md counts how often each happened.
+/// finished value is inside, and both happen — DECISIONS.md carries the counts.
 #[derive(Debug, Default)]
 struct ScoreSink(Mutex<Vec<(i32, bool, i32)>>);
 

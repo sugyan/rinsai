@@ -26,7 +26,7 @@ A shogi engine that places well on **floodgate** and in the **世界コンピュ
 
 **The dependency is a released version, not a git pin.** rinsai depends on `shunsai = "0.1"` from crates.io. Prototyping an API addition uses `[patch.crates-io]` with a path override; adopting it means **releasing shunsai** and raising rinsai's requirement. The loop is: try it on a shunsai branch → measure it on shunsai's own bench → adopt → release → bump. rinsai's **engine** crates are `publish = false` — nothing depends on a search engine as a library, and its artifact is a binary. The one publication-intended exception is `rinsai-game`, the rules library the match referee and [tuishogi](https://github.com/sugyan/tuishogi) share ([DECISIONS.md](./DECISIONS.md), 2026-08-12).
 
-> ⚠️ **Not true yet.** shunsai v0.1.0 is not on crates.io, so E0 builds against a git rev — a knowing, temporary deviation from the paragraph above, recorded in [DECISIONS.md](./DECISIONS.md) (2026-08-05) and tracked as an E0 exit criterion in [PROGRESS.md](./PROGRESS.md). `git grep 'TODO(shunsai-0.1-release)'`.
+> ⚠️ **Not true yet.** shunsai v0.1.0 is not on crates.io, so E0 builds against a git rev — a knowing, temporary deviation from the paragraph above, recorded in [DECISIONS.md](./DECISIONS.md) (2026-08-05) and tracked as an E0 exit criterion in the E0 issues. `git grep 'TODO(shunsai-0.1-release)'`.
 
 ## 3. Route: NNUE + αβ first, DL/MCTS conditional
 
@@ -51,7 +51,6 @@ rinsai/
 ├── DESIGN.md              # this file: the plan
 ├── DECISIONS.md           # what was decided, and what lost; retired in place  (added at E0)
 ├── CONVENTIONS.md         # what is frozen, by subject             (added at E0)
-├── PROGRESS.md            # the state, the next action, and every measured number  (added at E0)
 ├── README.md              # what it is, and the name
 ├── NETS.md                # evaluation-file registry (added at E3)
 ├── Cargo.toml             # [workspace]                      (added at E0)
@@ -97,7 +96,7 @@ criterion target — see E0 step 3b.)
 | Self-play data | **Object storage** | the shard manifest: generator rev, seed, position count, opening set, label depth, checksum |
 | Game records, SPRT logs | local + object storage | positions the engine misplayed, as test fixtures |
 
-A `halfkp_256x2-32-32` network is almost entirely its feature transformer (125,388 × 256 × int16 — PROGRESS.md carries the size), and E3–E4 produce dozens across generations; self-play data runs to tens of GB per generation. Neither belongs in git. The registry and the manifests do: they are the provenance chain that §7's pre-release scan and a WCSC appeal document both need. **The ledger is the artifact that has to be version-controlled — the weights are not.**
+A `halfkp_256x2-32-32` network is almost entirely its feature transformer (125,388 × 256 × int16, 61 MiB), and E3–E4 produce dozens across generations; self-play data runs to tens of GB per generation. Neither belongs in git. The registry and the manifests do: they are the provenance chain that §7's pre-release scan and a WCSC appeal document both need. **The ledger is the artifact that has to be version-controlled — the weights are not.**
 
 ### Sparring opponents, and the run-vs-link boundary
 
@@ -117,7 +116,7 @@ Numbered **E0–E6** so as not to collide with shunsai's M0–M7. Rating targets
 - **Repetition (千日手) is mandatory at E0 and lives here, not in shunsai.** Stack `(key(), Hand, in_check())` per ply; use `key()` as the first filter and hand equality to confirm. Perpetual check — where the checking side loses — is decided from the `in_check()` history. shunsai holds no game history by design, so this is the engine's responsibility.
 - Harness: **an own Rust USI match harness and SPRT driver in `crates/xtask`**, refereeing on `crates/rinsai-game` — decided when step 7 arrived and Ayane turned out to lack fixed-node play, repetition adjudication and legality checking ([DECISIONS.md](./DECISIONS.md), 2026-08-12). Sparring by running GPL binaries: node-limited YaneuraOu → 技巧2.
 - **shunsai API additions: none, deliberately.** E0 building against a frozen shunsai is the layering's first contact with a real consumer.
-- ⚠️ **The remaining sub-steps land as two pull requests, harness first**: steps 6+7 (openings, match harness, SPRT), then step 5 (time management) — so the new instrument gates step 5's real-time behaviour, and its first run is a non-regression SPRT of the finished E0 against the step-3b engine. [DECISIONS.md](./DECISIONS.md), 2026-08-12; the gates are in [PROGRESS.md](./PROGRESS.md)'s next-step section.
+- ⚠️ **The remaining sub-steps land as two pull requests, harness first**: steps 6+7 (openings, match harness, SPRT), then step 5 (time management) — so the new instrument gates step 5's real-time behaviour, and its first run is a non-regression SPRT of the finished E0 against the step-3b engine. [DECISIONS.md](./DECISIONS.md), 2026-08-12; the gates are in the step-5 issues.
 - Infrastructure: repository skeleton, CLAUDE.md, USI conformance dialogue tests, a `bench` command (fixed positions × fixed depth, following the Stockfish convention), CI, and `openings-v1` — balanced positions extracted in-house from high-rated floodgate games, reusing the method of shunsai's `examples/gen_bench_positions.rs`.
 - Verification: fixed-depth node counts as a regression test (the search analogue of perft), a mate-in-1..5 suite, repetition and perpetual-check scenario tests.
 
@@ -135,7 +134,7 @@ Introduction order, with the shogi-specific caveats that differ from chess:
 8. SEE in qsearch — and with it the two things E0 step 3a's quiescence leaves out: **non-capture promotions** (歩→と is a 500 cp event in rinsai's own table, so a capture-only quiescence is blind to と金作り — a shogi-specific gap with no chess analogue) and **checks**, which also need `gives_check`. ⚠️ **This item also owns extending the repetition path into quiescence.** E0 step 4 leaves quiescence out of it, on an argument that holds only while a quiescence line's non-capture plies are bounded by `QS_MAX_CHECK_PLIES` — which is exactly what generating checks and quiet promotions ends. CONVENTIONS.md carries the rule and the condition.
 9. Futility / razoring — hand value belongs in the margin. **Baseline: E0 step 3a's quiescence is deliberately unpruned.** Also owns `QS_MAX_CHECK_PLIES`, which E0 set to 2 by measurement and without an instrument
 10. Aspiration windows
-11. **Quiescence probes and stores in the transposition table.** Measured at E0 step 3b and **not** shipped there — PROGRESS.md carries the numbers. It halves the tree on every fixture tried, which is the opposite of what the conventional argument predicts, and it arrives here because it is a separable search change and because node count is not an instrument for strength. ⚠️ It also rebaselines every `bench` count, so it wants a pull request of its own whatever else is going on.
+11. **Quiescence probes and stores in the transposition table.** Measured at E0 step 3b and **not** shipped there — DECISIONS.md carries the numbers. It halves the tree on every fixture tried, which is the opposite of what the conventional argument predicts, and it arrives here because it is a separable search change and because node count is not an instrument for strength. ⚠️ It also rebaselines every `bench` count, so it wants a pull request of its own whatever else is going on.
 12. **Scoring the first repetition on the search path as a draw**, rather than the fourth occurrence the rule names. Standard practice, it prunes cycles, and it is a search heuristic rather than the rule — which is why E0 step 4 implements the rule and leaves this here, where an SPRT can decide it. ⚠️ It rebaselines every `bench` count, unlike step 4's version, which moved none
 13. Singular extensions, and the rest
 
@@ -188,7 +187,7 @@ Each addition is prototyped on a shunsai branch, measured on shunsai's own bench
 | API | Phase | The shunsai re-measurement it unlocks |
 |---|---|---|
 | expose `attackers_to` + public `Bitboard` iteration | E1 | — (SEE's prerequisite) |
-| staged generation (captures / evasions / quiets) | E1 | **the `MoveSet` 48-byte question** — this is the caller that finally *collects* move sets. **Measured demand from E0 step 3a**: every quiescence node runs full legal generation and keeps a handful — PROGRESS.md carries the generated-to-kept ratios |
+| staged generation (captures / evasions / quiets) | E1 | **the `MoveSet` 48-byte question** — this is the caller that finally *collects* move sets. **Measured demand from E0 step 3a**: every quiescence node runs full legal generation and keeps a handful, **48× generated per kept at the initial position and 86× on a drop-heavy middlegame** |
 | `gives_check` | E1 | — |
 | `do_null_move` / `undo_null_move` | E1 | — |
 | expose `checkers` / `pinned` | E1 | "expose rather than recompute" (shunsai, 2026-07-29). **Its E0 consumer arrived at step 3a**: every quiescence node calls `in_check()`, which recomputes `attackers_to(king)` that `generate_moves` computes internally one line later and does not expose. **A second arrived at step 4**: every interior node's `do_move` now records an `in_check()` for the repetition path, which the 連続王手 half of the rule reads |
