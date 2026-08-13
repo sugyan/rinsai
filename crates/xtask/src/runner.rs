@@ -169,6 +169,16 @@ pub fn run(args: &[String]) -> ExitCode {
         );
     }
 
+    // Before any game, not only in the summary: a clocked run that is not a
+    // measurement is worth learning about while there is still time to stop
+    // it, rather than after the machine has spent the night on it.
+    if args.control.is_clock() && concurrency > 1 {
+        eprintln!(
+            "sprt: {concurrency} workers on the clock — elapsed time is the measurement here, so \
+             this run is a smoke test rather than a result (CLAUDE.md §3)"
+        );
+    }
+
     // The pid is what stops two runs of the same pairing in the same second
     // from opening one file with two cursors and interleaving into a record
     // that reads as a single coherent run.
@@ -219,7 +229,10 @@ pub fn run(args: &[String]) -> ExitCode {
                 .u64("time_ms", ms(tc.main))
                 .u64("byoyomi_ms", ms(tc.byoyomi))
                 // A clocked run above one worker is a smoke test, not a
-                // measurement, and the log has to say which it was.
+                // measurement, and the log has to say which it was — with the
+                // count it was decided from, which is the effective one and
+                // not the `concurrency` field's requested one.
+                .u64("workers", concurrency as u64)
                 .bool("noisy", concurrency > 1),
         };
         let params = params
@@ -460,26 +473,31 @@ fn play_pair(
             MAX_GAME_PLIES,
             args.control.for_game(plan.candidate_is_black),
         )?;
-        // The offender's stderr is the post-mortem, and it is worth having
-        // only where an engine failed rather than lost. ⚠️ Gated on the
-        // ending and not on `detail`, because `stderr_tail` pays its settle
-        // window in full against an engine that is still running — which a
-        // flag fall's is.
-        if is_abnormal(record.reason) {
-            let offender = match record.winner {
-                Winner::White => Some(&mut black),
-                Winner::Black => Some(&mut white),
-                Winner::Neither => None,
+        // The loser's stderr is the post-mortem. A flag fall gets one too: it
+        // is a normal result, but an engine that answered nothing may have
+        // said why on stderr, and that is the only place a wedge is
+        // distinguishable from a slow search. ⚠️ It reads what is already
+        // buffered rather than settling, because settling polls for a death
+        // that a flagged engine is not dying of.
+        let offender = match record.winner {
+            Winner::White => Some(&mut black),
+            Winner::Black => Some(&mut white),
+            Winner::Neither => None,
+        };
+        if let Some(engine) = offender {
+            let tail = if is_abnormal(record.reason) {
+                engine.stderr_tail()
+            } else if record.reason == EndReason::FlagFall {
+                engine.stderr_so_far()
+            } else {
+                Vec::new()
             };
-            if let Some(engine) = offender {
-                let tail = engine.stderr_tail();
-                if !tail.is_empty() {
-                    let joined = tail.join(" | ");
-                    record.detail = Some(match record.detail {
-                        Some(d) => format!("{d}; stderr: {joined}"),
-                        None => format!("stderr: {joined}"),
-                    });
-                }
+            if !tail.is_empty() {
+                let joined = tail.join(" | ");
+                record.detail = Some(match record.detail {
+                    Some(d) => format!("{d}; stderr: {joined}"),
+                    None => format!("stderr: {joined}"),
+                });
             }
         }
         let result_black = match record.winner {
@@ -544,6 +562,20 @@ fn log_game(
         .str("reason", &format!("{:?}", record.reason))
         .u64("plies", record.plies as u64)
         .str("moves", &record.moves_usi)
+        // Which side `times_us[0]` belongs to. ⚠️ Not derivable from the
+        // fields beside it: `plies` counts moves played and `times_us` counts
+        // moves asked for, and the two differ by one on every ending where the
+        // last ask was never played. Over half of `openings-v2` starts an odd
+        // number of plies in, so guessing from parity gets the colours
+        // backwards more often than not.
+        .str(
+            "first_timed_mover",
+            if record.opening_plies.is_multiple_of(2) {
+                "black"
+            } else {
+                "white"
+            },
+        )
         .u64("black_ms", ms(record.spent[Color::Black.array_index()]))
         .u64("white_ms", ms(record.spent[Color::White.array_index()]))
         // ⚠️ Microseconds, where the totals beside them are milliseconds. What
@@ -700,6 +732,12 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                  (0.05 is 5%)"
             ));
         }
+    }
+    // A zero hang timeout expires before the engine can be asked, so every
+    // game would end at the opening's root. Refused for the same reason the
+    // clock's both-zero shape is.
+    if move_timeout.is_some_and(|d| d.is_zero()) {
+        return Err("--move-timeout-ms 0 leaves no time to answer in".to_owned());
     }
     let control = match (nodes, candidate_nodes, baseline_nodes, time, byoyomi) {
         (Some(n), None, None, None, None) => Control::Nodes {
@@ -970,6 +1008,7 @@ mod tests {
             plies: 10,
             moves_usi: String::new(),
             detail: None,
+            opening_plies: 0,
             spent: [Duration::ZERO; Color::NUM],
             move_times: Vec::new(),
         }

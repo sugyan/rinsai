@@ -92,7 +92,8 @@ impl GoSpec {
     }
 
     /// How long to wait for the `bestmove`.
-    fn wait(&self) -> Duration {
+    #[must_use]
+    pub fn wait(&self) -> Duration {
         match self {
             Self::Nodes { hang_timeout, .. } => *hang_timeout,
             Self::Clock(clock) => clock.allowance(),
@@ -104,9 +105,12 @@ impl GoSpec {
 #[derive(Debug)]
 pub struct TimedAnswer {
     pub answer: Result<BestmoveAnswer, EngineError>,
-    /// Measured from before the `position` line is written to after the
-    /// `bestmove` line is read, so the harness's own writes are charged to the
-    /// mover — which is what a server measuring from send to receive does.
+    /// How long the answer took to arrive, measured to the instant the
+    /// `bestmove` line came off the channel. A wait that ended without one
+    /// reports the whole bound it was given.
+    ///
+    /// ⚠️ Never exceeds that bound, which is what lets a caller cut the wait
+    /// and judge the clock on the same number.
     pub elapsed: Duration,
 }
 
@@ -262,19 +266,24 @@ impl UsiEngine {
     /// not waited for; the reader thread drains it, so the engine cannot block
     /// on a full pipe, and the caller is free to end the game.
     pub fn go(&mut self, position_args: &str, spec: GoSpec) -> TimedAnswer {
-        // One origin for both the deadline and the elapsed, taken before any
-        // work, so that a wait which ended always reports an `elapsed` that
-        // reached the bound. That is the direction a caller depends on: a
-        // move which ran out of clock can never be read back as one that
-        // merely ran late.
+        // The deadline's origin. Everything between here and the `go` write —
+        // the drain, both writes — is the harness's own work, and the answer
+        // is timestamped when it arrives rather than now plus however long the
+        // rest of this function takes, so none of it is charged to the mover.
         let started = Instant::now();
         while self.lines.try_recv().is_ok() {}
-        let answer = self
+        let received = self
             .send(&format!("position {position_args}"))
             .and_then(|()| self.send(&format!("go {}", spec.args())))
-            .and_then(|()| wait_for(&self.lines, started + spec.wait(), "bestmove"))
-            .and_then(|line| parse_bestmove(&line));
-        let elapsed = started.elapsed();
+            .and_then(|()| wait_for(&self.lines, started + spec.wait(), "bestmove"));
+        // An answer costs what it took to arrive; a wait that ended without
+        // one costs the whole bound, which is what the caller's clock ran out
+        // of.
+        let elapsed = match &received {
+            Ok((_, arrived)) => arrived.saturating_duration_since(started),
+            Err(_) => spec.wait(),
+        };
+        let answer = received.and_then(|(line, _)| parse_bestmove(&line));
         if matches!(answer, Err(EngineError::Timeout { .. })) {
             self.stop();
         }
@@ -305,6 +314,20 @@ impl UsiEngine {
     /// still running, since the poll it shortens is a poll for the child's
     /// death. Call it for an ending the engine failed at, never for one it
     /// merely lost.
+    /// What the reader thread has already buffered, with no settle window.
+    ///
+    /// For an engine that is still running: the tail is drained line by line
+    /// as it arrives, so there is nothing to wait for, and waiting would mean
+    /// polling the full window for a death that is not coming.
+    pub fn stderr_so_far(&self) -> Vec<String> {
+        self.stderr_tail
+            .lock()
+            .expect("no panics hold this lock")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     pub fn stderr_tail(&mut self) -> Vec<String> {
         for _ in 0..STDERR_SETTLE_POLLS {
             match self.child.try_wait() {
@@ -349,16 +372,23 @@ impl Drop for UsiEngine {
     }
 }
 
-/// The next line whose first token is `prefix`, discarding everything else.
+/// The next line whose first token is `prefix`, discarding everything else,
+/// with the instant it was taken off the channel.
+///
+/// ⚠️ That instant is the one a caller must charge a clock against. Anything
+/// measured after this returns — parsing, and the caller's own bookkeeping —
+/// is the harness's time, and charging it can push an answer that arrived
+/// inside its budget past the deadline this function honoured.
 fn wait_for(
     lines: &Receiver<String>,
     deadline: Instant,
     prefix: &'static str,
-) -> Result<String, EngineError> {
+) -> Result<(String, Instant), EngineError> {
     loop {
         let line = wait_line(lines, deadline, prefix)?;
+        let arrived = Instant::now();
         if line.split_whitespace().next() == Some(prefix) {
-            return Ok(line);
+            return Ok((line, arrived));
         }
     }
 }
@@ -440,7 +470,7 @@ mod tests {
     /// `a_clock_waits_the_allowance_and_a_node_budget_waits_the_hang_timeout`,
     /// which reads the same function, and referee's
     /// `the_byoyomi_costs_no_main_time_and_only_the_excess_costs_any`, which
-    /// is where the wrong allowance becomes a wrong verdict.
+    /// asks the allowance what a run of charges left.
     #[test]
     fn the_allowance_is_the_movers_own_time_plus_the_byoyomi() {
         assert_eq!(clock(Color::Black).allowance(), ms(10_700));
@@ -534,7 +564,7 @@ mod tests {
         let (tx, rx) = channel();
         tx.send("info depth 1 score cp 0".to_owned()).expect("open");
         tx.send("bestmove 7g7f".to_owned()).expect("open");
-        let line = wait_for(&rx, deadline_in(1_000), "bestmove").expect("delivered");
+        let (line, _) = wait_for(&rx, deadline_in(1_000), "bestmove").expect("delivered");
         assert_eq!(line, "bestmove 7g7f");
     }
 
@@ -545,7 +575,7 @@ mod tests {
         let (tx, rx) = channel();
         tx.send("bestmoveish nonsense".to_owned()).expect("open");
         tx.send("bestmove resign".to_owned()).expect("open");
-        let line = wait_for(&rx, deadline_in(1_000), "bestmove").expect("delivered");
+        let (line, _) = wait_for(&rx, deadline_in(1_000), "bestmove").expect("delivered");
         assert_eq!(line, "bestmove resign");
     }
 

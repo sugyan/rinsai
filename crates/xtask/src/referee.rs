@@ -124,12 +124,17 @@ pub struct GameRecord {
     /// Wall time charged to each side over the whole game, Black's first.
     /// Filled under a node budget too, where it is a cost rather than a rule.
     pub spent: [Duration; Color::NUM],
+    /// Plies the opening already carried. [`Self::move_times`] starts after
+    /// them, so this is what says whose move its first entry was.
+    pub opening_plies: usize,
     /// What each move cost, in the order they were asked for.
     ///
     /// ⚠️ **Not an index into [`Self::moves_usi`]**, and the two differ at
-    /// both ends: that string starts at the opening's first move, which cost
-    /// nobody anything, and a game ending in [`EndReason::FlagFall`] times a
-    /// last move that was never played and so is not in the string at all.
+    /// both ends. It starts [`Self::opening_plies`] later, because the
+    /// opening's moves cost nobody anything. And it ends one *longer* on every
+    /// ending the referee reaches by asking — resignation, declaration, an
+    /// illegal move, a flag fall, or any engine failure — each of which times
+    /// an ask whose move was never played and so is not in the string.
     pub move_times: Vec<Duration>,
 }
 
@@ -138,13 +143,6 @@ struct Clock {
     control: MatchControl,
     main_left: [Duration; Color::NUM],
     spent: [Duration; Color::NUM],
-}
-
-/// Whether a move fitted in what its side had left.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Charge {
-    InTime,
-    Flagged,
 }
 
 impl Clock {
@@ -187,27 +185,22 @@ impl Clock {
     ///
     /// The byoyomi is spent first and does not deplete — every move gets the
     /// whole period — so only the excess over it comes off the main time,
-    /// which is never restored. ⚠️ Under a node budget nothing is charged and
-    /// [`Charge::InTime`] is always the answer: the wait there is a hang
-    /// detector, and an engine that hits it has already been given its loss.
-    #[must_use]
-    fn charge(&mut self, mover: Color, elapsed: Duration) -> Charge {
+    /// which is never restored. `spent` accumulates under either control,
+    /// where it is a cost rather than a rule.
+    ///
+    /// ⚠️ Bookkeeping only. Whether the mover ran out is decided by whether it
+    /// answered at all, not by comparing this total against the allowance —
+    /// see [`play_game`]. Nothing here can flag.
+    fn charge(&mut self, mover: Color, elapsed: Duration) {
         let side = mover.array_index();
         self.spent[side] = self.spent[side].saturating_add(elapsed);
-        let MatchControl::Clock(_) = self.control else {
-            return Charge::InTime;
+        let MatchControl::Clock(tc) = self.control else {
+            return;
         };
-        // The same allowance the seat's wait was cut at, from the same
-        // function, so the cut and the verdict cannot drift apart.
-        let GoSpec::Clock(spec) = self.spec(mover) else {
-            unreachable!("a clock control yields a clock spec")
-        };
-        if elapsed >= spec.allowance() {
-            self.main_left[side] = Duration::ZERO;
-            return Charge::Flagged;
-        }
-        self.main_left[side] -= elapsed.saturating_sub(spec.byoyomi);
-        Charge::InTime
+        // Cannot underflow: `elapsed` never exceeds the allowance the seat's
+        // wait was cut at, and that allowance is this side's main time plus
+        // the byoyomi.
+        self.main_left[side] -= elapsed.saturating_sub(tc.byoyomi);
     }
 }
 
@@ -229,6 +222,7 @@ pub fn play_game(
         Game::from_usi_position(opening).map_err(|e| format!("unplayable opening: {e}"))?;
     let mut args = opening.trim().to_owned();
     let mut had_moves = args.split_whitespace().any(|t| t == "moves");
+    let opening_plies = game.ply();
     let mut clock = Clock::new(control);
     let mut move_times: Vec<Duration> = Vec::new();
 
@@ -257,28 +251,7 @@ pub fn play_game(
         let spec = clock.spec(mover);
         let TimedAnswer { answer, elapsed } = seat.bestmove(&args, spec);
         move_times.push(elapsed);
-        // Charged before the answer is read, because a move that arrives
-        // after the flag has fallen is not a move.
-        if clock.charge(mover, elapsed) == Charge::Flagged {
-            let allowance = match spec {
-                GoSpec::Clock(spec) => spec.allowance(),
-                GoSpec::Nodes { .. } => unreachable!("only a clock flags"),
-            };
-            // ⚠️ Three decimals, not whole milliseconds: an engine whose
-            // last move overran by a fraction of one is the ordinary case,
-            // and rounded it would read "took 200 ms of the 200 ms it had",
-            // which states no reason for the loss it is explaining.
-            let ms = |d: Duration| d.as_secs_f64() * 1_000.0;
-            break (
-                Winner::opponent_of(mover),
-                EndReason::FlagFall,
-                Some(format!(
-                    "took {:.3} ms of the {:.3} ms it had",
-                    ms(elapsed),
-                    ms(allowance)
-                )),
-            );
-        }
+        clock.charge(mover, elapsed);
         match answer {
             Ok(BestmoveAnswer::Move(token)) => match game.play_usi(&token) {
                 Ok(_) => {
@@ -307,6 +280,27 @@ pub fn play_game(
             Ok(BestmoveAnswer::Win) => {
                 break (Winner::of(mover), EndReason::Declaration, None);
             }
+            // ⚠️ Only silence becomes a flag fall, and only under a clock.
+            // An engine that died or talked nonsense **failed**, however long
+            // it took to do it — routing those here on the strength of the
+            // clock would file a crash as an ordinary loss and, because a flag
+            // fall is not abnormal, drop its post-mortem with it.
+            Err(EngineError::Timeout { .. }) if matches!(spec, GoSpec::Clock(_)) => {
+                let allowance = spec.wait();
+                // ⚠️ Three decimals, not whole milliseconds: an engine whose
+                // last move overran by a fraction of one is the ordinary
+                // case, and rounded it would read "took 200 ms of the 200 ms
+                // it had", which states no reason for the loss it explains.
+                let ms = |d: Duration| d.as_secs_f64() * 1_000.0;
+                break (
+                    Winner::opponent_of(mover),
+                    EndReason::FlagFall,
+                    Some(format!(
+                        "answered nothing in the {:.3} ms it had left",
+                        ms(allowance)
+                    )),
+                );
+            }
             Err(e) => {
                 let reason = match e {
                     EngineError::Timeout { .. } => EndReason::Timeout,
@@ -330,6 +324,7 @@ pub fn play_game(
         plies: game.ply(),
         moves_usi,
         detail,
+        opening_plies,
         spent: clock.spent,
         move_times,
     })
@@ -618,19 +613,18 @@ mod tests {
     /// categorical: a wrong rule still produces a plausible clock.
     ///
     /// Sabotage: making the byoyomi a depleting pot — `main_left[side] -=
-    /// elapsed` — failed this test on its first row (9 600 where 10 000 was
-    /// due) and also
-    /// `the_flag_falls_at_the_allowance_and_not_a_millisecond_before`, which
-    /// panicked: subtracting a whole `elapsed` that the allowance permitted
+    /// elapsed` — failed this test on its first row, leaving 9.6s where 10s
+    /// was due, and three more besides
+    /// (`a_seat_that_answers_keeps_its_move_however_long_it_took`,
+    /// `a_seat_that_never_answers_under_a_clock_flags_rather_than_hangs`,
+    /// `an_engine_that_failed_keeps_its_own_ending_under_a_clock`), which
+    /// panicked: subtracting a whole `elapsed` the allowance permitted
     /// underflows the `Duration`, where subtracting only the excess cannot.
     #[test]
     fn the_byoyomi_costs_no_main_time_and_only_the_excess_costs_any() {
         let mut clock = Clock::new(clock(10_000, 1_000));
         for (spend, black_left) in [(400, 10_000), (1_000, 10_000), (1_800, 9_200), (0, 9_200)] {
-            assert_eq!(
-                clock.charge(Color::Black, Duration::from_millis(spend)),
-                Charge::InTime
-            );
+            clock.charge(Color::Black, Duration::from_millis(spend));
             assert_eq!(
                 clock.main_left[Color::Black.array_index()],
                 Duration::from_millis(black_left),
@@ -638,25 +632,27 @@ mod tests {
             );
         }
         // An unused period does not accumulate: four moves under the byoyomi
-        // did not buy a later one.
-        assert_eq!(
-            clock.charge(Color::Black, Duration::from_millis(10_201)),
-            Charge::Flagged
-        );
+        // bought nothing, so the allowance is still the main time plus one
+        // period rather than five.
+        let GoSpec::Clock(spec) = clock.spec(Color::Black) else {
+            panic!("a clock control yields a clock spec")
+        };
+        assert_eq!(spec.allowance(), Duration::from_millis(9_200 + 1_000));
     }
 
     /// Each side has its own clock. A single shared one is invisible for as
     /// long as the two sides spend alike, which is most of a real game.
     ///
     /// Sabotage: indexing by `Color::Black` instead of by the mover in
-    /// `Clock::charge` failed this test and
-    /// `each_seat_is_told_both_clocks_as_the_referee_holds_them`, which is
-    /// where the merged clock reaches the engines.
+    /// `Clock::charge` failed this test,
+    /// `each_seat_is_told_both_clocks_as_the_referee_holds_them` — where the
+    /// merged clock reaches the engines — and
+    /// `a_seat_that_answers_keeps_its_move_however_long_it_took`.
     #[test]
     fn one_side_spending_does_not_move_the_other_sides_clock() {
         let mut clock = Clock::new(clock(10_000, 0));
-        let _ = clock.charge(Color::Black, Duration::from_millis(300));
-        let _ = clock.charge(Color::White, Duration::from_millis(500));
+        clock.charge(Color::Black, Duration::from_millis(300));
+        clock.charge(Color::White, Duration::from_millis(500));
         assert_eq!(
             clock.main_left[Color::Black.array_index()],
             Duration::from_millis(9_700)
@@ -667,35 +663,39 @@ mod tests {
         );
     }
 
-    /// The flag falls *at* the allowance, not past it: that is where the
-    /// seat's wait was cut, so an answer arriving exactly on it did not
-    /// arrive at all.
+    /// An answer that arrived is played, however much of the allowance it
+    /// took. Only silence flags \u{2014} so a seat that spends every millisecond it
+    /// has and still answers keeps its move.
+    ///
+    /// ⚠️ This is the boundary the arithmetic version of this test got wrong:
+    /// judging on `elapsed >= allowance` discarded a legal move whenever the
+    /// harness's own parse pushed the total over, which a review reproduced in
+    /// 1243 of 2000 trials at 300 µs of margin.
     #[test]
-    fn the_flag_falls_at_the_allowance_and_not_a_millisecond_before() {
-        let allowance = 10_000 + 1_000;
-        let mut just_inside = Clock::new(clock(10_000, 1_000));
-        assert_eq!(
-            just_inside.charge(Color::Black, Duration::from_millis(allowance - 1)),
-            Charge::InTime
-        );
-        let mut exactly = Clock::new(clock(10_000, 1_000));
-        assert_eq!(
-            exactly.charge(Color::Black, Duration::from_millis(allowance)),
-            Charge::Flagged
-        );
+    fn a_seat_that_answers_keeps_its_move_however_long_it_took() {
+        let mut black = Scripted::moves(&["7g7f"]).taking(&[11_000]);
+        let mut white = Scripted::moves(&["3c3d"]).taking(&[11_000]);
+        let record =
+            play_game(&mut black, &mut white, "startpos", 2, clock(10_000, 1_000)).expect("plays");
+        assert_eq!(record.reason, EndReason::MaxMoves);
+        assert_eq!(record.plies, 2, "both answers were played");
+        assert_eq!(record.moves_usi, "7g7f 3c3d");
     }
 
-    /// A node budget has no clock to run out of, whatever the moves cost.
+    /// A node budget has no clock to run out of, whatever the moves cost:
+    /// `spent` still accumulates, and the main time is untouched.
     #[test]
     fn a_fixed_node_game_is_never_on_the_clock() {
         let mut clock = Clock::new(nodes());
-        assert_eq!(
-            clock.charge(Color::Black, Duration::from_secs(3_600)),
-            Charge::InTime
-        );
+        clock.charge(Color::Black, Duration::from_secs(3_600));
         assert_eq!(
             clock.spent[Color::Black.array_index()],
             Duration::from_secs(3_600)
+        );
+        assert_eq!(
+            clock.main_left[Color::Black.array_index()],
+            Duration::ZERO,
+            "a node budget seeds no main time to spend"
         );
     }
 
@@ -704,9 +704,11 @@ mod tests {
     /// whole sequence, at every ply, the way
     /// `each_seat_is_asked_about_the_game_so_far_in_usi` does for `position`.
     ///
-    /// Sabotage: send the *mover's* remaining time as `btime` regardless of
+    /// Sabotage: sending the *mover's* remaining time as `btime` regardless of
     /// colour (`btime: self.main_left[mover.array_index()]`) in `Clock::spec`
-    /// and this fails on White's first spec, which then reads (9500, 10000).
+    /// failed this test, with White's specs reading
+    /// `[(10000, 10000), (9700, 9700)]` — both entries collapsed onto the
+    /// mover's own clock.
     #[test]
     fn each_seat_is_told_both_clocks_as_the_referee_holds_them() {
         let (black, white) = interleave(&["7g7f", "2g2f"], &["3c3d", "8c8d"]);
@@ -724,25 +726,38 @@ mod tests {
     /// before the answer is read, so the board must not advance and the point
     /// must go to the opponent.
     ///
-    /// Sabotage: moving the `clock.charge` block below the `match answer` in
-    /// `play_game` failed this test and
-    /// `a_seat_that_never_answers_under_a_clock_flags_rather_than_hangs`,
-    /// which is the same defect reached through the error arm.
+    /// An engine that **failed** keeps its own ending under a clock. Only
+    /// silence is a flag fall, so a crash or a nonsense line is still reported
+    /// as the failure it is.
+    ///
+    /// ⚠️ This is what stops a clocked run from laundering a wedged engine
+    /// into an ordinary loss: a flag fall is not abnormal, so a crash filed as
+    /// one loses both the ⚠️ tally and the stderr post-mortem, and reads in
+    /// the log exactly like an engine that merely thought too long.
+    ///
+    /// Sabotage: route every `Err` to `EndReason::FlagFall` \u{2014} the shape this
+    /// replaced \u{2014} and both rows here fail.
     #[test]
-    fn a_move_that_outlasts_its_allowance_loses_on_time_even_though_it_is_legal() {
-        let mut black = Scripted::moves(&["7g7f"]).taking(&[1_500]);
-        let mut white = Scripted::moves(&[]);
-        let record =
-            play_game(&mut black, &mut white, "startpos", 4, clock(0, 1_000)).expect("plays");
-        assert_eq!(record.winner, Winner::White);
-        assert_eq!(record.reason, EndReason::FlagFall);
-        assert_eq!(record.plies, 0, "the late move was not played");
-        assert_eq!(record.moves_usi, "");
-        assert_eq!(white.asked, 0, "the game ended at once");
-        assert_eq!(
-            record.spent[Color::Black.array_index()],
-            Duration::from_millis(1_500)
-        );
+    fn an_engine_that_failed_keeps_its_own_ending_under_a_clock() {
+        for (error, reason) in [
+            (
+                EngineError::Died {
+                    waiting_for: "bestmove",
+                },
+                EndReason::Died,
+            ),
+            (
+                EngineError::Protocol("gibberish".to_owned()),
+                EndReason::Protocol,
+            ),
+        ] {
+            let mut black = Scripted::one(Err(error)).taking(&[1_000]);
+            let mut white = Scripted::moves(&[]);
+            let record =
+                play_game(&mut black, &mut white, "startpos", 4, clock(0, 1_000)).expect("plays");
+            assert_eq!(record.winner, Winner::White);
+            assert_eq!(record.reason, reason, "under a clock");
+        }
     }
 
     /// A seat that never answers under a clock has lost on time, not hung:
