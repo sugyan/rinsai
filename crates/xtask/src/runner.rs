@@ -1,10 +1,14 @@
 //! The `sprt` subcommand: colour-swapped pairs from the opening set, fresh
 //! engine processes per game, pentanomial GSPRT over the pair outcomes.
 //!
-//! Fixed-node games between deterministic engines are load-immune, so a
-//! result does not depend on what else the machine is doing (CLAUDE.md
-//! §3): no clock reading can change a move, and the only ones here are the
-//! hang-detection timeouts and the log directory's name.
+//! ⚠️ **The two budget modes differ in whether a result is load-immune.**
+//! Under `--nodes` no clock reading can change a move — the only ones are the
+//! hang-detection timeouts and the log directory's name — so a result does
+//! not depend on what else the machine is doing, and the queue may run beside
+//! other work. Under a clock the elapsed time *is* the measurement, so
+//! CLAUDE.md §3's quiet-machine rule binds and `--concurrency` above 1 makes
+//! the run a smoke test rather than a measurement.
+//!
 //! Determinism per game comes from fresh processes: no table state, no
 //! option drift, nothing carried between games.
 
@@ -14,12 +18,16 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
+use shogi_core::Color;
+
 use crate::config::{self, EngineConfig};
 use crate::jsonl::JsonObject;
-use crate::referee::{self, EndReason, GameRecord, MAX_GAME_PLIES, Seat, Winner};
+use crate::referee::{
+    self, EndReason, GameRecord, MAX_GAME_PLIES, MatchControl, TimeControl, Winner,
+};
 use crate::schedule::{self, GamePlan};
 use crate::sprt::{self, PairCounts, Status};
-use crate::usi::{BestmoveAnswer, EngineError, UsiEngine};
+use crate::usi::UsiEngine;
 
 const DEFAULT_MOVE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_PAIRS: u64 = 2_000;
@@ -28,17 +36,49 @@ const DEFAULT_MAX_PAIRS: u64 = 2_000;
 /// `--concurrency` for the machine, and this only bounds a typo.
 const MAX_CONCURRENCY: usize = 32;
 
-/// One engine behind a fixed node budget — the [`Seat`] the referee plays.
-struct EngineSeat {
-    engine: UsiEngine,
-    nodes: u64,
-    timeout: Duration,
+/// What the match gives each engine per move, keyed by which engine it is.
+///
+/// [`MatchControl`] is the same thing keyed by colour, which is what one game
+/// needs; `play_pair` converts beside the colour swap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Control {
+    Nodes {
+        candidate: u64,
+        baseline: u64,
+        /// The hang detector. ⚠️ It lives inside this arm because a clock has
+        /// no use for it: there the wait is bounded by the mover's allowance,
+        /// and a bound that fired earlier would report a healthy long think
+        /// as a wedged engine.
+        hang_timeout: Duration,
+    },
+    Clock(TimeControl),
 }
 
-impl Seat for EngineSeat {
-    fn bestmove(&mut self, position_args: &str) -> Result<BestmoveAnswer, EngineError> {
-        self.engine
-            .bestmove(position_args, self.nodes, self.timeout)
+impl Control {
+    fn for_game(self, candidate_is_black: bool) -> MatchControl {
+        match self {
+            Self::Nodes {
+                candidate,
+                baseline,
+                hang_timeout,
+            } => {
+                let (black, white) = if candidate_is_black {
+                    (candidate, baseline)
+                } else {
+                    (baseline, candidate)
+                };
+                MatchControl::Nodes {
+                    black,
+                    white,
+                    hang_timeout,
+                }
+            }
+            Self::Clock(tc) => MatchControl::Clock(tc),
+        }
+    }
+
+    fn is_clock(self) -> bool {
+        matches!(self, Self::Clock(_))
     }
 }
 
@@ -47,8 +87,7 @@ struct Args {
     baseline: String,
     config_path: PathBuf,
     openings_path: PathBuf,
-    candidate_nodes: u64,
-    baseline_nodes: u64,
+    control: Control,
     elo: (f64, f64),
     alpha: f64,
     beta: f64,
@@ -58,7 +97,6 @@ struct Args {
     max_pairs: u64,
     seed: u64,
     concurrency: usize,
-    move_timeout: Duration,
 }
 
 struct PairOutcome {
@@ -158,14 +196,33 @@ pub fn run(args: &[String]) -> ExitCode {
     };
     {
         use std::io::Write as _;
-        let params = JsonObject::new()
+        let mut params = JsonObject::new()
             .str("type", "params")
             .str("candidate", &args.candidate)
             .str("candidate_path", &candidate.path.display().to_string())
-            .u64("candidate_nodes", args.candidate_nodes)
             .str("baseline", &args.baseline)
-            .str("baseline_path", &baseline.path.display().to_string())
-            .u64("baseline_nodes", args.baseline_nodes)
+            .str("baseline_path", &baseline.path.display().to_string());
+        // A discriminator, so a reader never has to infer the mode from which
+        // keys happen to be present.
+        params = match args.control {
+            Control::Nodes {
+                candidate,
+                baseline,
+                hang_timeout,
+            } => params
+                .str("control", "nodes")
+                .u64("candidate_nodes", candidate)
+                .u64("baseline_nodes", baseline)
+                .u64("move_timeout_ms", ms(hang_timeout)),
+            Control::Clock(tc) => params
+                .str("control", "clock")
+                .u64("time_ms", ms(tc.main))
+                .u64("byoyomi_ms", ms(tc.byoyomi))
+                // A clocked run above one worker is a smoke test, not a
+                // measurement, and the log has to say which it was.
+                .bool("noisy", concurrency > 1),
+        };
+        let params = params
             .str("openings", &args.openings_path.display().to_string())
             .u64("opening_count", openings.len() as u64)
             .f64("elo0", args.elo.0)
@@ -187,6 +244,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let mut counts = PairCounts::default();
     let mut game_tally = [0u64; 3]; // candidate wins, draws, losses
     let mut abnormal: Vec<(EndReason, u64)> = Vec::new();
+    let mut flag_falls = [0u64; 2]; // candidate, baseline
     let mut fatal: Option<String> = None;
     let mut decided: Option<Status> = None;
 
@@ -236,6 +294,12 @@ pub fn run(args: &[String]) -> ExitCode {
                         Some((_, count)) => *count += 1,
                         None => abnormal.push((record.reason, 1)),
                     }
+                }
+                if record.reason == EndReason::FlagFall {
+                    // A flag fall never draws, so the side that did not take
+                    // the point is the side that ran out.
+                    let candidate_flagged = candidate_points(record, candidate_black) == 0;
+                    flag_falls[usize::from(!candidate_flagged)] += 1;
                 }
                 log_game(
                     &mut log,
@@ -305,6 +369,26 @@ pub fn run(args: &[String]) -> ExitCode {
         counts.score() * 100.0,
         sprt::elo_estimate(counts.score()),
     );
+    // Printed for a clocked run whatever the count, because zero is the gate
+    // and positive evidence of zero is the deliverable. Excluding `FlagFall`
+    // from `is_abnormal` is what makes the silence possible: without this
+    // line, a run in which every game ended on time prints a clean verdict.
+    if args.control.is_clock() {
+        println!(
+            "flag falls: {} {} | {} {}",
+            args.candidate, flag_falls[0], args.baseline, flag_falls[1]
+        );
+        // The effective count, not the one asked for: a `--concurrency 8`
+        // clamped to 1 by the pair budget ran alone, and warning about it
+        // would put a caveat on a run that does not need one. It is also the
+        // number the log's `noisy` flag was written from.
+        if concurrency > 1 {
+            println!(
+                "⚠️  {concurrency} workers on the clock: elapsed time is the measurement here, so \
+                 this run is a smoke test rather than a result (CLAUDE.md §3)"
+            );
+        }
+    }
     // An engine that timed out or died is scored as an ordinary loss, so a
     // degraded run reads as a clean verdict unless the reasons are named
     // beside it (CLAUDE.md §3: a noisy run is not a result).
@@ -325,9 +409,16 @@ pub fn run(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Whether an ending says something about the harness or the engines rather
-/// than about the game. These are scored as ordinary losses; the summary
-/// names them so a run degraded by them is not read as a measurement.
+/// Whether an ending is an engine or harness *failure* rather than a result
+/// the game produced. These are scored as ordinary losses; the summary names
+/// them so a run degraded by them is not read as a measurement.
+///
+/// ⚠️ [`EndReason::FlagFall`] is deliberately **not** one. Losing on time is
+/// something the rules of the time control decided, exactly like 詰み, and
+/// counting it here would report a legitimate result as a degraded run. The
+/// summary tallies flag falls separately for the opposite reason: their being
+/// normal is what would otherwise let a run in which every game ended on time
+/// print a clean verdict.
 fn is_abnormal(reason: EndReason) -> bool {
     matches!(
         reason,
@@ -346,53 +437,48 @@ fn play_pair(
     let opening = &openings[pair[0].opening];
     let mut games: Vec<GameRecord> = Vec::with_capacity(2);
     for plan in pair {
-        let (black_cfg, black_nodes, white_cfg, white_nodes) = if plan.candidate_is_black {
-            (
-                candidate,
-                args.candidate_nodes,
-                baseline,
-                args.baseline_nodes,
-            )
+        let (black_cfg, white_cfg) = if plan.candidate_is_black {
+            (candidate, baseline)
         } else {
-            (
-                baseline,
-                args.baseline_nodes,
-                candidate,
-                args.candidate_nodes,
-            )
+            (baseline, candidate)
         };
-        let launch = |cfg: &EngineConfig, seat_name: &str, nodes: u64| {
+        let launch = |cfg: &EngineConfig, seat_name: &str| {
             UsiEngine::launch(
                 &format!("{} as {seat_name}", cfg.id),
                 &cfg.path,
                 &cfg.args,
                 &cfg.options,
             )
-            .map(|engine| EngineSeat {
-                engine,
-                nodes,
-                timeout: args.move_timeout,
-            })
             .map_err(|e| format!("launching {}: {e}", cfg.id))
         };
-        let mut black = launch(black_cfg, "black", black_nodes)?;
-        let mut white = launch(white_cfg, "white", white_nodes)?;
-        let mut record = referee::play_game(&mut black, &mut white, opening, MAX_GAME_PLIES)?;
-        if record.detail.is_some() {
-            // The offender's stderr is the post-mortem; attach the tail of
-            // the side that lost abnormally.
-            // `detail` is only ever set on an ending the loser caused, so the
-            // side that did not win is the one whose stderr explains it.
+        let mut black = launch(black_cfg, "black")?;
+        let mut white = launch(white_cfg, "white")?;
+        let mut record = referee::play_game(
+            &mut black,
+            &mut white,
+            opening,
+            MAX_GAME_PLIES,
+            args.control.for_game(plan.candidate_is_black),
+        )?;
+        // The offender's stderr is the post-mortem, and it is worth having
+        // only where an engine failed rather than lost. ⚠️ Gated on the
+        // ending and not on `detail`, because `stderr_tail` pays its settle
+        // window in full against an engine that is still running — which a
+        // flag fall's is.
+        if is_abnormal(record.reason) {
             let offender = match record.winner {
-                Winner::White => Some(&mut black.engine),
-                Winner::Black => Some(&mut white.engine),
+                Winner::White => Some(&mut black),
+                Winner::Black => Some(&mut white),
                 Winner::Neither => None,
             };
             if let Some(engine) = offender {
                 let tail = engine.stderr_tail();
                 if !tail.is_empty() {
                     let joined = tail.join(" | ");
-                    record.detail = record.detail.map(|d| format!("{d}; stderr: {joined}"));
+                    record.detail = Some(match record.detail {
+                        Some(d) => format!("{d}; stderr: {joined}"),
+                        None => format!("stderr: {joined}"),
+                    });
                 }
             }
         }
@@ -401,8 +487,8 @@ fn play_pair(
             Winner::White => ("lose", "win"),
             Winner::Neither => ("draw", "draw"),
         };
-        black.engine.gameover(result_black.0);
-        white.engine.gameover(result_black.1);
+        black.gameover(result_black.0);
+        white.gameover(result_black.1);
         games.push(record);
     }
     let games: [GameRecord; 2] = games.try_into().expect("two games were pushed");
@@ -435,13 +521,12 @@ fn letter(record: &GameRecord, candidate_is_black: bool) -> char {
 }
 
 fn log_game(
-    log: &mut std::fs::File,
+    log: &mut impl std::io::Write,
     plan: &GamePlan,
     game_index: usize,
     record: &GameRecord,
     candidate_black: bool,
 ) {
-    use std::io::Write as _;
     let mut object = JsonObject::new()
         .str("type", "game")
         .u64("pair", plan.pair)
@@ -458,11 +543,36 @@ fn log_game(
         )
         .str("reason", &format!("{:?}", record.reason))
         .u64("plies", record.plies as u64)
-        .str("moves", &record.moves_usi);
+        .str("moves", &record.moves_usi)
+        .u64("black_ms", ms(record.spent[Color::Black.array_index()]))
+        .u64("white_ms", ms(record.spent[Color::White.array_index()]))
+        // ⚠️ Microseconds, where the totals beside them are milliseconds. What
+        // this array exists to show is how far a move ran past its byoyomi,
+        // which is a fraction of a millisecond — rounded to the millisecond
+        // every move would log as exactly its budget, and the field would
+        // stop being an instrument.
+        .u64_array(
+            "times_us",
+            &record
+                .move_times
+                .iter()
+                .copied()
+                .map(us)
+                .collect::<Vec<_>>(),
+        );
     if let Some(detail) = &record.detail {
         object = object.str("detail", detail);
     }
     let _ = writeln!(log, "{}", object.finish());
+}
+
+/// Whole milliseconds, which is the resolution the protocol speaks in.
+fn ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn us(d: Duration) -> u64 {
+    u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
 
 fn load_openings(path: &PathBuf) -> Result<Vec<String>, String> {
@@ -528,7 +638,9 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut max_pairs = DEFAULT_MAX_PAIRS;
     let mut seed = 1u64;
     let mut concurrency = 1usize;
-    let mut move_timeout = DEFAULT_MOVE_TIMEOUT;
+    let mut move_timeout = None;
+    let mut time = None;
+    let mut byoyomi = None;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -541,6 +653,8 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--nodes" => nodes = Some(parse_u64(value()?)?),
             "--candidate-nodes" => candidate_nodes = Some(parse_u64(value()?)?),
             "--baseline-nodes" => baseline_nodes = Some(parse_u64(value()?)?),
+            "--time-ms" => time = Some(Duration::from_millis(parse_u64(value()?)?)),
+            "--byoyomi-ms" => byoyomi = Some(Duration::from_millis(parse_u64(value()?)?)),
             "--gain" => elo = Some((0.0, 5.0)),
             "--non-regression" => elo = Some((-5.0, 0.0)),
             "--elo0" => elo0 = Some(parse_f64(value()?)?),
@@ -556,7 +670,9 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                     return Err("--concurrency wants at least 1".to_owned());
                 }
             }
-            "--move-timeout-ms" => move_timeout = Duration::from_millis(parse_u64(value()?)?),
+            "--move-timeout-ms" => {
+                move_timeout = Some(Duration::from_millis(parse_u64(value()?)?));
+            }
             other => return Err(format!("unknown argument `{other}`")),
         }
     }
@@ -585,12 +701,39 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             ));
         }
     }
-    let (candidate_nodes, baseline_nodes) = match (nodes, candidate_nodes, baseline_nodes) {
-        (Some(n), None, None) => (n, n),
-        (None, Some(c), Some(b)) => (c, b),
+    let control = match (nodes, candidate_nodes, baseline_nodes, time, byoyomi) {
+        (Some(n), None, None, None, None) => Control::Nodes {
+            candidate: n,
+            baseline: n,
+            hang_timeout: move_timeout.unwrap_or(DEFAULT_MOVE_TIMEOUT),
+        },
+        (None, Some(c), Some(b), None, None) => Control::Nodes {
+            candidate: c,
+            baseline: b,
+            hang_timeout: move_timeout.unwrap_or(DEFAULT_MOVE_TIMEOUT),
+        },
+        (None, None, None, Some(main), Some(byoyomi)) => {
+            // ⚠️ Refused rather than ignored or min'd: under a clock the wait
+            // is the mover's allowance, and a hang detector that fired first
+            // would end a healthy long think as a wedged engine — the very
+            // confusion the flag-fall ending exists to remove.
+            if move_timeout.is_some() {
+                return Err(
+                    "--move-timeout-ms is the fixed-node hang detector and has no meaning under \
+                     a clock, where the wait is the mover's own allowance"
+                        .to_owned(),
+                );
+            }
+            if main.is_zero() && byoyomi.is_zero() {
+                return Err("--time-ms and --byoyomi-ms cannot both be zero".to_owned());
+            }
+            Control::Clock(TimeControl { main, byoyomi })
+        }
         _ => {
             return Err(
-                "pick --nodes N, or both --candidate-nodes and --baseline-nodes".to_owned(),
+                "pick --nodes N, or both --candidate-nodes and --baseline-nodes, or both \
+                 --time-ms N and --byoyomi-ms N"
+                    .to_owned(),
             );
         }
     };
@@ -599,8 +742,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         baseline: baseline.ok_or("--baseline is required")?,
         config_path,
         openings_path,
-        candidate_nodes,
-        baseline_nodes,
+        control,
         elo,
         alpha,
         beta,
@@ -608,7 +750,6 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         max_pairs,
         seed,
         concurrency,
-        move_timeout,
     })
 }
 
@@ -625,11 +766,16 @@ fn parse_f64(text: &str) -> Result<f64, String> {
 fn usage() -> ExitCode {
     eprintln!(
         "usage: cargo run --release -p xtask -- sprt --candidate <id> --baseline <id> \\\n\
-         \x20   (--nodes N | --candidate-nodes N --baseline-nodes N) \\\n\
+         \x20   (--nodes N | --candidate-nodes N --baseline-nodes N \\\n\
+         \x20    | --time-ms N --byoyomi-ms N) \\\n\
          \x20   (--gain | --non-regression | --elo0 E --elo1 E) \\\n\
          \x20   [--config tools/opponents.toml] [--openings positions/openings-v2.sfen] \\\n\
          \x20   [--pairs N] [--max-pairs {DEFAULT_MAX_PAIRS}] [--alpha 0.05] [--beta 0.05] \\\n\
-         \x20   [--seed 1] [--concurrency 1] [--move-timeout-ms 30000]"
+         \x20   [--seed 1] [--concurrency 1] [--move-timeout-ms 30000]\n\
+         \n\
+         \x20 --move-timeout-ms is the fixed-node hang detector; under a clock the wait is\n\
+         \x20 the mover's own allowance and the flag is a normal loss. A clocked run wants\n\
+         \x20 --concurrency 1 and a quiet machine: there, elapsed time is the measurement."
     );
     ExitCode::FAILURE
 }
@@ -661,19 +807,123 @@ mod tests {
         assert!(with(&["--elo0", "0"]).is_err(), "half a pair");
     }
 
+    fn budget_with(extra: &[&str]) -> Result<Args, String> {
+        let mut v = strings(&["--candidate", "a", "--baseline", "b", "--gain"]);
+        v.extend(strings(extra));
+        parse_args(&v)
+    }
+
     #[test]
     fn node_budgets_are_one_flag_or_both_sides_never_a_mixture() {
-        let with = |extra: &[&str]| {
-            let mut v = strings(&["--candidate", "a", "--baseline", "b", "--gain"]);
-            v.extend(strings(extra));
-            parse_args(&v)
+        let nodes = |args: &Args| match args.control {
+            Control::Nodes {
+                candidate,
+                baseline,
+                ..
+            } => (candidate, baseline),
+            Control::Clock(_) => panic!("a node budget was asked for"),
         };
-        let both = with(&["--nodes", "500"]).expect("valid");
-        assert_eq!((both.candidate_nodes, both.baseline_nodes), (500, 500));
-        let split = with(&["--candidate-nodes", "100", "--baseline-nodes", "9"]).expect("valid");
-        assert_eq!((split.candidate_nodes, split.baseline_nodes), (100, 9));
-        assert!(with(&[]).is_err());
-        assert!(with(&["--nodes", "1", "--candidate-nodes", "2"]).is_err());
+        let both = budget_with(&["--nodes", "500"]).expect("valid");
+        assert_eq!(nodes(&both), (500, 500));
+        let split =
+            budget_with(&["--candidate-nodes", "100", "--baseline-nodes", "9"]).expect("valid");
+        assert_eq!(nodes(&split), (100, 9));
+        assert!(budget_with(&[]).is_err());
+        assert!(budget_with(&["--nodes", "1", "--candidate-nodes", "2"]).is_err());
+    }
+
+    /// A clock and a node budget answer different questions, and a run that
+    /// silently took one of them would produce a plausible number either way.
+    #[test]
+    fn a_clock_and_a_node_budget_are_mutually_exclusive() {
+        let clocked = budget_with(&["--time-ms", "60000", "--byoyomi-ms", "1000"]).expect("valid");
+        assert_eq!(
+            clocked.control,
+            Control::Clock(TimeControl {
+                main: Duration::from_millis(60_000),
+                byoyomi: Duration::from_millis(1_000),
+            })
+        );
+        // A byoyomi of zero is a time control without one, not a nonsense
+        // budget — and it is the only shape that makes rinsai spend a main
+        // time it otherwise ignores.
+        assert!(budget_with(&["--time-ms", "300", "--byoyomi-ms", "0"]).is_ok());
+        assert!(budget_with(&["--time-ms", "0", "--byoyomi-ms", "1000"]).is_ok());
+
+        assert!(budget_with(&["--time-ms", "0", "--byoyomi-ms", "0"]).is_err());
+        assert!(budget_with(&["--time-ms", "1000"]).is_err(), "half a clock");
+        assert!(budget_with(&["--byoyomi-ms", "1000"]).is_err(), "half");
+        for mixture in [
+            vec!["--nodes", "1", "--time-ms", "1000", "--byoyomi-ms", "1"],
+            vec![
+                "--candidate-nodes",
+                "1",
+                "--baseline-nodes",
+                "1",
+                "--byoyomi-ms",
+                "1",
+            ],
+        ] {
+            assert!(budget_with(&mixture).is_err(), "{mixture:?} accepted");
+        }
+    }
+
+    /// ⚠️ The hang detector is refused under a clock rather than ignored or
+    /// applied as an outer bound: a main time above it would otherwise end a
+    /// healthy long think as a wedged engine, which is the confusion the
+    /// flag-fall ending exists to remove.
+    #[test]
+    fn the_hang_detector_is_refused_under_a_clock() {
+        assert!(budget_with(&["--nodes", "1", "--move-timeout-ms", "5000"]).is_ok());
+        assert!(
+            budget_with(&[
+                "--time-ms",
+                "60000",
+                "--byoyomi-ms",
+                "1000",
+                "--move-timeout-ms",
+                "5000",
+            ])
+            .is_err()
+        );
+    }
+
+    /// `is_abnormal` has to answer for every ending, and the answer for a
+    /// flag fall is the point of this change: it is a result, so counting it
+    /// as a degraded run would misreport a legitimate loss.
+    ///
+    /// ⚠️ Written as an exhaustive `match` rather than a list, so a variant
+    /// added later fails to compile here instead of quietly being normal.
+    #[test]
+    fn every_ending_is_classified_normal_or_abnormal() {
+        for reason in [
+            EndReason::Checkmate,
+            EndReason::Resign,
+            EndReason::Declaration,
+            EndReason::IllegalMove,
+            EndReason::Timeout,
+            EndReason::Died,
+            EndReason::Protocol,
+            EndReason::FlagFall,
+            EndReason::Sennichite,
+            EndReason::PerpetualCheck,
+            EndReason::MaxMoves,
+        ] {
+            let expected = match reason {
+                EndReason::IllegalMove
+                | EndReason::Timeout
+                | EndReason::Died
+                | EndReason::Protocol => true,
+                EndReason::Checkmate
+                | EndReason::Resign
+                | EndReason::Declaration
+                | EndReason::FlagFall
+                | EndReason::Sennichite
+                | EndReason::PerpetualCheck
+                | EndReason::MaxMoves => false,
+            };
+            assert_eq!(is_abnormal(reason), expected, "{reason:?}");
+        }
     }
 
     /// Each rejected value below is one that `bounds` turns into an infinity
@@ -707,16 +957,49 @@ mod tests {
 
     #[test]
     fn the_candidates_points_read_off_the_seat_and_the_winner() {
-        let record = |winner| GameRecord {
+        assert_eq!(candidate_points(&record(Winner::Black), true), 2);
+        assert_eq!(candidate_points(&record(Winner::Black), false), 0);
+        assert_eq!(candidate_points(&record(Winner::White), false), 2);
+        assert_eq!(candidate_points(&record(Winner::Neither), true), 1);
+    }
+
+    fn record(winner: Winner) -> GameRecord {
+        GameRecord {
             winner,
             reason: EndReason::Resign,
             plies: 10,
             moves_usi: String::new(),
             detail: None,
-        };
-        assert_eq!(candidate_points(&record(Winner::Black), true), 2);
-        assert_eq!(candidate_points(&record(Winner::Black), false), 0);
-        assert_eq!(candidate_points(&record(Winner::White), false), 2);
-        assert_eq!(candidate_points(&record(Winner::Neither), true), 1);
+            spent: [Duration::ZERO; Color::NUM],
+            move_times: Vec::new(),
+        }
+    }
+
+    /// The log is the only durable record of a run, and a field that is
+    /// absent or misnamed is discovered when someone tries to read a run they
+    /// can no longer repeat.
+    #[test]
+    fn a_game_line_carries_the_times_beside_the_moves() {
+        let mut log = Vec::new();
+        let mut game = record(Winner::White);
+        game.reason = EndReason::FlagFall;
+        game.spent = [Duration::from_millis(1_500), Duration::from_millis(300)];
+        game.move_times = vec![Duration::from_millis(1_200), Duration::from_millis(300)];
+        log_game(
+            &mut log,
+            &GamePlan {
+                pair: 3,
+                opening: 7,
+                candidate_is_black: true,
+            },
+            1,
+            &game,
+            true,
+        );
+        let line = String::from_utf8(log).expect("utf-8");
+        assert!(line.contains(r#""reason":"FlagFall""#), "{line}");
+        assert!(line.contains(r#""black_ms":1500"#), "{line}");
+        assert!(line.contains(r#""white_ms":300"#), "{line}");
+        assert!(line.contains(r#""times_us":[1200000,300000]"#), "{line}");
     }
 }

@@ -76,6 +76,25 @@ impl JsonObject {
         self
     }
 
+    /// A numeric array. Its caller is the match log's per-move times, whose
+    /// distribution is what says the harness measured the interval it meant
+    /// to: the expected value is known in advance to a fraction of a
+    /// millisecond, so a mismeasured interval displaces it visibly where a
+    /// per-game total would absorb it.
+    #[must_use]
+    pub fn u64_array(mut self, key: &str, values: &[u64]) -> Self {
+        self.key(key);
+        self.buf.push('[');
+        for (i, v) in values.iter().enumerate() {
+            if i > 0 {
+                self.buf.push(',');
+            }
+            let _ = write!(self.buf, "{v}");
+        }
+        self.buf.push(']');
+        self
+    }
+
     /// The finished line, no trailing newline.
     #[must_use]
     pub fn finish(mut self) -> String {
@@ -120,11 +139,18 @@ mod tests {
             .f64("llr", 0.5)
             .bool("candidate_black", true)
             .str_array("tail", &["a".to_owned(), "b".to_owned()])
+            .u64_array("times_us", &[1000, 1001])
             .finish();
         assert_eq!(
             line,
-            r#"{"type":"game","pair":7,"llr":0.5,"candidate_black":true,"tail":["a","b"]}"#
+            r#"{"type":"game","pair":7,"llr":0.5,"candidate_black":true,"tail":["a","b"],"times_us":[1000,1001]}"#
         );
+    }
+
+    #[test]
+    fn an_empty_array_is_still_an_array() {
+        let line = JsonObject::new().u64_array("times_us", &[]).finish();
+        assert_eq!(line, r#"{"times_us":[]}"#);
     }
 
     #[test]
