@@ -100,6 +100,45 @@ impl Game {
         self.positions.last().expect("positions is never empty")
     }
 
+    /// The position the game began at.
+    ///
+    /// Named caller: `tuishogi`'s `app::root_of` (sugyan/rinsai#31).
+    ///
+    /// ⚠️ Not [`Self::position`], which answers the position *now*. A root
+    /// taken from that one names the position the game has **reached**, and the
+    /// `moves` list is then replayed onto a position it was not played from.
+    #[must_use]
+    pub fn initial_position(&self) -> &PartialPosition {
+        self.positions.first().expect("positions is never empty")
+    }
+
+    /// The argument of a USI `position` command for the game so far, and the
+    /// round-trip partner of [`Self::from_usi_position`]: `startpos [moves …]`
+    /// where the root equals `PartialPosition::startpos()`, move number
+    /// included, and `sfen <board> <side> <hands> <ply> [moves …]` otherwise.
+    ///
+    /// ⚠️ It answers with the game, not with the text the game was built from.
+    /// A root spelled `sfen` that meets that equality comes back as `startpos`,
+    /// and an omitted move number comes back as `1`.
+    #[must_use]
+    pub fn to_usi_position(&self) -> String {
+        let root = self.initial_position();
+        let mut args = if *root == PartialPosition::startpos() {
+            "startpos".to_owned()
+        } else {
+            // `to_sfen_owned` writes the fields and not the keyword.
+            format!("sfen {}", root.to_sfen_owned())
+        };
+        if !self.moves.is_empty() {
+            args.push_str(" moves");
+            for ply in &self.moves {
+                args.push(' ');
+                args.push_str(&shogi_core::ToUsi::to_usi_owned(&ply.mv));
+            }
+        }
+        args
+    }
+
     #[must_use]
     pub fn side_to_move(&self) -> Color {
         self.position().side_to_move()
@@ -679,6 +718,103 @@ mod tests {
         let game =
             Game::from_usi_position("  startpos   moves  7g7f ").expect("stray spaces are fine");
         assert_eq!(game.ply(), 1);
+    }
+
+    /// Sabotage: return `positions.last()` from `initial_position` and the
+    /// `the root moved` assertion fires.
+    #[test]
+    fn the_initial_position_stays_put_while_the_game_advances() {
+        let mut game = Game::startpos();
+        let root = game.initial_position().clone();
+        assert_eq!(game.position(), &root, "nothing has been played yet");
+
+        game.play(normal((7, 7), (7, 6))).expect("legal");
+        game.play(normal((3, 3), (3, 4))).expect("legal");
+        assert_eq!(game.initial_position(), &root, "the root moved");
+        assert_ne!(game.position(), &root);
+
+        game.undo();
+        assert_eq!(game.initial_position(), &root, "undo moved the root");
+    }
+
+    /// The root's own move number is written, not the game's ply count.
+    ///
+    /// Sabotage: take the root from `self.position()` in `to_usi_position` and
+    /// the `startpos moves 7g7f 3c3d` case reports the position after both
+    /// moves, with both replayed onto it.
+    #[test]
+    fn a_game_says_which_position_argument_would_rebuild_it() {
+        assert_eq!(Game::startpos().to_usi_position(), "startpos");
+
+        let game = Game::from_usi_position("startpos moves 7g7f 3c3d").expect("valid");
+        assert_eq!(game.to_usi_position(), "startpos moves 7g7f 3c3d");
+
+        let game = Game::from_usi_position("sfen 4k4/9/9/9/9/9/9/9/K7R b - 7 moves 1i1a")
+            .expect("the rook slides up a clear file");
+        assert_eq!(
+            game.to_usi_position(),
+            "sfen 4k4/9/9/9/9/9/9/9/K7R b - 7 moves 1i1a"
+        );
+
+        // The move number is optional on the way in; the `sfen` form always
+        // carries one on the way out.
+        let game = Game::from_usi_position("sfen 4k4/9/9/9/9/9/9/9/K7R b -").expect("valid");
+        assert_eq!(game.to_usi_position(), "sfen 4k4/9/9/9/9/9/9/9/K7R b - 1");
+    }
+
+    /// The spelling follows the position rather than the text the game was
+    /// built from.
+    ///
+    /// Sabotage: force the `sfen` arm in `to_usi_position` and the first case
+    /// comes back as the `sfen` form.
+    /// `the_position_argument_a_game_writes_rebuilds_that_game` stayed green
+    /// under that run — a round trip cannot see a respelling — which is why the
+    /// spelling needs a test that reads the text.
+    #[test]
+    fn a_root_that_is_the_initial_position_is_written_as_startpos() {
+        const BOARD: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b -";
+
+        let game = Game::from_usi_position(&format!("sfen {BOARD} 1 moves 7g7f")).expect("valid");
+        assert_eq!(game.to_usi_position(), "startpos moves 7g7f");
+
+        // The same board at another move number is a different root, and keeps
+        // the spelling that can carry one.
+        let game = Game::from_usi_position(&format!("sfen {BOARD} 5")).expect("valid");
+        assert_eq!(game.to_usi_position(), format!("sfen {BOARD} 5"));
+    }
+
+    /// The writer and the parser are held to agree: what `to_usi_position`
+    /// writes, `from_usi_position` reads back as the same game.
+    ///
+    /// It compares games rather than text, so a respelt root passes here and is
+    /// pinned literally by the two tests above instead.
+    ///
+    /// Sabotage: drop the `sfen ` prefix in `to_usi_position` and the loop's
+    /// first `sfen`-rooted case does not parse back at all —
+    /// ``invalid token: `sfen` was expected``.
+    #[test]
+    fn the_position_argument_a_game_writes_rebuilds_that_game() {
+        for args in [
+            "startpos",
+            "startpos moves 7g7f 3c3d 8h2b+ 3a2b",
+            "sfen 4k4/9/9/9/9/9/9/9/K7R b - 7 moves 1i1a",
+            "sfen 4k4/9/9/9/4P4/9/9/9/4K4 b P 1",
+            // Drops, whose USI token carries no colour: the writer's only move
+            // shape no other case here covers.
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b Pp 1 moves P*5e P*5d",
+        ] {
+            let game = Game::from_usi_position(args).expect("valid");
+            let rebuilt =
+                Game::from_usi_position(&game.to_usi_position()).expect("what it wrote, it reads");
+            assert_eq!(
+                rebuilt.initial_position(),
+                game.initial_position(),
+                "{args}"
+            );
+            assert_eq!(rebuilt.position(), game.position(), "{args}");
+            assert_eq!(rebuilt.ply(), game.ply(), "{args}");
+            assert_eq!(rebuilt.outcome(), game.outcome(), "{args}");
+        }
     }
 
     #[test]
