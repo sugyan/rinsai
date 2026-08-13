@@ -5,7 +5,7 @@
 //! The full-scale form of the same claim — regenerating
 //! `positions/openings-v2.sfen` from the local cache at the frozen rev and
 //! seed leaves `git diff` empty — needs that cache and is run by hand;
-//! PROGRESS.md records each run. This test is the half CI can hold.
+//! each run is recorded in its pull request. This test is the half CI holds.
 
 use xtask::openings::{DayInput, PipelineConfig, generate};
 

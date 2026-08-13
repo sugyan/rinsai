@@ -29,7 +29,7 @@ repository = "https://github.com/sugyan/rinsai"
 #   the deviation footnote in DESIGN.md §2, and append the switch to
 #   DECISIONS.md. Those four are what change; `git grep
 #   'TODO(shunsai-0.1-release)'` also finds the prose that refers to them. It is
-#   an E0 exit criterion in PROGRESS.md.
+#   the E0 exit criterion tracked as a GitHub issue.
 #
 # `version` alongside `git` states the semver expectation the rev stands in for,
 # and turns the eventual switch into deleting two fields. It does not affect

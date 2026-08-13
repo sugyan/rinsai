@@ -12,7 +12,7 @@
 #
 # ⚠️ Paths must be ABSOLUTE. A git worktree under .claude/worktrees/ is two
 # levels deeper than the main checkout, so `../benchmarks` resolves
-# differently per checkout — the same trap PROGRESS.md records for the
+# differently per checkout — the same trap that bites the
 # shunsai path override.
 
 [engines.rinsai-dev]

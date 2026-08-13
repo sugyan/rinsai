@@ -45,7 +45,7 @@ jobs:
       # or a dependency with no wasm build. It does **not** catch the std APIs
       # that compile for this target and panic when reached, which is most of
       # the ones that matter — `thread`, `Instant`, `Condvar`, `fs` and `net`
-      # all pass here today. PROGRESS.md's table measures a release binary,
+      # all pass here today. The measurement behind this is a release binary,
       # built separately, whose search has been eliminated behind the first of
       # them; nothing in CI builds that. A green check is not a supported
       # target and must not be reported as one.

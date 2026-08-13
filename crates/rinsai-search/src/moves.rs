@@ -61,7 +61,7 @@ impl MoveBuf {
     /// Quiescence's generator. shunsai has no captures-only generation
     /// (DESIGN.md §6 assigns it to E1), so the full legal walk still runs; what
     /// does **not** run is materialisation, since a [`MoveSet`] hands over its
-    /// destinations as [`Bitboard`](shunsai::Bitboard)s. PROGRESS.md measures
+    /// destinations as [`Bitboard`](shunsai::Bitboard)s. step 3a measured
     /// what the walk costs.
     ///
     /// The result is a subset of [`Self::generate`]'s, so one ply still cannot

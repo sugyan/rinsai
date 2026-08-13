@@ -6,17 +6,31 @@ What the code already assumes. **Changing any of these needs a
 Organised by subject rather than by the step that froze it: the step is an
 accident of history, and three lists ordered by it were three lists nobody could
 search. Where a convention has an argument behind it, the argument is in
-DECISIONS.md and the measurement is in [PROGRESS.md](./PROGRESS.md); this file
-carries the rule.
+DECISIONS.md; this file carries the rule, and a measurement is written once
+beside whichever of the two it justifies.
+
+A rule here is what the code assumes, stated in a few lines. If it takes a
+paragraph, what is being written is the argument — and the moment the rule
+lands here, **the DECISIONS.md entry behind it retires to a line**, in the same
+pull request. One file carries the rule, the other the shortest record of why
+the alternatives lost; neither carries both.
+
+## Source layout
+
+- **A module with children is `foo.rs` beside `foo/`, never `foo/mod.rs`.** It
+  is shunsai's layout too (`src/sliders.rs` beside `src/sliders/`), so it is the
+  family convention rather than a preference.
 
 ## Vocabulary and scores
 
 - **A bare `Position` means `shunsai::Position`** — the board a search walks,
   and the only one of the two with unmake and an incremental Zobrist key.
   `shogi_core::Position` is a *record* (root, current position, moves played) and
-  `Game` delegates that half to it under the alias `Record`; it is never
+  `Game` delegates that half to it under the alias `Record` — `shogi_core::Game`
+  was weighed for the same job and is `Position` plus a `GameResolution`, which
+  becomes interesting at E2's declaration handling and not before; it is never
   imported unqualified. Its `from_usi` is not used at all, for the reason under
-  "Traps" in PROGRESS.md — **do not confuse "we cannot parse with it" with "we
+  `Game::from_usi_position`'s doc — **do not confuse "we cannot parse with it" with "we
   cannot store in it"**, which is the mistake the first draft of `Game` made.
 - **Evaluation is negamax from the side to move.** Positive is good for whoever
   is to move; a parent takes `-child`. At the root the side to move is the
@@ -233,9 +247,8 @@ carries the rule.
 - **Everything that could move a count is fixed inside it**: the position set
   (compiled in), the depth, the table size, and a `new_game` between positions
   so that position *n* is not searched against what 1..n−1 left behind.
-- **The frozen counts live beside the code, not in PROGRESS.md.** The single
-  deliberate exception to the "a number has one home and it is a PROGRESS.md
-  table" rule, because a baseline has to be executable — see DECISIONS.md.
+- **The frozen counts live beside the code**, because a baseline has to be
+  executable to be a regression test.
 - Its position set is one of the frozen sets below and follows their rules.
 
 ## Frozen position sets
@@ -294,7 +307,7 @@ rules hold of both.
 
   ⚠️ **This is a constraint on what may become load-bearing, not a claim that
   the engine runs on `wasm32-unknown-unknown`. It does not** — it compiles and
-  traps, and PROGRESS.md's table says where. In particular rule 2 holds of the
+  traps; DECISIONS.md says where. In particular rule 2 holds of the
   *budget vocabulary* and not yet of the call path: `NegamaxSearcher::search`
   reads `Instant::now()` unconditionally for the `info` line's `time` and `nps`,
   so a clock-free caller still needs the injectable clock step 5 owns. The
