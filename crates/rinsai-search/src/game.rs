@@ -219,8 +219,8 @@ impl Game {
 
     /// Plays `mv`, or reports that it is not legal here.
     ///
-    /// This check is what keeps [`Position::do_move`]'s documented `expect`s
-    /// unreachable from anything a GUI or a server can send.
+    /// This check is what keeps [`Position::do_move`]'s "`mv` must be legal in
+    /// this position" satisfied against anything a GUI or a server can send.
     pub fn push_move(&mut self, mv: Move) -> Result<(), IllegalMove> {
         if !is_legal(&self.board, mv) {
             return Err(IllegalMove(mv));
@@ -245,29 +245,34 @@ impl Game {
         &self.board
     }
 
-    /// A board of the search's own, **rebuilt from the record** rather than
-    /// copied — the board a searcher does its do/undo on.
+    /// A copy of [`Self::position`] — the board a searcher does its do/undo on.
     ///
-    /// ⚠️ [`Position::clone`] would deep-copy shunsai's undo stack. Rebuilding
-    /// hands the search an *empty* one, so a search that unwinds past its own
-    /// root trips `undo_move`'s `expect` loudly instead of quietly walking into
-    /// a position nobody described.
+    /// A copy rather than a second board built from the record, so that the
+    /// search compares one lineage against itself: it seeds its repetition path
+    /// from [`Self::history`], whose entries were taken from this same board.
     ///
     /// A method rather than a `position().clone()` at the call site, because
-    /// today's caller only *happens* to hold an already-cloned game with an
-    /// empty stack. `SearchJob` is public and E3's self-play driver is its
-    /// second caller; a job built straight from a game fifty moves in would
-    /// both copy fifty undo entries and lose the unwind guarantee.
+    /// `SearchJob` is public and nothing constrains how a caller assembles one
+    /// — the cross-check below has to run however the job was built.
+    ///
+    /// ⚠️ **That cross-check is a `debug_assert`, compiled out of the release
+    /// binary that actually plays**, so the guarantee is "the test suite would
+    /// have caught a drift", not "a live game will". Promoting it would put a
+    /// panic on the protocol thread once per `go`. DECISIONS.md carries the
+    /// trade and what would reopen it.
     #[must_use]
     pub fn search_board(&self) -> Position {
-        let board = Position::new(self.record.inner().clone());
-        debug_assert_eq!(
-            board.key(),
-            self.board.key(),
-            "the lockstep record and the incremental Zobrist key disagree"
-        );
-        debug_assert_eq!(board.ply(), self.board.ply());
-        board
+        #[cfg(debug_assertions)]
+        {
+            let rebuilt = Position::new(self.record.inner().clone());
+            debug_assert_eq!(
+                rebuilt.key(),
+                self.board.key(),
+                "the lockstep record and the incremental Zobrist key disagree"
+            );
+            debug_assert_eq!(rebuilt.ply(), self.board.ply());
+        }
+        self.board.clone()
     }
 
     /// The current position in SFEN, without the `sfen` keyword.
@@ -325,19 +330,9 @@ impl HistoryEntry {
     }
 }
 
-/// Rebuilds the board from the record rather than copying it — see
-/// [`Game::search_board`], which this delegates to and which carries the
-/// argument.
-///
-/// The rebuild also cross-checks the from-scratch key against the
-/// incrementally maintained one, which makes the lockstep record a checked
-/// property rather than a hope.
-///
-/// ⚠️ **It is a `debug_assert`, compiled out of the release binary that
-/// actually plays**, so the guarantee is "the test suite would have caught a
-/// drift", not "a live game will". Kept that way deliberately: promoting it
-/// would put a panic on the protocol thread once per `go`. DECISIONS.md
-/// carries the trade and what would reopen it.
+/// Manual so that every clone runs [`Game::search_board`]'s cross-check, which
+/// is what makes the lockstep record a checked property rather than a hope. The
+/// fields are otherwise copied as a derive would copy them.
 impl Clone for Game {
     fn clone(&self) -> Self {
         Self {
