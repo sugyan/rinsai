@@ -8,10 +8,7 @@ members = ["crates/rinsai-game", "crates/rinsai-search", "crates/rinsai", "crate
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# Let-chains set this floor rather than the edition — rinsai's own code uses
-# them and so does shunsai, while edition 2024 alone would build on 1.85.
-# Raising it is a DECISIONS.md event: floodgate and WCSC hosts may lag, and an
-# engine has no reason to chase the toolchain.
+# Let-chains, not the edition: 2024 alone would build on 1.85.
 rust-version = "1.88"
 authors = ["sugyan"]
 license = "MIT OR Apache-2.0"
@@ -34,14 +31,10 @@ shogi_official_kifu = "0.1.2"
 rinsai-game = { path = "crates/rinsai-game" }
 rinsai-search = { path = "crates/rinsai-search" }
 
-# WARNING: no shunsai feature may ever be enabled from here — not by a
-# `[features]` forward, and not by a `features = [...]` list above. Either
-# slider flag replaces the backend shunsai's bake-off adopted, and shunsai
-# documents both as being "for A/B measurement and debugging, not for real
-# use" — every SPRT number afterwards would be noise. `bench-internals` is
-# documented "never enable as a dependency". CI checks the *resolved graph*
-# (`cargo tree -e features -i shunsai`) rather than manifest text, because a
-# grep catches only the first of those two forms.
+# WARNING: never enable a shunsai feature from here — not by a `[features]`
+# forward, and not by a `features = [...]` list above. Both slider flags are
+# A/B-and-debugging backends and `bench-internals` is not public API; either
+# would make every SPRT number afterwards noise. CI enforces it.
 
 [workspace.lints.rust]
 # `deny`, not `forbid`: E2 and E3 will need annotated exceptions, and `forbid`
