@@ -8,33 +8,14 @@ members = ["crates/rinsai-game", "crates/rinsai-search", "crates/rinsai", "crate
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# shunsai declares no `rust-version`, but its movegen uses a let-chain
-# (src/movegen.rs:589) stabilised in 1.88, so 1.88 is the real floor — edition
-# 2024 only needs 1.85. Raising this is a DECISIONS.md event: floodgate and WCSC
-# hosts may lag, and an engine has no reason to chase the toolchain.
+# Let-chains, not the edition: 2024 alone would build on 1.85.
 rust-version = "1.88"
 authors = ["sugyan"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sugyan/rinsai"
 
 [workspace.dependencies]
-# TEMPORARY DEVIATION from DESIGN.md §2 ("a released version, not a git pin").
-# shunsai is not on crates.io yet and has no remote tags, so the pin is a full
-# 40-hex commit — never a branch, which would be the silent drift that
-# ../benchmarks' pin policy exists to forbid. https rather than the local
-# clone's ssh remote, so CI fetches anonymously.
-#
-#   TODO(shunsai-0.1-release): when shunsai v0.1.0 is on crates.io, replace this
-#   line with `shunsai = "0.1"`, drop the allow-git entry in deny.toml, remove
-#   the deviation footnote in DESIGN.md §2, and append the switch to
-#   DECISIONS.md. Those four are what change; `git grep
-#   'TODO(shunsai-0.1-release)'` also finds the prose that refers to them. It is
-#   the E0 exit criterion tracked as a GitHub issue.
-#
-# `version` alongside `git` states the semver expectation the rev stands in for,
-# and turns the eventual switch into deleting two fields. It does not affect
-# `cargo deny`, which reports `bans ok` either way.
-shunsai = { git = "https://github.com/sugyan/shunsai", rev = "e58c16fc073f07ae79f6a94b3bcd69f7e7937bb2", version = "0.1" }
+shunsai = "0.1"
 
 # Must stay compatible with shunsai's own requirement so the types unify into a
 # single copy — otherwise `Move` and `Square` silently become two types. CI
@@ -50,13 +31,10 @@ shogi_official_kifu = "0.1.2"
 rinsai-game = { path = "crates/rinsai-game" }
 rinsai-search = { path = "crates/rinsai-search" }
 
-# WARNING: no shunsai feature may ever be enabled from here — not by a
-# `[features]` forward, and not by a `features = [...]` list above.
-# `slider-naive` wins shunsai's backend priority order and would silently select
-# a 5-8x slower generator, making every SPRT number afterwards noise;
-# `bench-internals` is documented "never enable as a dependency". CI checks the
-# *resolved graph* (`cargo tree -e features -i shunsai`) rather than manifest
-# text, because a grep catches only the first of those two forms.
+# WARNING: never enable a shunsai feature from here — not by a `[features]`
+# forward, and not by a `features = [...]` list above. Both slider flags are
+# A/B-and-debugging backends and `bench-internals` is not public API; either
+# would make every SPRT number afterwards noise. CI enforces it.
 
 [workspace.lints.rust]
 # `deny`, not `forbid`: E2 and E3 will need annotated exceptions, and `forbid`

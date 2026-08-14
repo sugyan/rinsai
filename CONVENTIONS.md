@@ -350,7 +350,9 @@ rules hold of both.
 
 The shared fixtures come from shunsai (MIT, same author),
 `benches/suite/common.rs`, where their perft values are cross-checked against
-nine independent implementations. Written down because step 3b builds a
+nine independent implementations. ⚠️ That path is in shunsai's **repository**:
+the published crate ships `src/` only, so a provenance scan run against the
+vendored dependency will not find it. Written down because step 3b builds a
 committed bench position set, which is where the licensing rule bites hardest.
 
 - **The drop-heavy middlegame ("matsuri")**

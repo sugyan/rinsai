@@ -348,11 +348,11 @@ impl NegamaxSearcher {
         let mut improved = false;
         for i in 0..self.root_moves.len() {
             let mv = self.root_moves[i];
-            board.do_move(mv);
+            let undo = board.do_move(mv);
             self.path.push(HistoryEntry::of(board));
             let score = self.child(board, window, depth - 1, 1, budget);
             self.path.pop();
-            board.undo_move(mv);
+            board.undo_move(mv, undo);
 
             // An abandoned subtree returns a placeholder, not a score.
             // Discard it before it can beat anything.
@@ -509,12 +509,12 @@ impl NegamaxSearcher {
         let mut best_move = None;
         for i in base..self.buf.len() {
             let mv = self.buf.get(i);
-            board.do_move(mv);
+            let undo = board.do_move(mv);
             self.path.push(HistoryEntry::of(board));
             let score = self.child(board, window, depth - 1, ply + 1, budget);
             // Both of these come before every `break` below, without exception.
             self.path.pop();
-            board.undo_move(mv);
+            board.undo_move(mv, undo);
 
             if self.stopped {
                 break;
@@ -532,6 +532,12 @@ impl NegamaxSearcher {
             }
         }
         self.buf.truncate(base);
+        // The board half of the same balance the `truncate` above enforces for
+        // the move buffer. ⚠️ Only `key` — an `Undo` replayed against the wrong
+        // move restores `undo.key` verbatim, so a corrupt board can still carry
+        // a right-looking key; this catches a *missing* or *extra* unmake, which
+        // is what an early return added below the `do_move` would produce.
+        debug_assert_eq!(board.key(), key, "the node loop left the board unbalanced");
 
         // ⚠️ **Nothing is stored from an abandoned search**, and not because
         // `best` is a placeholder — the `break` above discards those. It is that
@@ -641,9 +647,11 @@ impl NegamaxSearcher {
             base = self.buf.generate_captures(board);
         }
 
+        // The board this node must be handed back in; see the twin in `negamax`.
+        let key = board.key();
         for i in base..self.buf.len() {
             let mv = self.buf.get(i);
-            board.do_move(mv);
+            let undo = board.do_move(mv);
             // `depth` counts checked plies only, so a capture chain never runs
             // the counter down and terminates on material instead.
             let given = self.buf.len();
@@ -657,7 +665,7 @@ impl NegamaxSearcher {
             // The `child`-side twin of this assertion cannot see the
             // qsearch->qsearch recursion, so it needs its own.
             debug_assert_eq!(self.buf.len(), given, "a quiescence child leaked moves");
-            board.undo_move(mv);
+            board.undo_move(mv, undo);
 
             if self.stopped {
                 break;
@@ -674,6 +682,11 @@ impl NegamaxSearcher {
             }
         }
         self.buf.truncate(base);
+        debug_assert_eq!(
+            board.key(),
+            key,
+            "a quiescence node left the board unbalanced"
+        );
         best
     }
 
@@ -1358,12 +1371,12 @@ mod tests {
     fn a_capture_is_reachable_in_one_ply(args: &str) -> bool {
         let mut board = game(args).search_board();
         board.legal_moves().into_iter().any(|mv| {
-            board.do_move(mv);
+            let undo = board.do_move(mv);
             let reachable = board
                 .legal_moves()
                 .into_iter()
                 .any(|reply| board.piece_at(reply.to()).is_some());
-            board.undo_move(mv);
+            board.undo_move(mv, undo);
             reachable
         })
     }

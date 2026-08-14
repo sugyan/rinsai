@@ -219,8 +219,8 @@ impl Game {
 
     /// Plays `mv`, or reports that it is not legal here.
     ///
-    /// This check is what keeps [`Position::do_move`]'s documented `expect`s
-    /// unreachable from anything a GUI or a server can send.
+    /// This check is what keeps [`Position::do_move`]'s "`mv` must be legal in
+    /// this position" satisfied against anything a GUI or a server can send.
     pub fn push_move(&mut self, mv: Move) -> Result<(), IllegalMove> {
         if !is_legal(&self.board, mv) {
             return Err(IllegalMove(mv));
@@ -245,29 +245,25 @@ impl Game {
         &self.board
     }
 
-    /// A board of the search's own, **rebuilt from the record** rather than
-    /// copied — the board a searcher does its do/undo on.
+    /// A copy of [`Self::position`] — the board a searcher does its do/undo on.
     ///
-    /// ⚠️ [`Position::clone`] would deep-copy shunsai's undo stack. Rebuilding
-    /// hands the search an *empty* one, so a search that unwinds past its own
-    /// root trips `undo_move`'s `expect` loudly instead of quietly walking into
-    /// a position nobody described.
+    /// A method rather than a `position().clone()` at the call site, so that the
+    /// cross-check below runs on the path every search takes. DECISIONS.md
+    /// carries why the search wants this board rather than one rebuilt from the
+    /// record.
     ///
-    /// A method rather than a `position().clone()` at the call site, because
-    /// today's caller only *happens* to hold an already-cloned game with an
-    /// empty stack. `SearchJob` is public and E3's self-play driver is its
-    /// second caller; a job built straight from a game fifty moves in would
-    /// both copy fifty undo entries and lose the unwind guarantee.
+    /// ⚠️ **The cross-check is a `debug_assert`, compiled out of the release
+    /// binary that actually plays**, so the guarantee is "the test suite would
+    /// have caught a drift", not "a live game will". DECISIONS.md carries that
+    /// trade and what would reopen it.
     #[must_use]
     pub fn search_board(&self) -> Position {
-        let board = Position::new(self.record.inner().clone());
         debug_assert_eq!(
-            board.key(),
-            self.board.key(),
-            "the lockstep record and the incremental Zobrist key disagree"
+            Position::new(self.record.inner().clone()),
+            self.board,
+            "the lockstep record and the incrementally maintained board disagree"
         );
-        debug_assert_eq!(board.ply(), self.board.ply());
-        board
+        self.board.clone()
     }
 
     /// The current position in SFEN, without the `sfen` keyword.
@@ -325,19 +321,10 @@ impl HistoryEntry {
     }
 }
 
-/// Rebuilds the board from the record rather than copying it — see
-/// [`Game::search_board`], which this delegates to and which carries the
-/// argument.
-///
-/// The rebuild also cross-checks the from-scratch key against the
-/// incrementally maintained one, which makes the lockstep record a checked
-/// property rather than a hope.
-///
-/// ⚠️ **It is a `debug_assert`, compiled out of the release binary that
-/// actually plays**, so the guarantee is "the test suite would have caught a
-/// drift", not "a live game will". Kept that way deliberately: promoting it
-/// would put a panic on the protocol thread once per `go`. DECISIONS.md
-/// carries the trade and what would reopen it.
+/// Manual only so that a clone runs [`Game::search_board`]'s cross-check, which
+/// is `debug_assert`-only — in release this is what a derive would produce. The
+/// caller is `usi.rs`, on the protocol thread, once per `go`: promoting that
+/// assertion would put a panic there.
 impl Clone for Game {
     fn clone(&self) -> Self {
         Self {
@@ -782,18 +769,31 @@ mod tests {
     }
 
     /// Sabotage: delete the `record.make_move` call in `push_move` and this
-    /// fires — the clone rebuilds the board from the record and compares its
-    /// from-scratch key against the incrementally maintained one.
+    /// fires — the record stops advancing, so a board rebuilt from it is no
+    /// longer the board `push_move` maintained.
+    ///
+    /// ⚠️ A plain `assert_eq!` on purpose. `search_board` makes the same
+    /// comparison, but as a `debug_assert`, so it is this test and not that one
+    /// that holds the lockstep under `cargo test --release`.
     #[test]
-    fn cloning_cross_checks_the_lockstep_board() {
+    fn the_record_and_the_board_stay_in_lockstep() {
         // The bishop trade leaves one in each hand, so the drop exercises the
         // hand half of the Zobrist key as well as the board half.
         let game = Game::from_usi_position("startpos moves 7g7f 3c3d 8h2b+ 3a2b B*5e")
             .expect("a legal sequence");
+        assert_eq!(Position::new(game.record.inner().clone()), game.board);
+    }
+
+    /// ⚠️ Every assertion here holds by construction — `Game` is three fields
+    /// and `Clone` copies all three. It is a guard on `Clone` staying total, not
+    /// a check of the lockstep: the test above is that.
+    #[test]
+    fn cloning_carries_every_field() {
+        let game = Game::from_usi_position("startpos moves 7g7f 3c3d 8h2b+ 3a2b B*5e")
+            .expect("a legal sequence");
         let copy = game.clone();
         assert_eq!(copy.sfen(), game.sfen());
-        assert_eq!(copy.position().key(), game.position().key());
-        assert_eq!(copy.position().ply(), game.position().ply());
+        assert_eq!(copy.position(), game.position());
         assert_eq!(copy.moves(), game.moves());
         assert_eq!(copy.history(), game.history());
     }

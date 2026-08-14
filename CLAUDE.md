@@ -102,7 +102,7 @@ Consequences worth stating outright:
 
 ## 6. Depending on shunsai
 
-- rinsai depends on a **released version** (`shunsai = "0.1"`), not a git pin. ⚠️ **Not true during E0**: shunsai v0.1.0 is not on crates.io yet, so the workspace pins a commit. Knowing, temporary, and tracked — `git grep 'TODO(shunsai-0.1-release)'`, the E0 exit-criterion issue's the E0 exit-criterion issue, DESIGN.md §2. **No SPRT number may be attributed to a git rev that is not a release.**
+- rinsai depends on a **released version** (`shunsai = "0.1"`), not a git pin — DESIGN.md §2. **No SPRT number may be attributed to a git rev that is not a release.**
 - To add an API: prototype on a shunsai branch → **measure it on shunsai's own bench** → adopt → **release shunsai** → raise the requirement here. Never work around a missing API with a slow local reimplementation without saying so.
 - Several planned additions unlock a re-measurement that shunsai's decision log deliberately parked for this consumer — see DESIGN.md §6. When adding one, say which re-measurement it unlocks.
-- **E0 requires no shunsai change at all**, deliberately: it is the layering's field test.
+- **E0 asks shunsai for no API addition**, deliberately: it is the layering's field test. It did absorb one break — `do_move` returning an `Undo` — which was shunsai's own pre-1.0 cleanup, not something E0 requested.

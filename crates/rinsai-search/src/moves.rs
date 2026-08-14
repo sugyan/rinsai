@@ -10,7 +10,8 @@ use crate::score::MAX_PLY;
 /// The most legal moves any shogi position has.
 ///
 /// It is the size a move buffer has to be, and shunsai's own benches use the
-/// same number (`benches/suite/common.rs`).
+/// same number (`benches/suite/common.rs` in its repository — the published
+/// crate ships `src/` only).
 pub const MAX_LEGAL_MOVES: usize = 593;
 
 /// One move list, shared by every ply of one search.
@@ -20,8 +21,9 @@ pub const MAX_LEGAL_MOVES: usize = 593;
 /// where the collection goes. The shape — one allocation of
 /// `MAX_LEGAL_MOVES * MAX_PLY`, sliced per ply, generation appending and the
 /// caller truncating back on the way out — is shunsai's own
-/// `perft_materialize` (`examples/perft.rs`), and the alternatives it was
-/// chosen over are argued in DECISIONS.md.
+/// `perft_materialize` (`examples/perft.rs` in its repository, not the
+/// published crate), and the alternatives it was chosen over are argued in
+/// DECISIONS.md.
 ///
 /// **The moves come out by value, one at a time, and that is load-bearing.**
 /// A `&[Move]` handed back here would borrow the buffer for as long as the
@@ -222,9 +224,15 @@ pub fn is_legal(position: &Position, mv: Move) -> bool {
                     ControlFlow::Continue(())
                 }
             }
-            // ⚠️ Continue rather than fail: nothing in shunsai's public
-            // documentation says how moves are grouped into sets. One per
-            // origin is what it does today and it does not promise that.
+            // Continue rather than fail: every set that is not the one holding
+            // `mv` lands here, which on a full walk is nearly all of them —
+            // usually with the variants matching and the origin guard failing.
+            //
+            // ⚠️ **A `MoveSet` variant added upstream also lands here, and
+            // silently**, unlike `generate_captures`'s exhaustive `match` next
+            // door. Legal moves of that variant would be reported illegal, and
+            // `Game::push_move` is the only caller — the engine would refuse a
+            // GUI's `position` line with nothing failing to compile.
             _ => ControlFlow::Continue(()),
         })
         .is_break()

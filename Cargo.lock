@@ -67,7 +67,8 @@ dependencies = [
 [[package]]
 name = "shunsai"
 version = "0.1.0"
-source = "git+https://github.com/sugyan/shunsai?rev=e58c16fc073f07ae79f6a94b3bcd69f7e7937bb2#e58c16fc073f07ae79f6a94b3bcd69f7e7937bb2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8dec7e8e961a7ea40e17795ffeb797d94a1de8ada69ec245a6c989c47d9bb829"
 dependencies = [
  "shogi_core",
 ]
