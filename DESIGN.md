@@ -26,8 +26,6 @@ A shogi engine that places well on **floodgate** and in the **世界コンピュ
 
 **The dependency is a released version, not a git pin.** rinsai depends on `shunsai = "0.1"` from crates.io. Prototyping an API addition uses `[patch.crates-io]` with a path override; adopting it means **releasing shunsai** and raising rinsai's requirement. The loop is: try it on a shunsai branch → measure it on shunsai's own bench → adopt → release → bump. rinsai's **engine** crates are `publish = false` — nothing depends on a search engine as a library, and its artifact is a binary. The one publication-intended exception is `rinsai-game`, the rules library the match referee and [tuishogi](https://github.com/sugyan/tuishogi) share ([DECISIONS.md](./DECISIONS.md), 2026-08-12).
 
-> ⚠️ **Not true yet.** shunsai v0.1.0 is not on crates.io, so E0 builds against a git rev — a knowing, temporary deviation from the paragraph above, recorded in [DECISIONS.md](./DECISIONS.md) (2026-08-05) and tracked as an E0 exit criterion in the E0 issues. `git grep 'TODO(shunsai-0.1-release)'`.
-
 ## 3. Route: NNUE + αβ first, DL/MCTS conditional
 
 **Decision: NNUE + αβ search is the main line. DL/MCTS and consultation hybrids are a conditional later option, deferred rather than rejected.**
@@ -115,7 +113,7 @@ Numbered **E0–E6** so as not to collide with shunsai's M0–M7. Rating targets
   - ⚠️ Likewise "simple time management": step 2 honours only the budgets it is *told* (`movetime`, `byoyomi`), and deciding a per-move allowance from `btime` is step 5.
 - **Repetition (千日手) is mandatory at E0 and lives here, not in shunsai.** Stack `(key(), Hand, in_check())` per ply; use `key()` as the first filter and hand equality to confirm. Perpetual check — where the checking side loses — is decided from the `in_check()` history. shunsai holds no game history by design, so this is the engine's responsibility.
 - Harness: **an own Rust USI match harness and SPRT driver in `crates/xtask`**, refereeing on `crates/rinsai-game` — decided when step 7 arrived and Ayane turned out to lack fixed-node play, repetition adjudication and legality checking ([DECISIONS.md](./DECISIONS.md), 2026-08-12). Sparring by running GPL binaries: node-limited YaneuraOu → 技巧2.
-- **shunsai API additions: none, deliberately.** E0 building against a frozen shunsai is the layering's first contact with a real consumer.
+- **shunsai API additions: none, deliberately.** E0 asks shunsai for nothing new — the layering's first contact with a real consumer.
 - ⚠️ **The remaining sub-steps land as two pull requests, harness first**: steps 6+7 (openings, match harness, SPRT), then step 5 (time management) — so the new instrument gates step 5's real-time behaviour, and its first run is a non-regression SPRT of the finished E0 against the step-3b engine. [DECISIONS.md](./DECISIONS.md), 2026-08-12; the gates are in the step-5 issues.
 - Infrastructure: repository skeleton, CLAUDE.md, USI conformance dialogue tests, a `bench` command (fixed positions × fixed depth, following the Stockfish convention), CI, and `openings-v1` — balanced positions extracted in-house from high-rated floodgate games, reusing the method of shunsai's `examples/gen_bench_positions.rs`.
 - Verification: fixed-depth node counts as a regression test (the search analogue of perft), a mate-in-1..5 suite, repetition and perpetual-check scenario tests.
