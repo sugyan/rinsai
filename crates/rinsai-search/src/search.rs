@@ -19,8 +19,7 @@ use crate::score::Depth;
 
 /// What a `go` command asked for.
 ///
-/// Every field is parsed, and most are ignored until later steps, so the
-/// grammar and its conformance tests are written once.
+/// Every field is acted on.
 ///
 /// ⚠️ The deadline is deliberately *not* part of this: time management extends
 /// on a fail-low and cuts short on an obvious move, so the search has to own
@@ -187,12 +186,20 @@ pub trait Searcher: Send {
     /// ⚠️ **The no-op default is only defensible for a searcher that caches
     /// nothing** — it exists for the test searchers with no table at all.
     fn set_hash_mb(&mut self, _mb: usize) {}
+
+    /// Sets what the searcher keeps back from a clock it is charged against, to
+    /// cover delivering the move. Called on `setoption name DeliveryMargin`.
+    ///
+    /// ⚠️ **The no-op default is only defensible for a searcher that reads no
+    /// clock.**
+    fn set_delivery_margin(&mut self, _margin: Duration) {}
 }
 
 enum Command {
     Go(Box<SearchJob>),
     NewGame,
     SetHash(usize),
+    SetMargin(Duration),
 }
 
 /// Owns the search thread.
@@ -282,6 +289,18 @@ impl SearchDriver {
         }
     }
 
+    /// Queues a delivery-margin change, in order with the searches around it.
+    /// `false` if the worker is gone.
+    ///
+    /// ⚠️ Queued and never acknowledged, for the reason [`Self::set_hash`]
+    /// carries.
+    pub fn set_margin(&self, margin: Duration) -> bool {
+        match &self.tx {
+            Some(tx) => tx.send(Command::SetMargin(margin)).is_ok(),
+            None => false,
+        }
+    }
+
     /// Stops every search that has not yet answered, then waits for the worker
     /// to drain the queue and exit.
     ///
@@ -344,6 +363,7 @@ fn worker<S: Searcher>(
             match command {
                 Command::NewGame => searcher.new_game(),
                 Command::SetHash(mb) => searcher.set_hash_mb(mb),
+                Command::SetMargin(margin) => searcher.set_delivery_margin(margin),
                 Command::Go(job) => {
                     // The inner catch: "one answer per job" when a search goes
                     // wrong. Resigning beats hanging, and the panic message is

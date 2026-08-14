@@ -20,6 +20,7 @@
 
 use std::io::{Cursor, Write};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rinsai_search::{
     BestMove, Game, InfoSink, Limits, NegamaxSearcher, Score, SearchJob, Searcher,
@@ -47,6 +48,8 @@ struct Recorded {
     jobs: Arc<Mutex<Vec<(u64, Limits, String)>>>,
     /// Every `set_hash_mb` the protocol layer delivered, in order.
     hash_mb: Arc<Mutex<Vec<usize>>>,
+    /// Every `set_delivery_margin` the protocol layer delivered, in order.
+    margin: Arc<Mutex<Vec<Duration>>>,
 }
 
 impl Recorded {
@@ -56,6 +59,10 @@ impl Recorded {
 
     fn hash_mb(&self) -> Vec<usize> {
         self.hash_mb.lock().unwrap().clone()
+    }
+
+    fn margin(&self) -> Vec<Duration> {
+        self.margin.lock().unwrap().clone()
     }
 }
 
@@ -79,6 +86,10 @@ impl Searcher for CapturingSearcher {
 
     fn set_hash_mb(&mut self, mb: usize) {
         self.recorded.hash_mb.lock().unwrap().push(mb);
+    }
+
+    fn set_delivery_margin(&mut self, margin: Duration) {
+        self.recorded.margin.lock().unwrap().push(margin);
     }
 }
 
@@ -428,6 +439,33 @@ fn setoption_usi_hash_reaches_the_searcher() {
     assert_eq!(recorded.hash_mb(), vec![2, 4]);
     // An honoured option must not also disclose itself as unused. ⚠️ Not
     // "no line mentions it": the handshake declares it, which is required.
+    assert!(
+        !lines.iter().any(|l| l.contains("not yet used")),
+        "{lines:?}"
+    );
+}
+
+/// The delivery margin reaches the searcher too, converted to a `Duration` at
+/// this boundary. ⚠️ Delivery only: a dialogue cannot observe what a margin does
+/// to a deadline without timing the search.
+///
+/// Sabotage: empty the `Slot::DeliveryMarginMs` arm of `Engine::set_option` to
+/// `{}`. ⚠️ Not *deleting* it — `Slot`'s exhaustive `match` refuses to compile,
+/// which is the property that enum exists for.
+#[test]
+fn setoption_delivery_margin_reaches_the_searcher() {
+    let (lines, recorded) = dialogue_capturing(
+        "usi\n\
+         setoption name DeliveryMargin value 0\n\
+         setoption name DeliveryMargin value 120\n\
+         isready\nquit\n",
+        false,
+    );
+    assert!(lines.contains(&"readyok".to_owned()));
+    assert_eq!(
+        recorded.margin(),
+        vec![Duration::ZERO, Duration::from_millis(120)]
+    );
     assert!(
         !lines.iter().any(|l| l.contains("not yet used")),
         "{lines:?}"

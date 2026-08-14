@@ -207,6 +207,11 @@ impl<W: Write + Send + 'static> Engine<W> {
                     warn("the search thread is gone; `USI_Hash` was not delivered");
                 }
             }
+            Ok(Slot::DeliveryMarginMs) => {
+                if !self.driver.set_margin(self.options.delivery_margin()) {
+                    warn("the search thread is gone; `DeliveryMargin` was not delivered");
+                }
+            }
             Ok(Slot::Ponder) => {}
             // Not state-affecting from the GUI's point of view, so stderr only.
             Err(e) => warn(&format!("setoption: {e}")),

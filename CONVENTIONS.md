@@ -79,8 +79,8 @@ the alternatives lost; neither carries both.
   committed set. shunsai settled the same question one repository over.
 - **The poll interval is 1024 nodes**, checked at the top of the interior node,
   at the top of every quiescence node, and once per deepening iteration — *not*
-  per root move, which would break the first-iteration guarantee below. Step 5's
-  SPRT is where the number stops being inherited.
+  per root move, which would break the first-root-move guarantee below. The
+  value is inherited and untuned.
 
   ⚠️ **Quiescence has to poll, and the reason is not tidiness.** The test is
   `nodes.is_multiple_of(POLL_INTERVAL_NODES)` — an *exact* multiple — safe only while
@@ -102,30 +102,26 @@ the alternatives lost; neither carries both.
   iteration**, or the poll starves in a sparse position: in a two-lone-kings
   position no single iteration through depth 6 reaches 1024 nodes on its own, so
   a per-iteration counter never fires the poll and `stop` and any deadline go
-  unnoticed for that whole stretch. This is **not** what makes depth 1 complete
-  — that is `Budget::without_limits` below, which stands on its own. Two
-  separate properties of one counter; welding them with a "because" is a mistake
-  this project made once already.
+  unnoticed for that whole stretch. This is **not** what makes the first root
+  move complete — that is `Budget::without_limits` below, which stands on its
+  own. Two separate properties of one counter; welding them with a "because" is
+  a mistake this project made once already.
 
 - **The search always answers with a move it actually searched.** The mechanism
-  is structural: **the first iteration runs against `Budget::without_limits`**,
-  the same budget with the clock and the node limit suspended. Without it, a
-  poll landing inside the first root move's subtree leaves `negamax_root`
-  returning `None`, the deepening loop breaking, and the answer sitting at the
-  unsearched seed — a move in shunsai's unspecified generation order, with no
-  `info` line emitted at all.
+  is structural: **the first iteration's first root move runs against
+  `Budget::without_limits`**, the same budget with the clock and the node limit
+  suspended. Without it, a poll landing inside that subtree leaves
+  `negamax_root` returning `None`, the deepening loop breaking, and the answer
+  sitting at the unsearched seed — a move in shunsai's unspecified generation
+  order, with no `info` line emitted at all.
+
+  ⚠️ **Root move 0 and no further.** Alpha is still `-INFINITE` there, so any
+  finite score raises it; relieving the rest of the iteration buys nothing and
+  overruns the budget by what it costs.
 
   ⚠️ **`signals.stopped()` stays live** through it, which is why it is a second
   budget rather than a flag that skips the poll: `stop` means quit, and the poll
   is where it is read.
-
-  ⚠️ **It costs a bounded overrun, and that is left standing on purpose.** The
-  guarantee only needs *root move 0* to finish — alpha is still `-INFINITE`
-  there, so any finite score raises it. Suspending the clock for the whole
-  iteration buys nothing after that move and overruns the stated budget by the
-  rest of it. Narrowing the relief to root move 0 would remove the overrun and
-  is not hard, but it changes what the engine does with a **clock**, and the
-  clock is step 5's subject.
 
 - **Each iteration re-seeds the root list with its own answer.** Without it,
   deepening is only repeated work: an iteration cut short reports the best of
@@ -182,31 +178,40 @@ the alternatives lost; neither carries both.
 
 ## Time control
 
-- **`movetime` and `byoyomi` are honoured; `btime`/`wtime`/`binc`/`winc` are
-  ignored.** The line is *a budget the engine was told* versus *a budget it
-  would have to decide*. `movetime n` means "spend n ms" and has no judgement in
-  it; turning a remaining clock into a per-move allowance — with the fail-low
-  extension, the early cut-off and the delay margin that go with it — is step
-  5's whole subject and is not approximated. `byoyomi 0` means "this time
-  control has no byoyomi", not a zero-millisecond budget.
+- **`movetime n` is taken exactly; every other clock produces an allowance the
+  engine derives.** Nothing is held back from `movetime` — it is a caller
+  holding its own clock. `byoyomi 0` means "this time control has no byoyomi",
+  not a zero-millisecond budget, and on its own it names no clock at all.
+
+- **The byoyomi period is spent before any main time is.** A referee grants it
+  afresh every move and charges main time only with the excess, so it is free:
+  an allowance ignoring it answers `btime 0 byoyomi 10000` instantly with ten
+  unused seconds.
+
+  ⚠️ **`btime` and `wtime` are read by side to move, and reading the wrong one
+  is silent** — both sides start equal, so a match diverges plies later.
+  `a_derived_allowance_reads_the_clock_of_the_side_to_move` pins it.
+
+  **`DeliveryMargin` bounds the allowance, `allowance ≤ available − margin`,
+  rather than reducing it** — a spend already under that cap is left alone.
+  ⚠️ No floor: once the mover holds less than the margin the allowance is zero
+  and the engine answers at once, and a minimum thinking time put back would
+  re-create the overrun the margin exists to remove.
 
 - **`DEFAULT_DEPTH = 4`** answers "no budget of any kind was named" and only
   that. Applying it as a ceiling over a stated budget as well was a real bug,
   and `the_depth_ceiling_follows_the_budget_that_was_named` pins it.
 
-  ⚠️ **"Honoured" means the search stops on time, not that the move arrives on
-  time**, and the difference is a lost game rather than a lost tempo. The
-  deadline is `search()`'s entry plus the stated budget exactly: everything
-  before that instant — the server sending `go`, the pipe, the protocol thread
-  parsing it, the channel handing it to the worker — and everything after it —
-  up to two poll intervals of overshoot, then building and flushing `bestmove`,
-  then the wire back — falls outside the budget. Locally that is microseconds.
-  Over a network it is not, and a byoyomi overrun is an immediate loss. The
-  margin that covers this is step 5's; **until step 5, do not enter rinsai
-  anywhere the clock is enforced across a network — floodgate included.** That
-  route does not open until E2 gives it a CSA client, so this is written forward
-  rather than describing anything reachable today; it is here because here is
-  where someone about to open it would be reading.
+  ⚠️ **The search stopping on time is not the move arriving on time**, and the
+  difference is a lost game rather than a lost tempo. The deadline is
+  `search()`'s entry plus the allowance: everything before that instant — the
+  server sending `go`, the pipe, the protocol thread parsing it, the channel
+  handing it to the worker — and everything after it — up to two poll intervals
+  of overshoot, then building and flushing `bestmove`, then the wire back —
+  falls outside it. `DeliveryMargin` covers that gap where it can lose a game,
+  and it is an operator setting because its right value is a property of the
+  deployment rather than of the engine: microseconds on localhost, a round trip
+  over a network, where a byoyomi overrun is an immediate loss.
 
 ## The transposition table
 
@@ -294,25 +299,28 @@ rules hold of both.
 ## Portability
 
 - **Threads and the wall clock may not become the only way to run a search.**
-  Both may be used, and are. Two things this forbids, each true of the code
+  Both may be used, and are. What this forbids, each true of the code
   today:
   1. **A search must be reachable without `std::thread`.** `Searcher::search`
      takes a job and returns a `BestMove`; `SearchDriver` is a caller of it, not
      its interface. Threads may make the search stronger; they may not be what
      makes it work.
   2. **The engine always accepts at least one budget with no clock in it.**
-     `depth` and `nodes` are that budget — `Budget` honours them without
-     consulting `Instant` at all. This is *not* the claim that every budget has
-     a clock-free form: `movetime` and `byoyomi` are wall-clock by definition
-     (see Time control above), and nothing here asks them to be otherwise.
+     `depth` and `nodes` are that budget — `Budget::expired` reads the clock
+     lazily, inside the deadline's `is_some_and`, so a budget carrying no
+     deadline is never *polled* against one. ⚠️ That is a property of `Budget`
+     and not of the call path: `Searcher::search` reads its clock at entry and
+     once per `info` line whatever the budget is. It is also *not* the claim
+     that every budget has a clock-free form: `movetime` and `byoyomi` are
+     wall-clock by definition (see Time control above).
+  3. **The search reads its clock through a `Clock`.** ⚠️ That does not yet
+     make it clock-free: `RealClock::now` is `Instant::elapsed`, and
+     `with_clock` is private, so no caller outside the crate can supply another
+     implementation.
 
   ⚠️ **This is a constraint on what may become load-bearing, not a claim that
   the engine runs on `wasm32-unknown-unknown`. It does not** — it compiles and
-  traps; DECISIONS.md says where. In particular rule 2 holds of the
-  *budget vocabulary* and not yet of the call path: `NegamaxSearcher::search`
-  reads `Instant::now()` unconditionally for the `info` line's `time` and `nps`,
-  so a clock-free caller still needs the injectable clock step 5 owns. The
-  condition that retires the whole rule is in DECISIONS.md.
+  traps. The condition that retires the whole rule is in DECISIONS.md.
 
 ## Tests
 
@@ -363,7 +371,7 @@ committed bench position set, which is where the licensing rule bites hardest.
 - **The 593-legal-move position**
   `R8/2K1S1SSk/4B4/9/9/9/9/9/1L1L1L3 b RBGSNLP3g3n17p 1` — same file, same
   standing.
-- **`the_first_iteration_is_never_abandoned`'s fixture** is two plies on from
+- **`the_first_root_move_is_never_abandoned`'s fixture** is two plies on from
   the matsuri position, reached by rinsai's own search.
 - **The committed floodgate records** under `crates/xtask/tests/fixtures/` are
   game records — factual data (DESIGN.md §7) — copied from the local cache
