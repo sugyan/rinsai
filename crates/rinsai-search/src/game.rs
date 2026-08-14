@@ -247,31 +247,22 @@ impl Game {
 
     /// A copy of [`Self::position`] — the board a searcher does its do/undo on.
     ///
-    /// A copy rather than a second board built from the record, so that the
-    /// search compares one lineage against itself: it seeds its repetition path
-    /// from [`Self::history`], whose entries were taken from this same board.
+    /// A method rather than a `position().clone()` at the call site, so that the
+    /// cross-check below runs on the path every search takes. DECISIONS.md
+    /// carries why the search wants this board rather than one rebuilt from the
+    /// record.
     ///
-    /// A method rather than a `position().clone()` at the call site, because
-    /// `SearchJob` is public and nothing constrains how a caller assembles one
-    /// — the cross-check below has to run however the job was built.
-    ///
-    /// ⚠️ **That cross-check is a `debug_assert`, compiled out of the release
+    /// ⚠️ **The cross-check is a `debug_assert`, compiled out of the release
     /// binary that actually plays**, so the guarantee is "the test suite would
-    /// have caught a drift", not "a live game will". Promoting it would put a
-    /// panic on the protocol thread once per `go`. DECISIONS.md carries the
+    /// have caught a drift", not "a live game will". DECISIONS.md carries that
     /// trade and what would reopen it.
     #[must_use]
     pub fn search_board(&self) -> Position {
-        #[cfg(debug_assertions)]
-        {
-            let rebuilt = Position::new(self.record.inner().clone());
-            debug_assert_eq!(
-                rebuilt.key(),
-                self.board.key(),
-                "the lockstep record and the incremental Zobrist key disagree"
-            );
-            debug_assert_eq!(rebuilt.ply(), self.board.ply());
-        }
+        debug_assert_eq!(
+            Position::new(self.record.inner().clone()),
+            self.board,
+            "the lockstep record and the incrementally maintained board disagree"
+        );
         self.board.clone()
     }
 
@@ -330,9 +321,10 @@ impl HistoryEntry {
     }
 }
 
-/// Manual so that every clone runs [`Game::search_board`]'s cross-check, which
-/// is what makes the lockstep record a checked property rather than a hope. The
-/// fields are otherwise copied as a derive would copy them.
+/// Manual only so that a clone runs [`Game::search_board`]'s cross-check, which
+/// is `debug_assert`-only — in release this is what a derive would produce. The
+/// caller is `usi.rs`, on the protocol thread, once per `go`: promoting that
+/// assertion would put a panic there.
 impl Clone for Game {
     fn clone(&self) -> Self {
         Self {
@@ -777,18 +769,31 @@ mod tests {
     }
 
     /// Sabotage: delete the `record.make_move` call in `push_move` and this
-    /// fires — the clone rebuilds the board from the record and compares its
-    /// from-scratch key against the incrementally maintained one.
+    /// fires — the record stops advancing, so a board rebuilt from it is no
+    /// longer the board `push_move` maintained.
+    ///
+    /// ⚠️ A plain `assert_eq!` on purpose. `search_board` makes the same
+    /// comparison, but as a `debug_assert`, so it is this test and not that one
+    /// that holds the lockstep under `cargo test --release`.
     #[test]
-    fn cloning_cross_checks_the_lockstep_board() {
+    fn the_record_and_the_board_stay_in_lockstep() {
         // The bishop trade leaves one in each hand, so the drop exercises the
         // hand half of the Zobrist key as well as the board half.
         let game = Game::from_usi_position("startpos moves 7g7f 3c3d 8h2b+ 3a2b B*5e")
             .expect("a legal sequence");
+        assert_eq!(Position::new(game.record.inner().clone()), game.board);
+    }
+
+    /// ⚠️ Every assertion here holds by construction — `Game` is three fields
+    /// and `Clone` copies all three. It is a guard on `Clone` staying total, not
+    /// a check of the lockstep: the test above is that.
+    #[test]
+    fn cloning_carries_every_field() {
+        let game = Game::from_usi_position("startpos moves 7g7f 3c3d 8h2b+ 3a2b B*5e")
+            .expect("a legal sequence");
         let copy = game.clone();
         assert_eq!(copy.sfen(), game.sfen());
-        assert_eq!(copy.position().key(), game.position().key());
-        assert_eq!(copy.position().ply(), game.position().ply());
+        assert_eq!(copy.position(), game.position());
         assert_eq!(copy.moves(), game.moves());
         assert_eq!(copy.history(), game.history());
     }

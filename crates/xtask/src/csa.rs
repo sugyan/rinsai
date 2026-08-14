@@ -6,7 +6,8 @@
 //! (board setup, `T<n>` per-move times, engine `'**` chatter). The `csa`
 //! crate is not used because it discards comment lines, and the ratings this
 //! pipeline filters on live in comments. Modelled on shunsai's
-//! `examples/gen_bench_positions.rs` (MIT, same author).
+//! `examples/gen_bench_positions.rs` (MIT, same author) — in its repository,
+//! not the published crate, which ships `src/` only.
 
 use shogi_core::PieceKind;
 

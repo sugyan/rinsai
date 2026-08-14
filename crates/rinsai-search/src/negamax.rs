@@ -532,6 +532,12 @@ impl NegamaxSearcher {
             }
         }
         self.buf.truncate(base);
+        // The board half of the same balance the `truncate` above enforces for
+        // the move buffer. ⚠️ Only `key` — an `Undo` replayed against the wrong
+        // move restores `undo.key` verbatim, so a corrupt board can still carry
+        // a right-looking key; this catches a *missing* or *extra* unmake, which
+        // is what an early return added below the `do_move` would produce.
+        debug_assert_eq!(board.key(), key, "the node loop left the board unbalanced");
 
         // ⚠️ **Nothing is stored from an abandoned search**, and not because
         // `best` is a placeholder — the `break` above discards those. It is that
@@ -641,6 +647,8 @@ impl NegamaxSearcher {
             base = self.buf.generate_captures(board);
         }
 
+        // The board this node must be handed back in; see the twin in `negamax`.
+        let key = board.key();
         for i in base..self.buf.len() {
             let mv = self.buf.get(i);
             let undo = board.do_move(mv);
@@ -674,6 +682,11 @@ impl NegamaxSearcher {
             }
         }
         self.buf.truncate(base);
+        debug_assert_eq!(
+            board.key(),
+            key,
+            "a quiescence node left the board unbalanced"
+        );
         best
     }
 

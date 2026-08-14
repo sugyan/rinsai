@@ -17,8 +17,7 @@ jobs:
         with:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
-      # Caches ~/.cargo/registry and target/. The key derives from Cargo.lock —
-      # one more reason the lock is committed.
+      # The key derives from Cargo.lock — one more reason the lock is committed.
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo fmt --all --check
@@ -30,7 +29,7 @@ jobs:
       # that forwards into shunsai: the flag activates features of the *selected
       # workspace packages*, never of a registry dependency, so it cannot reach
       # `slider-naive` or `bench-internals`. The "No shunsai feature is enabled"
-      # job below is what keeps that premise true.
+      # step below is what keeps that premise true.
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
 
@@ -72,7 +71,7 @@ jobs:
                     | grep -oE 'shunsai feature "[^"]+"' | sort -u | grep -v '"default"' || true)
           if [ -n "$enabled" ]; then
             echo "$enabled"
-            echo "::error::A shunsai feature is enabled. Either slider flag replaces the backend shunsai's bake-off adopted with one it documents as being for A/B measurement and debugging rather than real use, which would make every SPRT number afterwards noise; bench-internals is explicitly not public API. Never enable either from here."
+            echo "::error::A shunsai feature is enabled. Never do this from here — the WARNING beside [workspace.dependencies] in Cargo.toml says what each flag costs."
             exit 1
           fi
 
