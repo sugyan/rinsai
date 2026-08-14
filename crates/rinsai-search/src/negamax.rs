@@ -348,11 +348,11 @@ impl NegamaxSearcher {
         let mut improved = false;
         for i in 0..self.root_moves.len() {
             let mv = self.root_moves[i];
-            board.do_move(mv);
+            let undo = board.do_move(mv);
             self.path.push(HistoryEntry::of(board));
             let score = self.child(board, window, depth - 1, 1, budget);
             self.path.pop();
-            board.undo_move(mv);
+            board.undo_move(mv, undo);
 
             // An abandoned subtree returns a placeholder, not a score.
             // Discard it before it can beat anything.
@@ -509,12 +509,12 @@ impl NegamaxSearcher {
         let mut best_move = None;
         for i in base..self.buf.len() {
             let mv = self.buf.get(i);
-            board.do_move(mv);
+            let undo = board.do_move(mv);
             self.path.push(HistoryEntry::of(board));
             let score = self.child(board, window, depth - 1, ply + 1, budget);
             // Both of these come before every `break` below, without exception.
             self.path.pop();
-            board.undo_move(mv);
+            board.undo_move(mv, undo);
 
             if self.stopped {
                 break;
@@ -643,7 +643,7 @@ impl NegamaxSearcher {
 
         for i in base..self.buf.len() {
             let mv = self.buf.get(i);
-            board.do_move(mv);
+            let undo = board.do_move(mv);
             // `depth` counts checked plies only, so a capture chain never runs
             // the counter down and terminates on material instead.
             let given = self.buf.len();
@@ -657,7 +657,7 @@ impl NegamaxSearcher {
             // The `child`-side twin of this assertion cannot see the
             // qsearch->qsearch recursion, so it needs its own.
             debug_assert_eq!(self.buf.len(), given, "a quiescence child leaked moves");
-            board.undo_move(mv);
+            board.undo_move(mv, undo);
 
             if self.stopped {
                 break;
@@ -1358,12 +1358,12 @@ mod tests {
     fn a_capture_is_reachable_in_one_ply(args: &str) -> bool {
         let mut board = game(args).search_board();
         board.legal_moves().into_iter().any(|mv| {
-            board.do_move(mv);
+            let undo = board.do_move(mv);
             let reachable = board
                 .legal_moves()
                 .into_iter()
                 .any(|reply| board.piece_at(reply.to()).is_some());
-            board.undo_move(mv);
+            board.undo_move(mv, undo);
             reachable
         })
     }

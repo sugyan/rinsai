@@ -48,7 +48,7 @@ impl MoveBuf {
         let base = self.moves.len();
         let moves = &mut self.moves;
         let _ = position.generate_moves(|set| {
-            moves.extend(set);
+            set.write_into(moves);
             ControlFlow::Continue(())
         });
         self.debug_assert_reserved();
@@ -222,9 +222,10 @@ pub fn is_legal(position: &Position, mv: Move) -> bool {
                     ControlFlow::Continue(())
                 }
             }
-            // ⚠️ Continue rather than fail: nothing in shunsai's public
-            // documentation says how moves are grouped into sets. One per
-            // origin is what it does today and it does not promise that.
+            // ⚠️ Continue rather than fail: the arms above pair a `MoveSet`
+            // variant with a `Move` variant, so this one is reached whenever
+            // they disagree — which is every set that is simply not the one
+            // holding `mv`.
             _ => ControlFlow::Continue(()),
         })
         .is_break()

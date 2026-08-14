@@ -17,21 +17,20 @@ jobs:
         with:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
-      # Caches ~/.cargo/registry, ~/.cargo/git and target/, so the rev-pinned
-      # shunsai clone is cached like any registry crate. The key derives from
-      # Cargo.lock — one more reason the lock is committed.
+      # Caches ~/.cargo/registry and target/. The key derives from Cargo.lock —
+      # one more reason the lock is committed.
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo fmt --all --check
 
       # `--locked` makes a stale Cargo.lock a failure rather than a silent
-      # re-resolve; pinning shunsai by commit is pointless without it.
+      # re-resolve.
       #
       # `--all-features` is safe only because no rinsai crate declares a feature
       # that forwards into shunsai: the flag activates features of the *selected
-      # workspace packages*, never of a git or registry dependency, so it cannot
-      # reach `slider-naive` or `bench-internals`. The next step is what keeps
-      # that premise true.
+      # workspace packages*, never of a registry dependency, so it cannot reach
+      # `slider-naive` or `bench-internals`. The "No shunsai feature is enabled"
+      # job below is what keeps that premise true.
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
 
@@ -73,7 +72,7 @@ jobs:
                     | grep -oE 'shunsai feature "[^"]+"' | sort -u | grep -v '"default"' || true)
           if [ -n "$enabled" ]; then
             echo "$enabled"
-            echo "::error::A shunsai feature is enabled. slider-naive wins shunsai's backend priority order and silently selects a 5-8x slower generator, which would make every SPRT number afterwards noise; bench-internals is explicitly not public API. Never enable either from here."
+            echo "::error::A shunsai feature is enabled. Either slider flag replaces the backend shunsai's bake-off adopted with one it documents as being for A/B measurement and debugging rather than real use, which would make every SPRT number afterwards noise; bench-internals is explicitly not public API. Never enable either from here."
             exit 1
           fi
 
@@ -115,9 +114,7 @@ jobs:
             exit 1
           }
 
-  # `rust-version = "1.88"` is only true if something checks it. This job is
-  # also the only check anywhere on shunsai's *undeclared* MSRV: a let-chain in
-  # its movegen needs >= 1.88 and its manifest does not say so.
+  # `rust-version = "1.88"` is only true if something checks it.
   msrv:
     runs-on: ubuntu-latest
     steps:
