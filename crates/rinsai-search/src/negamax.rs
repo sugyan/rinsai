@@ -213,7 +213,12 @@ impl<'a> Budget<'a> {
             Color::Black => (limits.btime, limits.binc),
             Color::White => (limits.wtime, limits.winc),
         };
-        if limits.btime.is_none() && limits.wtime.is_none() && period.is_zero() {
+        // ⚠️ **The mover's own field, not either side's.** A `go` carrying only
+        // the opponent's clock names no budget *for the side to move*, and
+        // reading it as one derives an allowance from a clock of zero — which
+        // is not "nothing named" but "no time left", and lifts the depth
+        // ceiling on the way past.
+        if main.is_none() && period.is_zero() {
             return None;
         }
 
@@ -1008,6 +1013,10 @@ mod tests {
                 reads: AtomicU64::new(0),
             }
         }
+
+        fn reads(&self) -> u64 {
+            self.reads.load(Ordering::Relaxed)
+        }
     }
 
     impl Clock for TickClock {
@@ -1251,9 +1260,9 @@ mod tests {
         );
     }
 
-    /// The depth-1 iteration is the one that always completes, and every root
-    /// child in it is a quiescence node — so this is what says the verdict is
-    /// asked for at the dispatch rather than inside the interior node.
+    /// Every root child at depth 1 is a quiescence node, so this is what says
+    /// the verdict is asked for at the dispatch rather than inside the interior
+    /// node.
     ///
     /// Sabotage, verified on this fixture and impossible on a deeper one: move
     /// the verdict from `child` to the top of `negamax` and depth 1 reports the
@@ -1718,15 +1727,12 @@ mod tests {
     /// expensive — the interaction `a_deep_search_still_answers_a_node_limit`
     /// cannot reach, since depth 1 is cheap at the initial position.
     ///
-    /// ⚠️ **Both bounds are *measured*, and the limit is derived from the
-    /// measurement rather than written down, so the test cannot go vacuous.**
-    /// Given a limit above what the relief covers, the limit bites at a later
-    /// root move and deleting the relief entirely leaves this green.
+    /// ⚠️ **A bound comparing two runs that both stop inside the relief is
+    /// true however wide the relief is**, so the width is pinned against the
+    /// unlimited first iteration instead.
     ///
-    /// Sabotage: pass `budget` rather than `first_move` to root move 0 and this
-    /// goes red either way round — the subtree is cut short, tripping the lower
-    /// bound, or it stops before that move finishes and no `info` line is
-    /// emitted at all.
+    /// Sabotage, both directions: give root move 0 `budget` rather than
+    /// `first_move`, or give `first_move` to every root move.
     ///
     /// ⚠️ **It is not the test that catches the poll being dropped from
     /// `qsearch`.** That mutation goes red on
@@ -1758,9 +1764,19 @@ mod tests {
             "root move 0 is too cheap to poll inside: {floor}"
         );
 
-        // Below that floor by construction, so the relief is the only thing
-        // that can carry the search to it.
-        let limit = floor / 2;
+        // What the whole first iteration costs, unlimited. ⚠️ **This is the
+        // bound that pins the relief's *width*.** Comparing two runs that both
+        // stop inside the relief cannot: they stop at the same node, and the
+        // assertion is true by construction however wide the relief is.
+        let (_, unlimited) = run(args, depth(1));
+        let whole = field(unlimited.last().expect("an iteration finished"), "nodes");
+        assert!(
+            floor < whole,
+            "the relief covers the whole iteration, not root move 0: {floor} of {whole}"
+        );
+
+        // Above the relief, so the limit is what stops this one.
+        let limit = floor + poll;
         let (_, lines) = run(
             args,
             Limits {
@@ -1771,12 +1787,12 @@ mod tests {
         );
         let nodes = field(lines.last().expect("an iteration finished"), "nodes");
         assert!(
-            nodes >= floor,
-            "the node limit cut root move 0 short: {nodes} < {floor}"
+            nodes >= limit,
+            "the node limit bit before it was reached: {nodes} < {limit}"
         );
         assert!(
-            nodes < floor + 4 * poll,
-            "the node limit went unnoticed after root move 0: {nodes}"
+            nodes < limit + 4 * poll,
+            "the node limit went unnoticed: {nodes}"
         );
     }
 
@@ -2269,6 +2285,40 @@ mod tests {
         );
     }
 
+    /// A `go` carrying only the opponent's clock names no budget for the mover.
+    ///
+    /// Sabotage: test `limits.btime.is_none() && limits.wtime.is_none()` instead
+    /// of the mover's own field. The allowance becomes `Some(ZERO)` rather than
+    /// `None` — which is not "nothing named" but "no time left", and because a
+    /// deadline exists it also lifts the ceiling off `DEFAULT_DEPTH`, so the
+    /// engine answers from one root move where it used to search four plies.
+    /// ⚠️ Reachable from a conforming GUI: `parse_go` leaves an unparseable
+    /// field unset rather than refusing the `go`.
+    #[test]
+    fn only_the_movers_clock_names_a_budget_for_the_mover() {
+        let minute = Some(Duration::from_secs(60));
+        let one_sided = Limits {
+            wtime: minute,
+            ..Limits::default()
+        };
+        assert_eq!(
+            Budget::allowance(&one_sided, Color::Black, Duration::ZERO),
+            None
+        );
+        assert_eq!(
+            Budget::allowance(&one_sided, Color::White, Duration::ZERO),
+            Some(Duration::from_secs(60) / MOVE_HORIZON)
+        );
+
+        // The ceiling follows, which is the half that costs the plies.
+        let signals = SearchSignals::new();
+        let ceiling = |mover| {
+            Budget::new(&one_sided, &signals, Duration::ZERO, mover, Duration::ZERO).max_depth
+        };
+        assert_eq!(ceiling(Color::Black), DEFAULT_DEPTH);
+        assert_eq!(ceiling(Color::White), MAX_DEPTH);
+    }
+
     /// When the margin binds, and the two ways it must not.
     ///
     /// ⚠️ The main-time case is what pins the margin to the *cap*: take it off
@@ -2348,27 +2398,93 @@ mod tests {
     /// without the test measuring the machine it runs on.
     #[test]
     fn a_derived_allowance_ends_the_deepening() {
-        let sink = Lines::default();
         let limits = Limits {
             btime: Some(Duration::from_millis(900)),
             wtime: Some(Duration::from_millis(900)),
             ..Limits::default()
         };
-        let best = ticking(Duration::from_micros(20)).search(&job(game("startpos"), limits), &sink);
-        let lines = sink.take();
+        // ⚠️ **Off the calling thread**, because a deadline that never arrives
+        // runs to `MAX_DEPTH` rather than returning — on this thread that is a
+        // wedged suite attributed to whichever test the sweep was watching.
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let sink = Lines::default();
+            let best =
+                ticking(Duration::from_micros(20)).search(&job(game("startpos"), limits), &sink);
+            let _ = tx.send((best, sink.take()));
+        });
+        let Ok((best, lines)) = rx.recv_timeout(Duration::from_secs(10)) else {
+            panic!("the deadline never arrived");
+        };
 
         assert!(matches!(best, BestMove::Play { .. }));
         let reached = field(lines.last().expect("reported something"), "depth");
-        // ⚠️ Both bounds are load-bearing, and the lower one is the sharper:
-        // an allowance that failed to be derived at all leaves `DEFAULT_DEPTH`
-        // standing, which satisfies the upper bound on its own.
+        // An allowance that failed to be derived at all leaves `DEFAULT_DEPTH`
+        // standing, which the timeout above would not notice.
         assert!(
             reached > i64::from(DEFAULT_DEPTH),
             "the clock did not lift the depth ceiling: {reached}"
         );
+    }
+
+    /// A budget carrying no deadline is never polled against a clock.
+    ///
+    /// CONVENTIONS.md's portability rule rests on this, and `bench` cannot see
+    /// it: hoisting the reading out of [`Budget::expired`]'s `is_some_and`
+    /// moves no node count, so nothing else here would go red.
+    ///
+    /// Sabotage: give `expired` a `now: Duration` parameter and read the clock
+    /// at the three poll sites.
+    #[test]
+    fn a_clock_free_budget_never_reads_the_clock() {
+        // One read at entry, one per `info` line. Neither comes from a poll,
+        // and both are what the `info` line's `time` is built from.
+        let per_iteration = |limits, iterations| {
+            let mut searcher = ticking(Duration::from_micros(20));
+            searcher.search(&job(game("startpos"), limits), &SilentSink);
+            assert_eq!(
+                searcher.clock.reads(),
+                1 + iterations,
+                "{limits:?} read the clock from a poll"
+            );
+        };
+        per_iteration(depth(4), 4);
+        per_iteration(
+            Limits::default(),
+            u64::try_from(DEFAULT_DEPTH).expect("positive"),
+        );
+        per_iteration(
+            Limits {
+                nodes: Some(50_000),
+                ..Limits::default()
+            },
+            4,
+        );
+    }
+
+    /// The delivery margin an operator set reaches the budget the search runs
+    /// against.
+    ///
+    /// Sabotage: pass `Duration::ZERO` rather than `self.margin` to
+    /// `Budget::new`, or empty `NegamaxSearcher::set_delivery_margin`.
+    #[test]
+    fn the_delivery_margin_reaches_the_budget() {
+        let limits = Limits {
+            byoyomi: Some(Duration::from_millis(50)),
+            ..Limits::default()
+        };
+        let spend = |margin| {
+            let mut searcher = ticking(Duration::from_micros(20));
+            searcher.set_delivery_margin(margin);
+            searcher.search(&job(game("startpos"), limits), &SilentSink);
+            searcher.nodes()
+        };
+        // A margin as wide as the byoyomi leaves an allowance of zero.
+        let margined = spend(Duration::from_millis(50));
+        let unmargined = spend(Duration::ZERO);
         assert!(
-            reached < i64::from(MAX_DEPTH),
-            "the deadline never arrived: {reached}"
+            margined < unmargined,
+            "the margin did not reach the search: {margined} against {unmargined}"
         );
     }
 

@@ -44,8 +44,10 @@ pub struct PipelineConfig {
     /// and unpruned, so an open position can cost orders more than the depth
     /// suggests.
     ///
-    /// ⚠️ **The cap decides how deep a candidate is judged, not whether it is
-    /// judged.** A search it interrupts is scored on the deepest iteration
+    /// ⚠️ **A cap tight enough to stop the first iteration decides *whether* a
+    /// candidate is judged, not only how deeply**, because a search that
+    /// finished no iteration is an error here rather than a rejection. Above
+    /// that, a search it interrupts is scored on the deepest iteration
     /// that finished, so raising the cap does not admit or reject candidates
     /// directly — it moves the depth their verdict comes from, which can
     /// change the verdict. That is enough to make a set generated at another

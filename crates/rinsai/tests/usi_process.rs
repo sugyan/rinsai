@@ -125,7 +125,15 @@ fn a_scripted_game_over_real_pipes() {
             format!("position startpos moves {}", moves.join(" "))
         };
         writeln!(stdin, "{position}").expect("the engine is listening");
-        writeln!(stdin, "go btime 1000 wtime 1000 byoyomi 0").expect("the engine is listening");
+        // ⚠️ **Alternating a clocked `go` with a bare one, because the two take
+        // different paths through `Budget`** — the first derives an allowance
+        // from `btime`, the second is the only place the `DEFAULT_DEPTH`
+        // fallback is exercised through the real binary rather than in-process.
+        if ply % 2 == 0 {
+            writeln!(stdin, "go btime 1000 wtime 1000 byoyomi 0").expect("the engine is listening");
+        } else {
+            writeln!(stdin, "go").expect("the engine is listening");
+        }
 
         let answer = read_until("bestmove", &mut stdout);
         let line = answer.last().expect("read_until returns the marker line");

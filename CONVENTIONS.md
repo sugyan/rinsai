@@ -107,7 +107,8 @@ the alternatives lost; neither carries both.
   own. Two separate properties of one counter; welding them with a "because" is
   a mistake this project made once already.
 
-- **The search always answers with a move it actually searched.** The mechanism
+- **The search answers with a move it actually searched, unless `stop` cut the
+  first root move short.** The mechanism
   is structural: **the first iteration's first root move runs against
   `Budget::without_limits`**, the same budget with the clock and the node limit
   suspended. Without it, a poll landing inside that subtree leaves
@@ -138,9 +139,8 @@ the alternatives lost; neither carries both.
 - **千日手 is decided where a child is dispatched, not at the top of the
   interior node.** Two things depend on the site: the depth-1 iteration
   dispatches straight into quiescence, so a check inside the interior node
-  leaves the one iteration that always completes blind to the move that ends
-  the game; and a cut-off that enters neither node function leaves the
-  node-counting convention above untouched. ⚠️ The child's line has to be
+  leaves it blind to the move that ends the game; and a cut-off that enters
+  neither node function leaves the node-counting convention above untouched. ⚠️ The child's line has to be
   cleared on that path, or a parent that raises alpha on the verdict publishes
   a variation running past the end of the game.
 
@@ -208,7 +208,9 @@ the alternatives lost; neither carries both.
   server sending `go`, the pipe, the protocol thread parsing it, the channel
   handing it to the worker — and everything after it — up to two poll intervals
   of overshoot, then building and flushing `bestmove`, then the wire back —
-  falls outside it. `DeliveryMargin` covers that gap where it can lose a game,
+  falls outside it. `DeliveryMargin` covers that gap where it can lose a game
+  — ⚠️ **but not under `movetime`, which is exempt from it**, so a peer that
+  states a per-move budget that way gets no margin at all,
   and it is an operator setting because its right value is a property of the
   deployment rather than of the engine: microseconds on localhost, a round trip
   over a network, where a byoyomi overrun is an immediate loss.

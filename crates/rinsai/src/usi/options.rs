@@ -168,8 +168,8 @@ impl Options {
         usize::try_from(self.hash_mb).unwrap_or(rinsai_search::DEFAULT_HASH_MB)
     }
 
-    /// What the search holds back to deliver its move. Total for the same
-    /// reason [`Self::hash_mb`] is.
+    /// What the search keeps back from the clock it is charged against. Total
+    /// for the same reason [`Self::hash_mb`] is.
     pub(crate) fn delivery_margin(&self) -> Duration {
         Duration::from_millis(
             u64::try_from(self.delivery_margin_ms)
@@ -278,6 +278,20 @@ mod tests {
         // `min 1` is a promise that the table works at one MiB, which
         // `rinsai-search`'s own tests are what actually exercise.
         assert_eq!(min, 1);
+
+        let spec = OPTIONS
+            .iter()
+            .find(|spec| spec.name == "DeliveryMargin")
+            .expect("DeliveryMargin is declared");
+        let OptionKind::Spin { default, .. } = spec.kind else {
+            panic!("DeliveryMargin is a spin");
+        };
+        assert_eq!(default, rinsai_search::DEFAULT_DELIVERY_MARGIN_MS as i64);
+        assert_eq!(Options::default().delivery_margin_ms, default);
+        assert_eq!(
+            Options::default().delivery_margin(),
+            Duration::from_millis(rinsai_search::DEFAULT_DELIVERY_MARGIN_MS)
+        );
     }
 
     #[test]
