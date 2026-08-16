@@ -20,11 +20,12 @@
 //!   [`NegamaxSearcher::path`] carries the argument.
 
 use core::ops::{ControlFlow, Neg};
-use std::time::Instant;
+use core::time::Duration;
 
-use shogi_core::Move;
+use shogi_core::{Color, Move};
 use shunsai::Position;
 
+use crate::clock::{Clock, RealClock};
 use crate::eval;
 use crate::game::HistoryEntry;
 use crate::info::SearchInfo;
@@ -41,10 +42,21 @@ use crate::tt::{Bound, DEFAULT_HASH_MB, Hit, Table};
 /// order of magnitude.
 const DEFAULT_DEPTH: Depth = 4;
 
+/// How many more of its own moves the engine assumes the game will last, when
+/// it has to turn a remaining clock into a per-move allowance.
+///
+/// Above the chess convention of 30–40 because shogi games are longer.
+/// **Untuned** — chosen by that argument alone, and no measurement stands
+/// behind the value.
+const MOVE_HORIZON: u32 = 45;
+
+/// What the engine keeps back from what the mover holds, in milliseconds,
+/// unless `DeliveryMargin` says otherwise.
+pub const DEFAULT_DELIVERY_MARGIN_MS: u64 = 30;
+
 /// How often the search asks whether it is out of budget.
 ///
-/// The conventional starting point, and untuned; step 5's SPRT is where it
-/// stops being inherited.
+/// The conventional starting point, inherited and **untuned**.
 ///
 /// ⚠️ **The test is an *exact* multiple, so every increment inside the tree has
 /// to be seen by something that polls** — otherwise the counter steps clean
@@ -140,29 +152,32 @@ fn cuts(hit: &Hit, window: &Window) -> bool {
 
 /// What this search is allowed to spend.
 ///
-/// Honours **a budget it was told** (`movetime`, `byoyomi`) and ignores **a
-/// budget it would have to decide** (`btime` / `wtime` / `binc` / `winc`);
-/// CONVENTIONS.md carries the rule and step 5 owns the second half.
+/// `movetime` is taken exactly; every other clock produces an allowance this
+/// type derives from the mover's own remaining time. CONVENTIONS.md carries the
+/// time-control rules.
 struct Budget<'a> {
     signals: &'a SearchSignals,
-    deadline: Option<Instant>,
+    /// ⚠️ On the [`Clock`] later handed to [`Self::expired`], not on any
+    /// absolute scale. Built from one clock and polled against another it is
+    /// silently wrong.
+    deadline: Option<Duration>,
     node_limit: Option<u64>,
     max_depth: Depth,
 }
 
 impl<'a> Budget<'a> {
-    fn new(limits: &Limits, signals: &'a SearchSignals, started: Instant) -> Self {
-        // `movetime` before `byoyomi`: a GUI that sends both means the
-        // explicit one. `byoyomi 0` is "this time control has no byoyomi", not
-        // a zero-millisecond budget.
-        let stated = limits
-            .movetime
-            .or_else(|| limits.byoyomi.filter(|d| !d.is_zero()));
+    fn new(
+        limits: &Limits,
+        signals: &'a SearchSignals,
+        started: Duration,
+        mover: Color,
+        margin: Duration,
+    ) -> Self {
         // `infinite` means "until told to stop", which outranks any clock.
         let deadline = (!limits.infinite)
-            .then_some(stated)
+            .then(|| Self::allowance(limits, mover, margin))
             .flatten()
-            .map(|until| started + until);
+            .map(|spend| started + spend);
 
         // `DEFAULT_DEPTH` answers "no budget of any kind was named" and only
         // that. Applying it as a ceiling over a stated budget too is the bug
@@ -184,23 +199,54 @@ impl<'a> Budget<'a> {
         }
     }
 
+    /// How long this `go` may spend thinking, or `None` if it named no clock.
+    /// CONVENTIONS.md carries the time-control rules.
+    fn allowance(limits: &Limits, mover: Color, margin: Duration) -> Option<Duration> {
+        if let Some(movetime) = limits.movetime {
+            return Some(movetime);
+        }
+
+        // `byoyomi 0` is "this time control has no byoyomi", not a
+        // zero-millisecond budget.
+        let period = limits.byoyomi.filter(|d| !d.is_zero()).unwrap_or_default();
+        let (main, increment) = match mover {
+            Color::Black => (limits.btime, limits.binc),
+            Color::White => (limits.wtime, limits.winc),
+        };
+        // ⚠️ **The mover's own field, not either side's.** A `go` carrying only
+        // the opponent's clock names no budget *for the side to move*, and
+        // reading it as one derives an allowance from a clock of zero — which
+        // is not "nothing named" but "no time left", and lifts the depth
+        // ceiling on the way past.
+        if main.is_none() && period.is_zero() {
+            return None;
+        }
+
+        let main = main.unwrap_or_default();
+        // What the mover actually has this move, and so what it may never
+        // promise past: the referee's own allowance.
+        let available = main.saturating_add(period);
+        let spend = period
+            .saturating_add(main / MOVE_HORIZON)
+            .saturating_add(increment.unwrap_or_default());
+        // ⚠️ No floor: once the mover holds less than the margin this is zero,
+        // and a minimum thinking time put back here would re-create exactly the
+        // overrun the margin exists to remove.
+        Some(spend.min(available.saturating_sub(margin)))
+    }
+
     /// The same budget with the clock and the node limit suspended.
     ///
-    /// The first deepening iteration runs against this, which is what keeps
-    /// "the search answers with a move it actually searched" true: a poll
-    /// landing inside the first root move's subtree would leave
+    /// The first iteration's **first root move** runs against this, which is
+    /// what keeps "the search answers with a move it actually searched" true: a
+    /// poll landing inside that subtree would leave
     /// [`NegamaxSearcher::negamax_root`] returning `None` and the answer sitting
     /// at the unsearched seed — a move in shunsai's unspecified generation
-    /// order. CONVENTIONS.md carries the rule.
+    /// order. CONVENTIONS.md carries the rule and why root move 0 is enough.
     ///
     /// ⚠️ **`signals.stopped()` stays live**, which is why this is a second
     /// budget rather than a flag that skips the poll: `stop` means quit, and
     /// [`Self::expired`] is where it is read.
-    ///
-    /// ⚠️ **It covers the whole first iteration, and only root move 0 needs
-    /// it** — alpha is still `-INFINITE` there, so any finite score raises it.
-    /// The rest is a bounded overrun, left standing because narrowing it
-    /// changes what the engine does with a *clock*, which is step 5's subject.
     fn without_limits(&self) -> Self {
         Self {
             signals: self.signals,
@@ -210,12 +256,15 @@ impl<'a> Budget<'a> {
         }
     }
 
-    fn expired(&self, nodes: u64) -> bool {
+    /// ⚠️ **`clock` is read lazily, inside the `is_some_and`.** A budget of
+    /// `depth` or `nodes` alone must not consult a clock at all — CONVENTIONS.md
+    /// carries that rule — so the reading cannot be hoisted into an argument.
+    fn expired(&self, nodes: u64, clock: &impl Clock) -> bool {
         self.signals.stopped()
             || self.node_limit.is_some_and(|limit| nodes >= limit)
             || self
                 .deadline
-                .is_some_and(|deadline| Instant::now() >= deadline)
+                .is_some_and(|deadline| clock.now() >= deadline)
     }
 }
 
@@ -224,7 +273,7 @@ impl<'a> Budget<'a> {
 /// Everything that has to survive between searches lives here, because the
 /// driver's worker thread owns one for its whole life.
 #[derive(Debug)]
-pub struct NegamaxSearcher {
+pub struct NegamaxSearcher<C = RealClock> {
     /// The root's moves, kept out of [`Self::buf`] on purpose: they persist
     /// across iterations and get reordered, which is not what a ply-threaded
     /// buffer is for.
@@ -274,9 +323,17 @@ pub struct NegamaxSearcher {
     /// Sticky. Once the budget is spent every frame returns at once without
     /// polling again, so an abandoned subtree cannot spend time on its way out.
     stopped: bool,
+    /// What every deadline in this search is measured against. Its *origin* is
+    /// read once per [`Searcher::search`], so the `info` line's elapsed and the
+    /// budget's expiry cannot come from two timelines.
+    clock: C,
+    /// Held back from what the mover holds when an allowance is derived from a
+    /// clock. Survives between searches: it is an operator setting, not
+    /// something a `go` carries.
+    margin: Duration,
 }
 
-impl NegamaxSearcher {
+impl NegamaxSearcher<RealClock> {
     /// A searcher whose table is the size `USI_Hash` advertises as its default.
     ///
     /// ⚠️ **Not what a test wants.** It allocates [`DEFAULT_HASH_MB`] MiB, and
@@ -287,13 +344,6 @@ impl NegamaxSearcher {
         Self::with_hash_mb(DEFAULT_HASH_MB)
     }
 
-    /// Nodes visited by the last search. Caller: `rinsai bench`, which has no
-    /// other way to read the figure it exists to freeze.
-    #[must_use]
-    pub fn nodes(&self) -> u64 {
-        self.nodes
-    }
-
     /// A searcher with a table of `mb` MiB.
     ///
     /// Callers: `rinsai bench`, and every test that does not want a quarter of a
@@ -301,6 +351,16 @@ impl NegamaxSearcher {
     /// the worker's searcher already owns, through [`Searcher::set_hash_mb`].
     #[must_use]
     pub fn with_hash_mb(mb: usize) -> Self {
+        Self::with_clock(mb, RealClock::new())
+    }
+}
+
+impl<C: Clock> NegamaxSearcher<C> {
+    /// A searcher with a table of `mb` MiB, timed by `clock`.
+    ///
+    /// Callers: [`Self::with_hash_mb`], which supplies a [`RealClock`], and this
+    /// module's budget tests, which supply one they drive themselves.
+    fn with_clock(mb: usize, clock: C) -> Self {
         Self {
             root_moves: Vec::with_capacity(MAX_LEGAL_MOVES),
             buf: MoveBuf::new(),
@@ -310,7 +370,16 @@ impl NegamaxSearcher {
             nodes: 0,
             seldepth: 0,
             stopped: false,
+            clock,
+            margin: Duration::from_millis(DEFAULT_DELIVERY_MARGIN_MS),
         }
+    }
+
+    /// Nodes visited by the last search. Caller: `rinsai bench`, which has no
+    /// other way to read the figure it exists to freeze.
+    #[must_use]
+    pub fn nodes(&self) -> u64 {
+        self.nodes
     }
 
     /// One root, all of its moves, at one depth.
@@ -330,12 +399,19 @@ impl NegamaxSearcher {
     /// and no failing test, because every test here searches an open window.
     /// It also ignores `window.beta` outright. E1 owns both, and owes this
     /// method a return type that tells fail-low apart from abandoned.
+    ///
+    /// `first_move`, when given, is what **root move 0 alone** is searched
+    /// against — see [`Budget::without_limits`] for what that buys. ⚠️ It is an
+    /// `Option` rather than a second `&Budget<'_>` because two adjacent
+    /// references of one type are silently swappable, and swapping these puts
+    /// the relief on every root move *except* the one that needs it.
     fn negamax_root(
         &mut self,
         board: &mut Position,
         mut window: Window,
         depth: Depth,
         budget: &Budget<'_>,
+        first_move: Option<&Budget<'_>>,
     ) -> Option<Score> {
         debug_assert_eq!(
             window.alpha,
@@ -347,6 +423,10 @@ impl NegamaxSearcher {
         let mut best = -Score::INFINITE;
         let mut improved = false;
         for i in 0..self.root_moves.len() {
+            let budget = match i {
+                0 => first_move.unwrap_or(budget),
+                _ => budget,
+            };
             let mv = self.root_moves[i];
             let undo = board.do_move(mv);
             self.path.push(HistoryEntry::of(board));
@@ -468,7 +548,8 @@ impl NegamaxSearcher {
         if self.stopped {
             return Score::ZERO;
         }
-        if self.nodes.is_multiple_of(POLL_INTERVAL_NODES) && budget.expired(self.nodes) {
+        if self.nodes.is_multiple_of(POLL_INTERVAL_NODES) && budget.expired(self.nodes, &self.clock)
+        {
             self.stopped = true;
             return Score::ZERO;
         }
@@ -598,7 +679,8 @@ impl NegamaxSearcher {
         }
         // ⚠️ Quiescence polls, and that is load-bearing — see
         // `POLL_INTERVAL_NODES`.
-        if self.nodes.is_multiple_of(POLL_INTERVAL_NODES) && budget.expired(self.nodes) {
+        if self.nodes.is_multiple_of(POLL_INTERVAL_NODES) && budget.expired(self.nodes, &self.clock)
+        {
             self.stopped = true;
             return Score::ZERO;
         }
@@ -716,16 +798,22 @@ impl NegamaxSearcher {
     }
 }
 
-impl Default for NegamaxSearcher {
+impl Default for NegamaxSearcher<RealClock> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Searcher for NegamaxSearcher {
+impl<C: Clock> Searcher for NegamaxSearcher<C> {
     fn search(&mut self, job: &SearchJob, out: &dyn InfoSink) -> BestMove {
-        let started = Instant::now();
-        let budget = Budget::new(&job.limits, &job.signals, started);
+        let started = self.clock.now();
+        let budget = Budget::new(
+            &job.limits,
+            &job.signals,
+            started,
+            job.game.side_to_move(),
+            self.margin,
+        );
         let mut board = job.game.search_board();
 
         self.nodes = 0;
@@ -767,9 +855,10 @@ impl Searcher for NegamaxSearcher {
         // nothing may depend on it.
         let mut best = self.root_moves[0];
 
-        // What the first iteration runs against, so the answer is a move the
-        // search looked at rather than the seed. `stop` still gets through.
-        let first = budget.without_limits();
+        // What the first iteration's first root move runs against, so the
+        // answer is a move the search looked at rather than the seed. `stop`
+        // still gets through.
+        let relief = budget.without_limits();
 
         // Stays 0 until an iteration gets all the way through the root list —
         // see `BestMove::Play`'s field for what a caller may conclude from it.
@@ -779,9 +868,11 @@ impl Searcher for NegamaxSearcher {
             // Per-iteration, unlike `self.nodes` — see the field's doc.
             self.seldepth = 0;
 
-            let iteration_budget = if depth == 1 { &first } else { &budget };
+            // Which iteration is the first stays this loop's business — see
+            // `negamax_root`, which is told rather than deducing it.
+            let first_move = (depth == 1).then_some(&relief);
             let Some(score) =
-                self.negamax_root(&mut board, Window::open(), depth, iteration_budget)
+                self.negamax_root(&mut board, Window::open(), depth, &budget, first_move)
             else {
                 break;
             };
@@ -807,7 +898,7 @@ impl Searcher for NegamaxSearcher {
                     score,
                     nodes: self.nodes,
                     hashfull: self.tt.hashfull(),
-                    elapsed: started.elapsed(),
+                    elapsed: self.clock.now().saturating_sub(started),
                     pv: &self.pv[0],
                 }
                 .to_string(),
@@ -821,7 +912,7 @@ impl Searcher for NegamaxSearcher {
             }
 
             // A proven mate does not get better with depth.
-            if score.is_mate() || self.stopped || budget.expired(self.nodes) {
+            if score.is_mate() || self.stopped || budget.expired(self.nodes, &self.clock) {
                 break;
             }
         }
@@ -852,10 +943,15 @@ impl Searcher for NegamaxSearcher {
             eprintln!("rinsai: USI_Hash {mb} MiB is not available; using {got} MiB");
         }
     }
+
+    fn set_delivery_margin(&mut self, margin: Duration) {
+        self.margin = margin;
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
     use std::time::Duration;
@@ -896,6 +992,42 @@ mod tests {
     /// admits, so it is also the size the engine has to work at.
     fn searcher() -> NegamaxSearcher {
         NegamaxSearcher::with_hash_mb(1)
+    }
+
+    /// A clock that advances one `step` every time it is read.
+    ///
+    /// ⚠️ **Reads, not work**, which is what makes a budget test deterministic
+    /// where a wall clock cannot be: a search under it expires after a fixed
+    /// number of polls, at the same depth on any machine. Which depth follows
+    /// from the tree and has to be checked against a run, not reasoned about.
+    #[derive(Debug)]
+    struct TickClock {
+        step: Duration,
+        reads: AtomicU64,
+    }
+
+    impl TickClock {
+        fn new(step: Duration) -> Self {
+            Self {
+                step,
+                reads: AtomicU64::new(0),
+            }
+        }
+
+        fn reads(&self) -> u64 {
+            self.reads.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Clock for TickClock {
+        fn now(&self) -> Duration {
+            self.step
+                * u32::try_from(self.reads.fetch_add(1, Ordering::Relaxed)).unwrap_or(u32::MAX)
+        }
+    }
+
+    fn ticking(step: Duration) -> NegamaxSearcher<TickClock> {
+        NegamaxSearcher::with_clock(1, TickClock::new(step))
     }
 
     fn job(game: Game, limits: Limits) -> SearchJob {
@@ -1128,9 +1260,9 @@ mod tests {
         );
     }
 
-    /// The depth-1 iteration is the one that always completes, and every root
-    /// child in it is a quiescence node — so this is what says the verdict is
-    /// asked for at the dispatch rather than inside the interior node.
+    /// Every root child at depth 1 is a quiescence node, so this is what says
+    /// the verdict is asked for at the dispatch rather than inside the interior
+    /// node.
     ///
     /// Sabotage, verified on this fixture and impossible on a deeper one: move
     /// the verdict from `child` to the top of `negamax` and depth 1 reports the
@@ -1534,21 +1666,20 @@ mod tests {
         );
     }
 
-    /// The first iteration is never abandoned, so the answer is always a move
+    /// The first root move is never abandoned, so the answer is always a move
     /// the search actually looked at.
     ///
-    /// ⚠️ **The fixture is load-bearing**: it is the only one found whose
-    /// depth-1 iteration is expensive enough for the poll to fire inside it
-    /// — 49 006 depth-1 nodes against at most 634 for the rest. Every other one
-    /// makes this test unable to fail. `movetime 0` is the sharpest form of the
-    /// question — the deadline has already passed when the search starts.
+    /// ⚠️ **The fixture is load-bearing**: root move 0's subtree has to outlast
+    /// a poll interval, or the poll never fires inside it and this test cannot
+    /// fail. `movetime 0` is the sharpest form of the question — the deadline
+    /// has already passed when the search starts.
     ///
     /// Sabotage, verified on this fixture and on no other: pass `budget` rather
-    /// than `first` to the depth-1 iteration and it fails on both counts at
-    /// once — no `info` line at all, and the answer becomes whatever shunsai
-    /// happened to generate first.
+    /// than `first_move` to root move 0 and it fails on both counts at once —
+    /// no `info` line at all, and the answer becomes whatever shunsai happened
+    /// to generate first.
     #[test]
-    fn the_first_iteration_is_never_abandoned() {
+    fn the_first_root_move_is_never_abandoned() {
         // Two plies on from the drop-heavy fixture, found by searching its
         // descendants for the most expensive depth-1 iteration.
         let args = "sfen l6nl/6+Pgk/2np1S3/p1p1p2Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn4p 3";
@@ -1569,47 +1700,99 @@ mod tests {
         }
     }
 
-    /// A node limit has to be honoured where the unclocked first iteration is
-    /// itself expensive — the interaction `a_deep_search_still_answers_a_node_limit`
+    /// `stop` gets through the first root move's relief, which is why the
+    /// relief is a second budget rather than a flag that skips the poll.
+    ///
+    /// What it catches is the relief written as a flag that skips the poll: the
+    /// search would still answer, but only after finishing a root move nobody
+    /// is waiting for. The bound is exact because the poll fires at exact
+    /// multiples.
+    #[test]
+    fn stop_gets_through_the_first_root_move() {
+        let args = "sfen l6nl/6+Pgk/2np1S3/p1p1p2Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn4p 3";
+        let mut searcher = searcher();
+        let job = job(game(args), depth(64));
+        job.signals.stop();
+
+        let best = searcher.search(&job, &SilentSink);
+        assert!(matches!(best, BestMove::Play { .. }));
+        assert_eq!(
+            searcher.nodes(),
+            POLL_INTERVAL_NODES,
+            "the first root move ran on past `stop`"
+        );
+    }
+
+    /// A node limit has to be honoured where the relieved root move is itself
+    /// expensive — the interaction `a_deep_search_still_answers_a_node_limit`
     /// cannot reach, since depth 1 is cheap at the initial position.
     ///
-    /// ⚠️ **Both bounds are built from a *measured* depth-1 cost, and the lower
-    /// one is what makes the test load-bearing.** On a fixture whose depth 1 is
-    /// cheaper than the limit, the limit bites in iteration *two* and deleting
-    /// the `depth == 1` special case leaves this green.
+    /// ⚠️ **A bound comparing two runs that both stop inside the relief is
+    /// true however wide the relief is**, so the width is pinned against the
+    /// unlimited first iteration instead.
     ///
-    /// Sabotage: pass `budget` rather than `first` to the depth-1 iteration and
-    /// this goes red either way round — the iteration is cut short, tripping
-    /// the lower bound, or it stops before the first root move finishes and no
-    /// `info` line is emitted at all.
+    /// Sabotage, both directions: give root move 0 `budget` rather than
+    /// `first_move`, or give `first_move` to every root move.
     ///
     /// ⚠️ **It is not the test that catches the poll being dropped from
     /// `qsearch`.** That mutation goes red on
     /// `a_deep_search_still_answers_a_node_limit`, whose bound is far tighter.
     #[test]
     fn a_node_limit_is_honoured_inside_a_quiescence_subtree() {
-        // The same fixture as `the_first_iteration_is_never_abandoned`, and
+        // The same fixture as `the_first_root_move_is_never_abandoned`, and
         // for the same reason.
         let args = "sfen l6nl/6+Pgk/2np1S3/p1p1p2Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn4p 3";
-        let (_, first) = run(args, depth(1));
-        let unclocked = field(&first[0], "nodes");
+        // How far the relief carries the search when the limit is as tight as
+        // it can be. ⚠️ Not root move 0's subtree exactly: a poll fires only at
+        // an exact multiple of `POLL_INTERVAL_NODES`, so the root moves after
+        // it run on until one of them lands on the next multiple, and this is
+        // that rounded-up figure.
+        let (_, relieved) = run(
+            args,
+            Limits {
+                depth: Some(64),
+                nodes: Some(1),
+                ..Limits::default()
+            },
+        );
+        let floor = field(relieved.last().expect("an iteration finished"), "nodes");
+        let poll = i64::try_from(POLL_INTERVAL_NODES).expect("fits");
+        // The property the fixture is chosen for: the relief has to cover more
+        // than one poll interval, or nothing about it is observable here.
+        assert!(
+            floor > poll,
+            "root move 0 is too cheap to poll inside: {floor}"
+        );
 
+        // What the whole first iteration costs, unlimited. ⚠️ **This is the
+        // bound that pins the relief's *width*.** Comparing two runs that both
+        // stop inside the relief cannot: they stop at the same node, and the
+        // assertion is true by construction however wide the relief is.
+        let (_, unlimited) = run(args, depth(1));
+        let whole = field(unlimited.last().expect("an iteration finished"), "nodes");
+        assert!(
+            floor < whole,
+            "the relief covers the whole iteration, not root move 0: {floor} of {whole}"
+        );
+
+        // Above the relief, so the limit is what stops this one.
+        let limit = floor + poll;
         let (_, lines) = run(
             args,
             Limits {
                 depth: Some(64),
-                nodes: Some(20_000),
+                nodes: Some(u64::try_from(limit).expect("positive")),
                 ..Limits::default()
             },
         );
         let nodes = field(lines.last().expect("an iteration finished"), "nodes");
         assert!(
-            nodes >= unclocked,
-            "the node limit cut the first iteration short: {nodes} < {unclocked}"
+            nodes >= limit,
+            "the node limit bit before it was reached: {nodes} < {limit}"
         );
         assert!(
-            nodes < unclocked + 20_000 + 4 * i64::try_from(POLL_INTERVAL_NODES).expect("fits"),
-            "the node limit went unnoticed inside quiescence: {nodes}"
+            nodes < limit + 4 * poll,
+            "the node limit went unnoticed: {nodes}"
         );
     }
 
@@ -1700,7 +1883,7 @@ mod tests {
     ///
     /// ⚠️ **It fails rather than hanging, and that is what the off-thread
     /// `recv_timeout` above is for.** Something else in the suite does wedge on
-    /// that mutation — `the_first_iteration_is_never_abandoned` searches on the
+    /// that mutation — `the_first_root_move_is_never_abandoned` searches on the
     /// calling thread — so a sweep that only watches the suite as a whole
     /// attributes the hang to the wrong test.
     #[test]
@@ -1829,17 +2012,23 @@ mod tests {
     #[test]
     fn the_depth_ceiling_follows_the_budget_that_was_named() {
         let signals = SearchSignals::new();
-        let started = Instant::now();
-        let ceiling = |limits: Limits| Budget::new(&limits, &signals, started).max_depth;
+        let ceiling = |limits: Limits| {
+            Budget::new(
+                &limits,
+                &signals,
+                Duration::ZERO,
+                Color::Black,
+                Duration::ZERO,
+            )
+            .max_depth
+        };
         let second = Some(Duration::from_secs(1));
 
         assert_eq!(ceiling(Limits::default()), DEFAULT_DEPTH);
-        // A clock with no per-move budget on it is still "nothing named":
-        // turning `btime` into an allowance is step 5's whole subject.
+        // `byoyomi 0` is "this time control has no byoyomi", so on its own it
+        // still names nothing.
         assert_eq!(
             ceiling(Limits {
-                btime: second,
-                wtime: second,
                 byoyomi: Some(Duration::ZERO),
                 ..Limits::default()
             }),
@@ -1853,6 +2042,14 @@ mod tests {
             },
             Limits {
                 byoyomi: second,
+                ..Limits::default()
+            },
+            // A budget the engine derives for itself lifts the ceiling exactly
+            // as one it was told does.
+            Limits {
+                btime: second,
+                wtime: second,
+                byoyomi: Some(Duration::ZERO),
                 ..Limits::default()
             },
             Limits {
@@ -2043,16 +2240,258 @@ mod tests {
         }
     }
 
-    /// `go` with only a clock on it falls back to a fixed depth.
+    /// Whose clock a derived allowance reads.
+    ///
+    /// Sabotage: swap the arms.
     #[test]
-    fn an_unclocked_go_falls_back_to_the_default_depth() {
+    fn a_derived_allowance_reads_the_clock_of_the_side_to_move() {
         let limits = Limits {
-            btime: Some(Duration::from_secs(300)),
-            wtime: Some(Duration::from_secs(300)),
-            byoyomi: Some(Duration::ZERO),
+            btime: Some(Duration::from_secs(450)),
+            wtime: Some(Duration::from_secs(45)),
             ..Limits::default()
         };
-        let (best, lines) = run("startpos", limits);
+        // Against `MOVE_HORIZON` rather than a written-out number, so an SPRT
+        // that retunes the divisor does not have to edit this test.
+        assert_eq!(
+            Budget::allowance(&limits, Color::Black, Duration::ZERO),
+            Some(Duration::from_secs(450) / MOVE_HORIZON)
+        );
+        assert_eq!(
+            Budget::allowance(&limits, Color::White, Duration::ZERO),
+            Some(Duration::from_secs(45) / MOVE_HORIZON)
+        );
+    }
+
+    /// The byoyomi period is spent before any main time is.
+    ///
+    /// Sabotage: derive the allowance from main time alone and this position —
+    /// main time gone, ten seconds of byoyomi in hand — answers instantly and
+    /// leaves all ten unused. It is the ordinary shape of a long game's endgame,
+    /// not an edge case.
+    #[test]
+    fn a_derived_allowance_spends_the_byoyomi_first() {
+        let ten = Duration::from_secs(10);
+        assert_eq!(
+            Budget::allowance(
+                &Limits {
+                    btime: Some(Duration::ZERO),
+                    byoyomi: Some(ten),
+                    ..Limits::default()
+                },
+                Color::Black,
+                Duration::ZERO,
+            ),
+            Some(ten)
+        );
+    }
+
+    /// A `go` carrying only the opponent's clock names no budget for the mover.
+    ///
+    /// Sabotage: test `limits.btime.is_none() && limits.wtime.is_none()` instead
+    /// of the mover's own field. The allowance becomes `Some(ZERO)` rather than
+    /// `None` — which is not "nothing named" but "no time left", and because a
+    /// deadline exists it also lifts the ceiling off `DEFAULT_DEPTH`, so the
+    /// engine answers from one root move where it used to search four plies.
+    /// ⚠️ Reachable from a conforming GUI: `parse_go` leaves an unparseable
+    /// field unset rather than refusing the `go`.
+    #[test]
+    fn only_the_movers_clock_names_a_budget_for_the_mover() {
+        let minute = Some(Duration::from_secs(60));
+        let one_sided = Limits {
+            wtime: minute,
+            ..Limits::default()
+        };
+        assert_eq!(
+            Budget::allowance(&one_sided, Color::Black, Duration::ZERO),
+            None
+        );
+        assert_eq!(
+            Budget::allowance(&one_sided, Color::White, Duration::ZERO),
+            Some(Duration::from_secs(60) / MOVE_HORIZON)
+        );
+
+        // The ceiling follows, which is the half that costs the plies.
+        let signals = SearchSignals::new();
+        let ceiling = |mover| {
+            Budget::new(&one_sided, &signals, Duration::ZERO, mover, Duration::ZERO).max_depth
+        };
+        assert_eq!(ceiling(Color::Black), DEFAULT_DEPTH);
+        assert_eq!(ceiling(Color::White), MAX_DEPTH);
+    }
+
+    /// When the margin binds, and the two ways it must not.
+    ///
+    /// ⚠️ The main-time case is what pins the margin to the *cap*: take it off
+    /// the spend instead and only that assertion moves.
+    #[test]
+    fn the_margin_comes_off_a_derived_allowance_and_not_off_movetime() {
+        let margin = Duration::from_millis(30);
+        let byoyomi = |d| Limits {
+            byoyomi: Some(d),
+            ..Limits::default()
+        };
+
+        // Slack in hand: delivery cannot flag, so nothing is held back.
+        let main = Duration::from_secs(300);
+        assert_eq!(
+            Budget::allowance(
+                &Limits {
+                    btime: Some(main),
+                    ..Limits::default()
+                },
+                Color::Black,
+                margin,
+            ),
+            Some(main / MOVE_HORIZON)
+        );
+
+        // An increment is credited *after* the move, so it cannot be spent
+        // before it and the cap is what catches that.
+        assert_eq!(
+            Budget::allowance(
+                &Limits {
+                    btime: Some(Duration::from_millis(100)),
+                    binc: Some(Duration::from_secs(5)),
+                    ..Limits::default()
+                },
+                Color::Black,
+                margin,
+            ),
+            Some(Duration::from_millis(70))
+        );
+
+        assert_eq!(
+            Budget::allowance(&byoyomi(Duration::from_millis(200)), Color::Black, margin),
+            Some(Duration::from_millis(170))
+        );
+        // A margin wider than the clock saturates. ⚠️ A minimum thinking time
+        // put back here would re-create the overrun the margin exists to remove.
+        assert_eq!(
+            Budget::allowance(&byoyomi(Duration::from_millis(10)), Color::Black, margin),
+            Some(Duration::ZERO)
+        );
+
+        // `movetime n` is a caller holding its own clock and saying "spend n".
+        // ⚠️ `movetime 0` is an expired budget, not the absence of one: were it
+        // `None` this `go` would name no budget at all and fall back to
+        // `DEFAULT_DEPTH`.
+        for spend in [Duration::from_millis(10), Duration::ZERO] {
+            assert_eq!(
+                Budget::allowance(
+                    &Limits {
+                        movetime: Some(spend),
+                        ..Limits::default()
+                    },
+                    Color::Black,
+                    margin,
+                ),
+                Some(spend)
+            );
+        }
+    }
+
+    /// A search under a derived allowance stops itself, between the first
+    /// iteration and the last.
+    ///
+    /// ⚠️ **Off the calling thread's wall clock entirely.** The budget is spent
+    /// by *reading* the clock, so this asserts the deadline reaches the search
+    /// without the test measuring the machine it runs on.
+    #[test]
+    fn a_derived_allowance_ends_the_deepening() {
+        let limits = Limits {
+            btime: Some(Duration::from_millis(900)),
+            wtime: Some(Duration::from_millis(900)),
+            ..Limits::default()
+        };
+        // ⚠️ **Off the calling thread**, because a deadline that never arrives
+        // runs to `MAX_DEPTH` rather than returning — on this thread that is a
+        // wedged suite attributed to whichever test the sweep was watching.
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let sink = Lines::default();
+            let best =
+                ticking(Duration::from_micros(20)).search(&job(game("startpos"), limits), &sink);
+            let _ = tx.send((best, sink.take()));
+        });
+        let Ok((best, lines)) = rx.recv_timeout(Duration::from_secs(10)) else {
+            panic!("the deadline never arrived");
+        };
+
+        assert!(matches!(best, BestMove::Play { .. }));
+        let reached = field(lines.last().expect("reported something"), "depth");
+        // An allowance that failed to be derived at all leaves `DEFAULT_DEPTH`
+        // standing, which the timeout above would not notice.
+        assert!(
+            reached > i64::from(DEFAULT_DEPTH),
+            "the clock did not lift the depth ceiling: {reached}"
+        );
+    }
+
+    /// A budget carrying no deadline is never polled against a clock.
+    ///
+    /// CONVENTIONS.md's portability rule rests on this, and `bench` cannot see
+    /// it: hoisting the reading out of [`Budget::expired`]'s `is_some_and`
+    /// moves no node count, so nothing else here would go red.
+    ///
+    /// Sabotage: give `expired` a `now: Duration` parameter and read the clock
+    /// at the three poll sites.
+    #[test]
+    fn a_clock_free_budget_never_reads_the_clock() {
+        // One read at entry, one per `info` line. Neither comes from a poll,
+        // and both are what the `info` line's `time` is built from.
+        let per_iteration = |limits, iterations| {
+            let mut searcher = ticking(Duration::from_micros(20));
+            searcher.search(&job(game("startpos"), limits), &SilentSink);
+            assert_eq!(
+                searcher.clock.reads(),
+                1 + iterations,
+                "{limits:?} read the clock from a poll"
+            );
+        };
+        per_iteration(depth(4), 4);
+        per_iteration(
+            Limits::default(),
+            u64::try_from(DEFAULT_DEPTH).expect("positive"),
+        );
+        per_iteration(
+            Limits {
+                nodes: Some(50_000),
+                ..Limits::default()
+            },
+            4,
+        );
+    }
+
+    /// The delivery margin an operator set reaches the budget the search runs
+    /// against.
+    ///
+    /// Sabotage: pass `Duration::ZERO` rather than `self.margin` to
+    /// `Budget::new`, or empty `NegamaxSearcher::set_delivery_margin`.
+    #[test]
+    fn the_delivery_margin_reaches_the_budget() {
+        let limits = Limits {
+            byoyomi: Some(Duration::from_millis(50)),
+            ..Limits::default()
+        };
+        let spend = |margin| {
+            let mut searcher = ticking(Duration::from_micros(20));
+            searcher.set_delivery_margin(margin);
+            searcher.search(&job(game("startpos"), limits), &SilentSink);
+            searcher.nodes()
+        };
+        // A margin as wide as the byoyomi leaves an allowance of zero.
+        let margined = spend(Duration::from_millis(50));
+        let unmargined = spend(Duration::ZERO);
+        assert!(
+            margined < unmargined,
+            "the margin did not reach the search: {margined} against {unmargined}"
+        );
+    }
+
+    /// A `go` naming no budget of any kind falls back to a fixed depth.
+    #[test]
+    fn an_unclocked_go_falls_back_to_the_default_depth() {
+        let (best, lines) = run("startpos", Limits::default());
         assert!(matches!(best, BestMove::Play { .. }));
         assert_eq!(
             i64::from(DEFAULT_DEPTH),

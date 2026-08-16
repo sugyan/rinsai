@@ -578,11 +578,9 @@ fn log_game(
         )
         .u64("black_ms", ms(record.spent[Color::Black.array_index()]))
         .u64("white_ms", ms(record.spent[Color::White.array_index()]))
-        // ⚠️ Microseconds, where the totals beside them are milliseconds. What
-        // this array exists to show is how far a move ran past its byoyomi,
-        // which is a fraction of a millisecond — rounded to the millisecond
-        // every move would log as exactly its budget, and the field would
-        // stop being an instrument.
+        // ⚠️ Microseconds, where the totals beside them are milliseconds —
+        // rounded to the millisecond every move would log as exactly its
+        // budget, and the field would stop being an instrument.
         .u64_array(
             "times_us",
             &record

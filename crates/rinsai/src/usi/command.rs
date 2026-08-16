@@ -106,7 +106,7 @@ fn split_once_token<'a>(haystack: &'a str, token: &str) -> Option<(&'a str, &'a 
     None
 }
 
-/// Every `go` field is parsed, and most are ignored until a later step. A field
+/// Every `go` field is parsed and acted on. A field
 /// whose value is missing or unparseable is simply left unset — a `go` is never
 /// refused, because refusing one means no `bestmove` and a game lost on time.
 /// (The asymmetry is deliberate: `position` *is* refused, because there the

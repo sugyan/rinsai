@@ -3,10 +3,11 @@
 //! **A declared option is a promise.** An engine that advertises `Threads` and
 //! runs one thread has lied to its operator, and that lie corrupts an SPRT run
 //! rather than crashing — which is far worse. So only options that exist are
-//! declared, and the two that are declared before they are honoured say so out
-//! loud at `isready`.
+//! declared, and any that is declared before it is honoured carries a `planned`
+//! note and says so out loud at `isready`.
 
 use std::fmt;
+use std::time::Duration;
 
 /// Where a declared option's value is stored.
 ///
@@ -20,6 +21,7 @@ use std::fmt;
 pub(crate) enum Slot {
     HashMb,
     Ponder,
+    DeliveryMarginMs,
 }
 
 /// What kind of control a GUI should show, and its default.
@@ -64,6 +66,16 @@ pub(crate) const OPTIONS: &[OptionSpec] = &[
         planned: None,
     },
     OptionSpec {
+        name: "DeliveryMargin",
+        kind: OptionKind::Spin {
+            default: rinsai_search::DEFAULT_DELIVERY_MARGIN_MS as i64,
+            min: 0,
+            max: 10_000,
+        },
+        slot: Slot::DeliveryMarginMs,
+        planned: None,
+    },
+    OptionSpec {
         name: "USI_Ponder",
         kind: OptionKind::Check { default: false },
         slot: Slot::Ponder,
@@ -88,6 +100,7 @@ impl fmt::Display for OptionSpec {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Options {
     pub(crate) hash_mb: i64,
+    pub(crate) delivery_margin_ms: i64,
     pub(crate) ponder: bool,
 }
 
@@ -98,6 +111,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             hash_mb: rinsai_search::DEFAULT_HASH_MB as i64,
+            delivery_margin_ms: rinsai_search::DEFAULT_DELIVERY_MARGIN_MS as i64,
             ponder: false,
         }
     }
@@ -142,6 +156,7 @@ impl Options {
         // Dispatch on the slot, never on the kind — see `Slot`.
         match spec.slot {
             Slot::HashMb => self.hash_mb = spin(spec, value)?,
+            Slot::DeliveryMarginMs => self.delivery_margin_ms = spin(spec, value)?,
             Slot::Ponder => self.ponder = check(spec, value)?,
         }
         Ok(spec.slot)
@@ -151,6 +166,15 @@ impl Options {
     /// has already bounded the value against the spec's `min`/`max`.
     pub(crate) fn hash_mb(&self) -> usize {
         usize::try_from(self.hash_mb).unwrap_or(rinsai_search::DEFAULT_HASH_MB)
+    }
+
+    /// What the search keeps back from the clock it is charged against. Total
+    /// for the same reason [`Self::hash_mb`] is.
+    pub(crate) fn delivery_margin(&self) -> Duration {
+        Duration::from_millis(
+            u64::try_from(self.delivery_margin_ms)
+                .unwrap_or(rinsai_search::DEFAULT_DELIVERY_MARGIN_MS),
+        )
     }
 
     /// Options an operator has changed that the engine does not act on yet.
@@ -169,6 +193,9 @@ impl Options {
     fn differs_from_default(&self, spec: &OptionSpec) -> bool {
         match (spec.slot, spec.kind) {
             (Slot::HashMb, OptionKind::Spin { default, .. }) => self.hash_mb != default,
+            (Slot::DeliveryMarginMs, OptionKind::Spin { default, .. }) => {
+                self.delivery_margin_ms != default
+            }
             (Slot::Ponder, OptionKind::Check { default }) => self.ponder != default,
             // A slot declared with a control it cannot hold is a table error,
             // not operator input; treat it as unchanged rather than guessing.
@@ -226,6 +253,7 @@ mod tests {
             lines,
             vec![
                 "option name USI_Hash type spin default 256 min 1 max 65536",
+                "option name DeliveryMargin type spin default 30 min 0 max 10000",
                 "option name USI_Ponder type check default false",
             ]
         );
@@ -250,6 +278,20 @@ mod tests {
         // `min 1` is a promise that the table works at one MiB, which
         // `rinsai-search`'s own tests are what actually exercise.
         assert_eq!(min, 1);
+
+        let spec = OPTIONS
+            .iter()
+            .find(|spec| spec.name == "DeliveryMargin")
+            .expect("DeliveryMargin is declared");
+        let OptionKind::Spin { default, .. } = spec.kind else {
+            panic!("DeliveryMargin is a spin");
+        };
+        assert_eq!(default, rinsai_search::DEFAULT_DELIVERY_MARGIN_MS as i64);
+        assert_eq!(Options::default().delivery_margin_ms, default);
+        assert_eq!(
+            Options::default().delivery_margin(),
+            Duration::from_millis(rinsai_search::DEFAULT_DELIVERY_MARGIN_MS)
+        );
     }
 
     #[test]
