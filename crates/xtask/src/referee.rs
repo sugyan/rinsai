@@ -12,7 +12,7 @@
 
 use std::time::Duration;
 
-use rinsai_game::{Game, Outcome};
+use rinsai_game::{Game, Outcome, illegal};
 use shogi_core::{Color, ToUsi};
 
 use crate::usi::{BestmoveAnswer, ClockSpec, EngineError, GoSpec, TimedAnswer, UsiEngine};
@@ -235,6 +235,22 @@ pub fn play_game(
                 Outcome::Resignation { loser } => {
                     (Winner::opponent_of(loser), EndReason::Resign, None)
                 }
+                Outcome::FlagFall { loser } => {
+                    (Winner::opponent_of(loser), EndReason::FlagFall, None)
+                }
+                Outcome::IllegalMove { loser, kind } => (
+                    Winner::opponent_of(loser),
+                    EndReason::IllegalMove,
+                    Some(illegal(kind).to_owned()),
+                ),
+                Outcome::Declaration { winner } => {
+                    (Winner::of(winner), EndReason::Declaration, None)
+                }
+                Outcome::MaxMoves => (Winner::Neither, EndReason::MaxMoves, None),
+                // ⚠️ Narrowing: `Outcome` has one variant for the three
+                // `EndReason` keeps apart, so this arm answers with the one
+                // that says least. Why they stay apart is DECISIONS.md's.
+                Outcome::Abandoned { loser } => (Winner::opponent_of(loser), EndReason::Died, None),
             };
         }
         if game.ply() >= max_plies {

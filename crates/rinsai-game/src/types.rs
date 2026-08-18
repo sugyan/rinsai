@@ -30,6 +30,18 @@ pub enum Outcome {
     PerpetualCheck { loser: Color },
     /// 投了.
     Resignation { loser: Color },
+    /// 時間切れ.
+    FlagFall { loser: Color },
+    /// 反則負け.
+    IllegalMove { loser: Color, kind: IllegalMoveKind },
+    /// 入玉宣言 — a claim, not a verdict; see
+    /// [`declare`](crate::Game::declare).
+    Declaration { winner: Color },
+    /// The game reached the ply cap its players agreed on. A draw.
+    MaxMoves,
+    /// `loser` stopped playing — crashed, wedged, or answered something no move
+    /// could be read out of.
+    Abandoned { loser: Color },
 }
 
 impl fmt::Display for Outcome {
@@ -41,6 +53,16 @@ impl fmt::Display for Outcome {
                 write!(f, "{}の負け（連続王手の千日手）", side(loser))
             }
             Self::Resignation { loser } => write!(f, "{}の投了", side(loser)),
+            Self::FlagFall { loser } => write!(f, "{}の時間切れ", side(loser)),
+            // The kind's own sentence rather than a noun beside it: a second
+            // table over `IllegalMoveKind` is a second thing to keep in step
+            // with the first, for one word's worth of grammar.
+            Self::IllegalMove { loser, kind } => {
+                write!(f, "{}の反則負け（{}）", side(loser), illegal(kind))
+            }
+            Self::Declaration { winner } => write!(f, "{}の勝ち（入玉宣言）", side(winner)),
+            Self::MaxMoves => f.write_str("引き分け（最大手数）"),
+            Self::Abandoned { loser } => write!(f, "{}の負け（対局放棄）", side(loser)),
         }
     }
 }
@@ -177,23 +199,71 @@ pub const fn illegal(kind: IllegalMoveKind) -> &'static str {
 mod tests {
     use super::*;
 
+    /// Every variant with the sentence it must render.
+    ///
+    /// ⚠️ Written as an exhaustive `match` rather than a table, so a tenth
+    /// variant fails to compile here. That forces an arm and not a row, so a
+    /// variant can still reach the `match` without reaching the list above it.
+    ///
+    /// The colours differ per row because the pinned sentences already catch a
+    /// flipped `side(loser)`; what one colour throughout would miss is an arm
+    /// that hard-codes a side and ignores its field.
     #[test]
-    fn a_perpetual_check_loss_names_the_checking_side_as_the_loser() {
-        let outcome = Outcome::PerpetualCheck {
-            loser: Color::Black,
-        };
-        assert_eq!(outcome.to_string(), "先手の負け（連続王手の千日手）");
+    fn every_outcome_reads_the_sentence_it_is_supposed_to() {
+        for outcome in [
+            Outcome::Checkmate {
+                winner: Color::Black,
+            },
+            Outcome::Repetition,
+            Outcome::PerpetualCheck {
+                loser: Color::Black,
+            },
+            Outcome::Resignation {
+                loser: Color::White,
+            },
+            Outcome::FlagFall {
+                loser: Color::White,
+            },
+            Outcome::IllegalMove {
+                loser: Color::Black,
+                kind: IllegalMoveKind::TwoPawns,
+            },
+            Outcome::Declaration {
+                winner: Color::White,
+            },
+            Outcome::MaxMoves,
+            Outcome::Abandoned {
+                loser: Color::White,
+            },
+        ] {
+            let expected = match outcome {
+                Outcome::Checkmate { .. } => "先手の勝ち（詰み）",
+                Outcome::Repetition => "千日手",
+                Outcome::PerpetualCheck { .. } => "先手の負け（連続王手の千日手）",
+                Outcome::Resignation { .. } => "後手の投了",
+                Outcome::FlagFall { .. } => "後手の時間切れ",
+                Outcome::IllegalMove { .. } => "先手の反則負け（二歩です）",
+                Outcome::Declaration { .. } => "後手の勝ち（入玉宣言）",
+                Outcome::MaxMoves => "引き分け（最大手数）",
+                Outcome::Abandoned { .. } => "後手の負け（対局放棄）",
+            };
+            assert_eq!(outcome.to_string(), expected, "{outcome:?}");
+        }
     }
 
+    /// The rule broken has to survive into the sentence: an adjudication that
+    /// says only "反則負け" leaves the loser unable to tell 二歩 from 王手放置.
     #[test]
-    fn every_outcome_reads_as_a_sentence() {
-        assert_eq!(Outcome::Repetition.to_string(), "千日手");
-        assert_eq!(
-            Outcome::Checkmate {
-                winner: Color::Black
-            }
-            .to_string(),
-            "先手の勝ち（詰み）"
+    fn an_illegal_move_names_both_the_loser_and_the_rule() {
+        let outcome = Outcome::IllegalMove {
+            loser: Color::White,
+            kind: IllegalMoveKind::DropPawnMate,
+        };
+        let sentence = outcome.to_string();
+        assert!(sentence.contains("後手"), "{sentence}");
+        assert!(
+            sentence.contains(illegal(IllegalMoveKind::DropPawnMate)),
+            "{sentence}"
         );
     }
 
