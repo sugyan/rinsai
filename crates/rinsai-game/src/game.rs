@@ -1,6 +1,8 @@
 //! One game: a position, its history, and the gate every move passes through.
 
-use shogi_core::{Bitboard, Color, Move, PartialPosition, Piece, PositionStatus, Square};
+use shogi_core::{
+    Bitboard, Color, IllegalMoveKind, Move, PartialPosition, Piece, PositionStatus, Square,
+};
 use shogi_legality_lite as legality;
 
 use shogi_usi_parser::FromUsi;
@@ -279,7 +281,11 @@ impl Game {
         Ok(())
     }
 
-    /// Take back the last move, clearing any outcome it produced.
+    /// Take back the last move, clearing any outcome the game had.
+    ///
+    /// ⚠️ Including one that was adjudicated rather than played into: undoing
+    /// past a flag fall revives the game, so a caller that told its players the
+    /// result owes them a fresh one.
     pub fn undo(&mut self) -> Option<Move> {
         let ply = self.moves.pop()?;
         self.positions.pop();
@@ -289,8 +295,70 @@ impl Game {
     }
 
     pub fn resign(&mut self, loser: Color) {
+        self.adjudicate(Outcome::Resignation { loser });
+    }
+
+    /// 時間切れ — `loser` did not move inside the time it had.
+    ///
+    /// Named caller: tuishogi's clock (sugyan/rinsai#28).
+    pub fn flag_fall(&mut self, loser: Color) {
+        self.adjudicate(Outcome::FlagFall { loser });
+    }
+
+    /// 反則負け — `loser` offered a move the referee refused.
+    ///
+    /// ⚠️ `kind` is [`play`](Self::play)'s own refusal, taken from the
+    /// [`MoveError::Illegal`] it answered with. A kind the caller decided on
+    /// instead states a verdict this crate did not reach, which is the whole
+    /// reason the refereeing lives here.
+    ///
+    /// Named caller: tuishogi's adjudication of an engine's `bestmove`
+    /// (sugyan/rinsai#28).
+    pub fn foul(&mut self, loser: Color, kind: IllegalMoveKind) {
+        self.adjudicate(Outcome::IllegalMove { loser, kind });
+    }
+
+    /// 入玉宣言 — `winner` declared, and the declaration is **trusted as sent**.
+    ///
+    /// ⚠️ Nothing here implements the 27-point rule, so a wrong declaration is
+    /// recorded as a full win. A caller that cannot afford that has to check the
+    /// rule before calling, and this crate is not where that check lives yet.
+    ///
+    /// Named caller: tuishogi's `bestmove win` arm (sugyan/rinsai#28).
+    pub fn declare(&mut self, winner: Color) {
+        self.adjudicate(Outcome::Declaration { winner });
+    }
+
+    /// The ply cap was reached. A draw, and the cap is the caller's — this crate
+    /// holds no maximum of its own.
+    ///
+    /// Named caller: tuishogi's engine-vs-engine adjudication
+    /// (sugyan/rinsai#28).
+    pub fn max_moves(&mut self) {
+        self.adjudicate(Outcome::MaxMoves);
+    }
+
+    /// `loser` stopped playing — crashed, wedged, or said something no move
+    /// could be read out of.
+    ///
+    /// Named caller: tuishogi's engine-exit handling (sugyan/rinsai#28).
+    pub fn abandon(&mut self, loser: Color) {
+        self.adjudicate(Outcome::Abandoned { loser });
+    }
+
+    /// Record an ending decided off the board.
+    ///
+    /// Private, and the only writer of `outcome` besides [`play`](Self::play):
+    /// a public door taking an `Outcome` would hand callers the three endings
+    /// the referee derives, and a caller that sets 詰み is asserting what this
+    /// crate exists to check.
+    ///
+    /// The first ending wins. A game already decided cannot be re-decided —
+    /// otherwise a flag fall arriving behind a mate would overwrite it, and
+    /// which one a game ended by would depend on message order.
+    fn adjudicate(&mut self, outcome: Outcome) {
         if self.outcome.is_none() {
-            self.outcome = Some(Outcome::Resignation { loser });
+            self.outcome = Some(outcome);
         }
     }
 
@@ -435,6 +503,72 @@ mod tests {
                 loser: Color::Black
             })
         );
+    }
+
+    /// The mutation this catches is `adjudicate` assigning unconditionally.
+    /// `resigning_twice_keeps_the_first_result` cannot: both of its endings are
+    /// adjudicated, so an overwriting `adjudicate` would still be caught there
+    /// — but only for the pair it happens to try. This one pins the direction
+    /// that costs a game its real ending, a rule-decided result being replaced
+    /// by one a caller declared afterwards.
+    #[test]
+    fn an_ending_the_board_produced_survives_one_declared_after_it() {
+        let mut game = game_from("sfen 4k4/9/9/9/9/9/9/9/4R3K b G 1");
+        game.play(Move::Drop {
+            piece: Piece::new(PieceKind::Gold, Color::Black),
+            to: sq(5, 2),
+        })
+        .expect("the drop is legal");
+        game.flag_fall(Color::Black);
+        assert_eq!(
+            game.outcome(),
+            Some(Outcome::Checkmate {
+                winner: Color::Black
+            })
+        );
+    }
+
+    /// Catches any one of the five assigning `outcome` directly instead of
+    /// going through `adjudicate` — the guard lives in one place and five
+    /// methods depend on it, so a test covering one of them proves nothing
+    /// about the other four.
+    #[test]
+    fn every_adjudication_leaves_a_decided_game_alone() {
+        type Adjudication = (&'static str, fn(&mut Game));
+        let declared: [Adjudication; 5] = [
+            ("flag_fall", |g| g.flag_fall(Color::White)),
+            ("foul", |g| g.foul(Color::White, IllegalMoveKind::TwoPawns)),
+            ("declare", |g| g.declare(Color::White)),
+            ("max_moves", Game::max_moves),
+            ("abandon", |g| g.abandon(Color::White)),
+        ];
+        for (name, adjudicate) in declared {
+            let mut game = Game::startpos();
+            game.resign(Color::Black);
+            adjudicate(&mut game);
+            assert_eq!(
+                game.outcome(),
+                Some(Outcome::Resignation {
+                    loser: Color::Black
+                }),
+                "{name} overwrote a decided game"
+            );
+        }
+    }
+
+    /// The ⚠️ on `undo`: an adjudicated ending is not attached to a ply, so
+    /// nothing about popping one obviously clears it. A caller that told its
+    /// players the game was over is what makes the revival worth pinning.
+    #[test]
+    fn undoing_past_an_adjudicated_ending_revives_the_game() {
+        let mut game = Game::startpos();
+        game.play(normal((7, 7), (7, 6))).expect("legal");
+        game.flag_fall(Color::White);
+        assert!(game.outcome().is_some());
+        assert!(game.undo().is_some());
+        assert_eq!(game.outcome(), None);
+        // The same move again: the position came back with the outcome.
+        assert!(game.play(normal((7, 7), (7, 6))).is_ok());
     }
 
     #[test]
