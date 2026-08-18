@@ -61,7 +61,7 @@ rinsai/
 │   └── xtask/             # bin: fetch-floodgate / gen-openings / sprt; fetch-net and
 │                          #      release join later  (added at E0 steps 6+7)
 ├── train/                 # PyTorch: dataset, model, quantize, export   (added at E3)
-├── positions/             # bench-v1.sfen (frozen, E0 step 3b); openings-v1.sfen, openings-v2.sfen (E0 step 6)
+├── positions/             # bench-v1.sfen (frozen, E0 step 3b); openings-v1.sfen, openings-v2.sfen (E0 step 6), openings-v3.sfen
 ├── tools/                 # match harness config, ladder definitions  (added at E0 step 7)
 └── .github/workflows/     # fmt / clippy -D warnings / test / MSRV / cargo-deny  (added at E0)
 ```

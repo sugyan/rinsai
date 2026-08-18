@@ -257,13 +257,16 @@ the alternatives lost; neither carries both.
   so that position *n* is not searched against what 1..n−1 left behind.
 - **The frozen counts live beside the code**, because a baseline has to be
   executable to be a regression test.
-- Its position set is one of the frozen sets below and follows their rules.
+- Its position set is one of the frozen sets below, under the two rules that
+  hold of a set nobody generated.
 
 ## Frozen position sets
 
-Two exist: `positions/bench-v1.sfen`, which `bench` compiles in, and
-`positions/openings-v2.sfen`, which the SPRT harness opens from. The same
-rules hold of both.
+`positions/bench-v1.sfen` is the one `bench` compiles in; the `openings-*`
+files are the ones the SPRT harness opens from, and it defaults to the newest.
+The first two rules below hold of every one of them. The rest are about
+*generated* sets, which the opening sets are and `bench-v1.sfen`, assembled by
+hand, is not.
 
 - **A later set is a new file, never an edit.** `bench` counts and paired-game
   results are comparable only within one set, so editing a set in place
@@ -273,12 +276,18 @@ rules hold of both.
   where the licensing rule bites hardest (CLAUDE.md §2). A *generated* set
   interpolates its own counters into that header, so the file cannot disagree
   with the run that made it.
-- **Everything that could move the output is fixed inside the generator**
-  rather than read from the environment: the source days, the filters, the
-  balance search's depth, node cap and table size, and the seed. ⚠️ **The node
-  cap belongs on that list even though it reads like a budget rather than a
-  rule** — it decides how deep each candidate is judged, so a set generated at
-  another cap is a different set.
+- **What shapes a generated set travels with the code, with two exceptions.**
+  The filters, the balance search's depth, node cap and table size, the target
+  and the seed are all `PipelineConfig` fields a frozen constructor fills, so
+  an earlier set is regenerated from the checkout its header names. ⚠️ **The
+  source days are the one *setting* the code does not carry** — required, no
+  default, and the reason the header records a date range beside the rev. The
+  records the days select from are the other exception: not carried either, and
+  not in git. (`--seed` can override the constructor's seed; no committed set
+  has, and each one's header repeats its rev's default.) ⚠️ **The node cap
+  belongs on the travelling list even though it reads like a budget rather
+  than a rule** — it decides how deep each candidate is judged, so a set
+  generated at another cap is a different set.
 - **A generated set's balance score comes from an iteration that finished.**
   The last `info` line published may belong to an iteration the node cap
   interrupted, whose score is a lower bound. ⚠️ **A lower bound against a

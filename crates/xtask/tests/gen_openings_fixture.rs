@@ -2,10 +2,10 @@
 //! records in `tests/fixtures/floodgate/` run through the whole pipeline and
 //! must reproduce `tests/fixtures/expected-openings.sfen` byte for byte.
 //!
-//! The full-scale form of the same claim — regenerating
-//! `positions/openings-v2.sfen` from the local cache at the frozen rev and
-//! seed leaves `git diff` empty — needs that cache and is run by hand;
-//! each run is recorded in its pull request. This test is the half CI holds.
+//! The full-scale form of the same claim — regenerating a committed set
+//! leaves `git diff` empty — is run by hand, on the inputs CONVENTIONS.md
+//! names under "Frozen position sets". Each run is recorded in its pull
+//! request. This test is the half CI holds.
 
 use xtask::openings::{DayInput, PipelineConfig, generate};
 

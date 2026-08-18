@@ -22,9 +22,11 @@ use crate::csa::{self, CsaMove};
 use crate::fetch;
 use crate::rng;
 
-/// Everything that moves the output. ⚠️ Changing any field after a set is
-/// frozen means a new file, not a regeneration — and so does changing the
-/// pipeline around it, which is what took v1 to v2.
+/// A frozen set's constants. ⚠️ Changing any field after a set is frozen
+/// means a new file, not a regeneration — and so does changing the pipeline
+/// around it, which is what took v1 to v2. [`generate`]'s other two arguments
+/// move the output as well, so they are not a lesser kind of input: the days
+/// choose the corpus, and the rev is interpolated into the header.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
     /// Both players' floodgate rates must reach this.
@@ -61,6 +63,10 @@ pub struct PipelineConfig {
     pub balance_hash_mb: usize,
     /// Seeds the Fisher–Yates pick over the surviving candidates.
     pub seed: u64,
+    /// What the header calls this set, e.g. `"v2"`.
+    pub set_name: &'static str,
+    /// The file the header sends a later set to, e.g. `"openings-v3.sfen"`.
+    pub next_set_file: &'static str,
 }
 
 impl PipelineConfig {
@@ -80,6 +86,26 @@ impl PipelineConfig {
             balance_cp_max: 100,
             balance_hash_mb: 16,
             seed: 0x5249_4E53_4149_2D31,
+            set_name: "v2",
+            next_set_file: "openings-v3.sfen",
+        }
+    }
+
+    /// The constants `positions/openings-v3.sfen` is generated with: v2's
+    /// filters unchanged, drawn deeper. The seed spells `RINSAI-3`.
+    ///
+    /// ⚠️ **The target bounds every fixed-node SPRT opened from the set**, and
+    /// that is what it is for: `runner::check_budget_fits_openings` will not
+    /// play more pairs than there are lines. How many a given gate needs is a
+    /// function of the true Elo gap, so no single number belongs here.
+    #[must_use]
+    pub fn frozen_v3() -> Self {
+        Self {
+            target: 3000,
+            seed: 0x5249_4E53_4149_2D33,
+            set_name: "v3",
+            next_set_file: "openings-v4.sfen",
+            ..Self::frozen_v2()
         }
     }
 }
@@ -409,15 +435,15 @@ fn emit(
     let _ = write!(
         out,
         "\
-# rinsai opening set, v2 — frozen.
+# rinsai opening set, {set} — frozen.
 #
 # One USI `position` argument per line (`startpos moves …`); `#` starts a
 # comment and blank lines are ignored — the same conventions as
-# bench-v1.sfen. The SPRT harness plays every line twice per pair, colours
-# swapped (CLAUDE.md §3).
+# bench-v1.sfen. The SPRT harness makes a pair out of one line, playing it
+# twice with the colours swapped (CLAUDE.md §3).
 #
 # ⚠️ FROZEN. Paired-game results are comparable only within one opening set,
-# so a later set is a new file, openings-v3.sfen, never an edit to this one.
+# so a later set is a new file, {next}, never an edit to this one.
 #
 # PROVENANCE (CLAUDE.md §2). floodgate game records are factual data
 # (DESIGN.md §7); the game behind each line is named on the comment above
@@ -441,14 +467,15 @@ fn emit(
 #     and d= is the depth it came from: the deepest iteration that searched
 #     *every* root move. A search the node cap interrupts is judged on the
 #     last iteration that finished, never on the partial one — whose score
-#     is the best over a prefix of the root list and so a lower bound. That
-#     is the one thing v2 changed from v1, which read the partial line.
+#     is the best over a prefix of the root list and so a lower bound.
 # Regeneration from the same cached inputs, rev and seed is byte-identical
 # (`--rev` replays the rev recorded above, since HEAD moves when the file
 # is committed); crates/xtask/tests/gen_openings_fixture.rs is the
 # executable form of that claim, at fixture scale.
 
 ",
+        set = cfg.set_name,
+        next = cfg.next_set_file,
         rev = rev,
         seed = cfg.seed,
         labels = labels.join(" "),
@@ -489,9 +516,11 @@ fn emit(
 pub fn run(args: &[String]) -> ExitCode {
     let mut dates: Option<String> = None;
     let mut root = PathBuf::from("data/floodgate");
-    let mut out_path = PathBuf::from("positions/openings-v2.sfen");
+    let mut out_path = PathBuf::from("positions/openings-v3.sfen");
     let mut rev: Option<String> = None;
-    let mut cfg = PipelineConfig::frozen_v2();
+    // The current set. Regenerating an earlier one is CONVENTIONS.md's rule
+    // under "Frozen position sets".
+    let mut cfg = PipelineConfig::frozen_v3();
     let mut iter = args.iter();
     // ⚠️ A flag whose value is missing must be an error, never a silent
     // fallback: `--out` with the path eaten by the shell would otherwise
@@ -637,8 +666,8 @@ fn git_head() -> Result<String, String> {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: cargo run --release -p xtask -- gen-openings --dates 2026-06-01..2026-06-07 \
-         [--root data/floodgate] [--out positions/openings-v2.sfen] [--seed N] [--rev SHA]"
+        "usage: cargo run --release -p xtask -- gen-openings --dates 2026-06-01..2026-06-21 \
+         [--root data/floodgate] [--out positions/openings-v3.sfen] [--seed N] [--rev SHA]"
     );
     ExitCode::FAILURE
 }
