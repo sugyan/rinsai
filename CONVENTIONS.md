@@ -279,12 +279,14 @@ hand, is not.
 - **What shapes a generated set travels with the code, with two exceptions.**
   The filters, the balance search's depth, node cap and table size, the target
   and the seed are all `PipelineConfig` fields a frozen constructor fills, so
-  an earlier set is regenerated from the checkout its header names. ⚠️ **The
-  source days are the one *setting* the code does not carry** — required, no
-  default, and the reason the header records a date range beside the rev. The
-  records the days select from are the other exception: not carried either, and
-  not in git. (`--seed` can override the constructor's seed; no committed set
-  has, and each one's header repeats its rev's default.) ⚠️ **The node cap
+  an earlier set is regenerated from the checkout its header names — the tag
+  `openings-vN-generated` is what resolves that rev, which is never on `main`
+  here. ⚠️ **The source days are the one *setting* the code does not carry** —
+  required, no default, and the reason the header records a date range beside
+  the rev. The records the days select from are the other exception: not
+  carried either, and not in git. (`--seed` can override the constructor's
+  seed; no committed set has, and each one's header repeats its rev's
+  default.) ⚠️ **The node cap
   belongs on the travelling list even though it reads like a budget rather
   than a rule** — it decides how deep each candidate is judged, so a set
   generated at another cap is a different set.

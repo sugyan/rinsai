@@ -129,6 +129,25 @@ Newest last, live and retired interleaved in date order. Read it for what is liv
   - ⚠️ **Rejected after adopting it and reverting: taking the margin off the spend, `spend.min(available) - margin`.** The argument for it is good enough to be made again — inside the cap the margin does nothing while main time remains, which reads as a bug. Both forms uphold `allowance ≤ available - margin`; the outside form additionally surrenders the margin on every move, and measured, a 900 ms clock at the default margin then gave an allowance of zero and stopped the engine at depth 1.
   - **Reopens if** a referee ever grants the engine a delivery margin of its own, or if byoyomi stops being granted afresh per move.
 
+- **2026-08-19 — a generated set's history is traced by a tag on the rev its header names.**
+  - **Decided.** Each `positions/openings-v*.sfen` has a tag
+    `openings-vN-generated` pointing at the rev its own header records, pushed
+    with the set. The rule is in [CONVENTIONS.md](./CONVENTIONS.md).
+  - **Rejected: relying on the branch surviving**, which is what had been
+    holding v1 and v2 together without anybody deciding it. This repository has
+    never made a merge commit, so a set's generating rev is never on `main`; the
+    two older revs were reachable only because their branches were never
+    deleted, and nothing said they had to be.
+  - ⚠️ **Rejected after measuring, and the expectation was the reverse:** using
+    *the commit that added the file* as the handle, on the argument that it is
+    on `main` and its tree must contain the generator. It does not. Review
+    commits land between generating a set and merging it, so the adding commit
+    carries a **later** generator — measured, `openings.rs` differs by 83 lines
+    for v1 and 9 for v2 between the two. A handle that is easy to reach and
+    wrong is worse than the rev.
+  - **Reopens if** the sets stop being generated from a rev-stamped header, or
+    if tags stop being pushed with the artefact.
+
 ## Recorded but deliberately not built
 
 [CLAUDE.md](./CLAUDE.md) forbids building for a consumer that does not exist
