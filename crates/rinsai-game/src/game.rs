@@ -300,7 +300,7 @@ impl Game {
 
     /// 時間切れ — `loser` did not move inside the time it had.
     ///
-    /// Named caller: tuishogi's clock (sugyan/rinsai#28).
+    /// Requested by sugyan/rinsai#28.
     pub fn flag_fall(&mut self, loser: Color) {
         self.adjudicate(Outcome::FlagFall { loser });
     }
@@ -312,8 +312,7 @@ impl Game {
     /// instead states a verdict this crate did not reach, which is the whole
     /// reason the refereeing lives here.
     ///
-    /// Named caller: tuishogi's adjudication of an engine's `bestmove`
-    /// (sugyan/rinsai#28).
+    /// Requested by sugyan/rinsai#28.
     pub fn foul(&mut self, loser: Color, kind: IllegalMoveKind) {
         self.adjudicate(Outcome::IllegalMove { loser, kind });
     }
@@ -332,8 +331,7 @@ impl Game {
     /// The ply cap was reached. A draw, and the cap is the caller's — this crate
     /// holds no maximum of its own.
     ///
-    /// Named caller: tuishogi's engine-vs-engine adjudication
-    /// (sugyan/rinsai#28).
+    /// Requested by sugyan/rinsai#28.
     pub fn max_moves(&mut self) {
         self.adjudicate(Outcome::MaxMoves);
     }
@@ -341,17 +339,12 @@ impl Game {
     /// `loser` stopped playing — crashed, wedged, or said something no move
     /// could be read out of.
     ///
-    /// Named caller: tuishogi's engine-exit handling (sugyan/rinsai#28).
+    /// Requested by sugyan/rinsai#28.
     pub fn abandon(&mut self, loser: Color) {
         self.adjudicate(Outcome::Abandoned { loser });
     }
 
     /// Record an ending decided off the board.
-    ///
-    /// Private, and the only writer of `outcome` besides [`play`](Self::play):
-    /// a public door taking an `Outcome` would hand callers the three endings
-    /// the referee derives, and a caller that sets 詰み is asserting what this
-    /// crate exists to check.
     ///
     /// The first ending wins. A game already decided cannot be re-decided —
     /// otherwise a flag fall arriving behind a mate would overwrite it, and
@@ -407,6 +400,9 @@ mod tests {
     }
 
     type Slide = ((u8, u8), (u8, u8));
+
+    /// One call to an adjudicator, so a test can drive all six from a list.
+    type Adjudication = fn(&mut Game);
 
     fn normal(from: (u8, u8), to: (u8, u8)) -> Move {
         Move::Normal {
@@ -505,12 +501,9 @@ mod tests {
         );
     }
 
-    /// The mutation this catches is `adjudicate` assigning unconditionally.
-    /// `resigning_twice_keeps_the_first_result` cannot: both of its endings are
-    /// adjudicated, so an overwriting `adjudicate` would still be caught there
-    /// — but only for the pair it happens to try. This one pins the direction
-    /// that costs a game its real ending, a rule-decided result being replaced
-    /// by one a caller declared afterwards.
+    /// Pins the direction that costs a game its real ending: a rule-decided
+    /// result replaced by one a caller declared afterwards. The neighbouring
+    /// resignation tests only ever put two declared endings against each other.
     #[test]
     fn an_ending_the_board_produced_survives_one_declared_after_it() {
         let mut game = game_from("sfen 4k4/9/9/9/9/9/9/9/4R3K b G 1");
@@ -528,21 +521,69 @@ mod tests {
         );
     }
 
-    /// Catches any one of the five assigning `outcome` directly instead of
-    /// going through `adjudicate` — the guard lives in one place and five
-    /// methods depend on it, so a test covering one of them proves nothing
-    /// about the other four.
+    /// Each adjudicator's own write, which nothing else observes: every other
+    /// call site hands them a game that is already decided, so the guard
+    /// discards the value before anyone can look at it. Sabotage: an empty
+    /// `max_moves` body, `declare` building `Abandoned`, `foul` dropping its
+    /// `kind`, and `flag_fall` flipping its `loser` each pass the rest of the
+    /// suite and fail here. Every side is `White`, so a flip shows up as
+    /// `Black`.
+    #[test]
+    fn each_adjudication_records_its_own_ending() {
+        let cases: [(Adjudication, Outcome); 6] = [
+            (
+                |g| g.resign(Color::White),
+                Outcome::Resignation {
+                    loser: Color::White,
+                },
+            ),
+            (
+                |g| g.flag_fall(Color::White),
+                Outcome::FlagFall {
+                    loser: Color::White,
+                },
+            ),
+            (
+                |g| g.foul(Color::White, IllegalMoveKind::TwoPawns),
+                Outcome::IllegalMove {
+                    loser: Color::White,
+                    kind: IllegalMoveKind::TwoPawns,
+                },
+            ),
+            (
+                |g| g.declare(Color::White),
+                Outcome::Declaration {
+                    winner: Color::White,
+                },
+            ),
+            (Game::max_moves, Outcome::MaxMoves),
+            (
+                |g| g.abandon(Color::White),
+                Outcome::Abandoned {
+                    loser: Color::White,
+                },
+            ),
+        ];
+        for (adjudicate, expected) in cases {
+            let mut game = Game::startpos();
+            adjudicate(&mut game);
+            assert_eq!(game.outcome(), Some(expected));
+        }
+    }
+
+    /// Catches any one of them assigning `outcome` directly instead of going
+    /// through `adjudicate`: the guard lives in one place, so a test covering
+    /// one method proves nothing about the others.
     #[test]
     fn every_adjudication_leaves_a_decided_game_alone() {
-        type Adjudication = (&'static str, fn(&mut Game));
         let declared: [Adjudication; 5] = [
-            ("flag_fall", |g| g.flag_fall(Color::White)),
-            ("foul", |g| g.foul(Color::White, IllegalMoveKind::TwoPawns)),
-            ("declare", |g| g.declare(Color::White)),
-            ("max_moves", Game::max_moves),
-            ("abandon", |g| g.abandon(Color::White)),
+            |g| g.flag_fall(Color::White),
+            |g| g.foul(Color::White, IllegalMoveKind::TwoPawns),
+            |g| g.declare(Color::White),
+            Game::max_moves,
+            |g| g.abandon(Color::White),
         ];
-        for (name, adjudicate) in declared {
+        for adjudicate in declared {
             let mut game = Game::startpos();
             game.resign(Color::Black);
             adjudicate(&mut game);
@@ -550,8 +591,7 @@ mod tests {
                 game.outcome(),
                 Some(Outcome::Resignation {
                     loser: Color::Black
-                }),
-                "{name} overwrote a decided game"
+                })
             );
         }
     }

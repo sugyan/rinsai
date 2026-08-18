@@ -19,13 +19,6 @@ pub struct Ply {
 }
 
 /// How a game ended.
-///
-/// ⚠️ 詰み, 千日手 and 連続王手の千日手 are the endings a board can reach.
-/// [`play`](crate::Game::play) produces those and no others; every other variant
-/// is decided off the board and reaches a game through one of
-/// [`Game`](crate::Game)'s adjudication methods. A caller that sets a *derived*
-/// ending is asserting something the referee could have checked and did not,
-/// which is why no method takes an `Outcome`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// 詰み. `status_partial` folds stalemate into this, which is right: in
@@ -39,16 +32,12 @@ pub enum Outcome {
     Resignation { loser: Color },
     /// 時間切れ.
     FlagFall { loser: Color },
-    /// 反則負け, carrying the rule that was broken so the result can say which.
+    /// 反則負け.
     IllegalMove { loser: Color, kind: IllegalMoveKind },
-    /// 入玉宣言.
-    ///
-    /// ⚠️ A claim, not a verdict: this crate has no 27-point rule, so nothing
-    /// here checked it. [`declare`](crate::Game::declare) carries what that
-    /// costs a caller.
+    /// 入玉宣言 — a claim, not a verdict; see
+    /// [`declare`](crate::Game::declare).
     Declaration { winner: Color },
-    /// The game reached the ply cap its players agreed on. A draw, and the one
-    /// ending that names no side.
+    /// The game reached the ply cap its players agreed on. A draw.
     MaxMoves,
     /// `loser` stopped playing — crashed, wedged, or answered something no move
     /// could be read out of.
@@ -210,21 +199,18 @@ pub const fn illegal(kind: IllegalMoveKind) -> &'static str {
 mod tests {
     use super::*;
 
+    /// Every variant with the sentence it must render.
+    ///
+    /// ⚠️ Written as an exhaustive `match` rather than a table, so a tenth
+    /// variant fails to compile here. That forces an arm and not a row, so a
+    /// variant can still reach the `match` without reaching the list above it.
+    ///
+    /// The colours differ per row because the pinned sentences already catch a
+    /// flipped `side(loser)`; what one colour throughout would miss is an arm
+    /// that hard-codes a side and ignores its field.
     #[test]
-    fn a_perpetual_check_loss_names_the_checking_side_as_the_loser() {
-        let outcome = Outcome::PerpetualCheck {
-            loser: Color::Black,
-        };
-        assert_eq!(outcome.to_string(), "先手の負け（連続王手の千日手）");
-    }
-
-    /// Every variant, written out, because nothing enumerates an enum for us.
-    /// What the distinctness check would catch is a `Display` arm copied from
-    /// the one above it and left naming the wrong ending — nine arms sharing
-    /// one shape is where that goes unnoticed.
-    #[test]
-    fn every_outcome_reads_as_a_sentence_of_its_own() {
-        let all = [
+    fn every_outcome_reads_the_sentence_it_is_supposed_to() {
+        for outcome in [
             Outcome::Checkmate {
                 winner: Color::Black,
             },
@@ -233,36 +219,36 @@ mod tests {
                 loser: Color::Black,
             },
             Outcome::Resignation {
-                loser: Color::Black,
+                loser: Color::White,
             },
             Outcome::FlagFall {
-                loser: Color::Black,
+                loser: Color::White,
             },
             Outcome::IllegalMove {
                 loser: Color::Black,
                 kind: IllegalMoveKind::TwoPawns,
             },
             Outcome::Declaration {
-                winner: Color::Black,
+                winner: Color::White,
             },
             Outcome::MaxMoves,
             Outcome::Abandoned {
-                loser: Color::Black,
+                loser: Color::White,
             },
-        ];
-        let mut seen: Vec<String> = Vec::new();
-        for outcome in all {
-            let sentence = outcome.to_string();
-            assert!(!sentence.is_empty(), "{outcome:?} says nothing");
-            assert!(
-                !seen.contains(&sentence),
-                "{outcome:?} repeats {sentence:?}"
-            );
-            seen.push(sentence);
+        ] {
+            let expected = match outcome {
+                Outcome::Checkmate { .. } => "先手の勝ち（詰み）",
+                Outcome::Repetition => "千日手",
+                Outcome::PerpetualCheck { .. } => "先手の負け（連続王手の千日手）",
+                Outcome::Resignation { .. } => "後手の投了",
+                Outcome::FlagFall { .. } => "後手の時間切れ",
+                Outcome::IllegalMove { .. } => "先手の反則負け（二歩です）",
+                Outcome::Declaration { .. } => "後手の勝ち（入玉宣言）",
+                Outcome::MaxMoves => "引き分け（最大手数）",
+                Outcome::Abandoned { .. } => "後手の負け（対局放棄）",
+            };
+            assert_eq!(outcome.to_string(), expected, "{outcome:?}");
         }
-        assert_eq!(seen[0], "先手の勝ち（詰み）");
-        assert_eq!(seen[1], "千日手");
-        assert_eq!(seen[7], "引き分け（最大手数）");
     }
 
     /// The rule broken has to survive into the sentence: an adjudication that

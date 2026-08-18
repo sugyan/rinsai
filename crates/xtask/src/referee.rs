@@ -247,11 +247,9 @@ pub fn play_game(
                     (Winner::of(winner), EndReason::Declaration, None)
                 }
                 Outcome::MaxMoves => (Winner::Neither, EndReason::MaxMoves, None),
-                // ⚠️ Narrowing: `EndReason` keeps `Died`, `Protocol` and
-                // `Timeout` apart because the run summary tallies them apart,
-                // and `Outcome` has one variant for all three. Which of the
-                // three a game ended by is `EndReason`'s to say, so this arm
-                // answers with the one that says least.
+                // ⚠️ Narrowing: `Outcome` has one variant for the three
+                // `EndReason` keeps apart, so this arm answers with the one
+                // that says least. Why they stay apart is DECISIONS.md's.
                 Outcome::Abandoned { loser } => (Winner::opponent_of(loser), EndReason::Died, None),
             };
         }
