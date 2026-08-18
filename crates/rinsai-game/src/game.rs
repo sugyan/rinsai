@@ -299,8 +299,6 @@ impl Game {
     }
 
     /// 時間切れ — `loser` did not move inside the time it had.
-    ///
-    /// Requested by sugyan/rinsai#28.
     pub fn flag_fall(&mut self, loser: Color) {
         self.adjudicate(Outcome::FlagFall { loser });
     }
@@ -311,8 +309,6 @@ impl Game {
     /// [`MoveError::Illegal`] it answered with. A kind the caller decided on
     /// instead states a verdict this crate did not reach, which is the whole
     /// reason the refereeing lives here.
-    ///
-    /// Requested by sugyan/rinsai#28.
     pub fn foul(&mut self, loser: Color, kind: IllegalMoveKind) {
         self.adjudicate(Outcome::IllegalMove { loser, kind });
     }
@@ -330,16 +326,12 @@ impl Game {
 
     /// The ply cap was reached. A draw, and the cap is the caller's — this crate
     /// holds no maximum of its own.
-    ///
-    /// Requested by sugyan/rinsai#28.
     pub fn max_moves(&mut self) {
         self.adjudicate(Outcome::MaxMoves);
     }
 
     /// `loser` stopped playing — crashed, wedged, or said something no move
     /// could be read out of.
-    ///
-    /// Requested by sugyan/rinsai#28.
     pub fn abandon(&mut self, loser: Color) {
         self.adjudicate(Outcome::Abandoned { loser });
     }
