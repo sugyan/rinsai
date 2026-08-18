@@ -124,9 +124,17 @@ pub struct GameRecord {
     /// Wall time charged to each side over the whole game, Black's first.
     /// Filled under a node budget too, where it is a cost rather than a rule.
     pub spent: [Duration; Color::NUM],
-    /// Plies the opening already carried. [`Self::move_times`] starts after
-    /// them, so this is what says whose move its first entry was.
+    /// Plies the opening already carried, so `plies` less this is what the
+    /// engines played. Logged beside them for that reason.
     pub opening_plies: usize,
+    /// Whose move [`Self::move_times`]'s first entry was.
+    ///
+    /// ⚠️ **Not the parity of [`Self::opening_plies`]**, which is the whole
+    /// reason it is recorded: an opening rooted at an `sfen` starts from
+    /// whichever side that `sfen` names, so the two disagree on every
+    /// White-rooted line. Every committed opening set is `startpos`-rooted,
+    /// where they agree, so nothing already logged is wrong.
+    pub first_timed_mover: Color,
     /// What each move cost, in the order they were asked for.
     ///
     /// ⚠️ **Not an index into [`Self::moves_usi`]**, and the two differ at
@@ -221,6 +229,7 @@ pub fn play_game(
     let mut game =
         Game::from_usi_position(opening).map_err(|e| format!("unplayable opening: {e}"))?;
     let opening_plies = game.ply();
+    let first_timed_mover = game.side_to_move();
     let mut clock = Clock::new(control);
     let mut move_times: Vec<Duration> = Vec::new();
 
@@ -314,6 +323,7 @@ pub fn play_game(
         moves_usi,
         detail,
         opening_plies,
+        first_timed_mover,
         spent: clock.spent,
         move_times,
     })
@@ -498,6 +508,34 @@ mod tests {
         .expect("plays");
         assert_eq!(record.winner, Winner::White);
         assert_eq!(record.reason, EndReason::PerpetualCheck);
+    }
+
+    /// ⚠️ **Sabotage**: derive the field from `opening_plies.is_multiple_of(2)`
+    /// instead — the shape the log used to write — and the White-rooted case
+    /// below goes red while the `startpos` one stays green, which is why no
+    /// committed opening set could have caught it.
+    #[test]
+    fn a_white_rooted_opening_names_white_as_the_first_timed_mover() {
+        let (mut black, mut white) = interleave(&["2h3h", "3h2h"], &["8b7b", "7b8b"]);
+        let record = play_game(&mut black, &mut white, "startpos", 4, nodes()).expect("plays");
+        assert_eq!(record.opening_plies, 0);
+        assert_eq!(record.first_timed_mover, Color::Black);
+
+        let root = "sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 1";
+        let (mut black, mut white) = interleave(&["2h3h", "3h2h"], &["8b7b", "7b8b"]);
+        let record = play_game(&mut black, &mut white, root, 2, nodes()).expect("plays");
+        assert_eq!(record.opening_plies, 0, "the root carries no moves");
+        assert_eq!(
+            record.first_timed_mover,
+            Color::White,
+            "the root names the mover, not the ply count"
+        );
+        // Without this the case is settled before the first ask, and the
+        // assertion above would hold of a game nobody played.
+        assert_eq!(
+            record.moves_usi, "8b7b 2h3h",
+            "White was asked first and the move was played"
+        );
     }
 
     /// The cap is a parameter so this does not need 512 scripted plies; the
