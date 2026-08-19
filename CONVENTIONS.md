@@ -1,11 +1,11 @@
 # rinsai — frozen conventions
 
 What the code already assumes. **Changing any of these needs a
-[DECISIONS.md](./DECISIONS.md) entry**, because something is built on it.
+[FAQ.md](./FAQ.md) answer**, because something is built on it.
 
 Organised by subject rather than by the step that froze it. A rule here is what
 the code assumes, stated in a few lines; if it takes a paragraph, what is being
-written is the argument, and the argument belongs in the decision log. The
+written is the argument, and the argument belongs in the FAQ. The
 moment a rule lands here, **the entry behind it retires to a line**, in the same
 pull request.
 
@@ -204,7 +204,7 @@ pull request.
   past a window edge.** ⚠️ **An `Exact` score strictly inside the window may
   not**, even though the bound would justify it: the node's line has been
   cleared and not refilled, so a parent that raises alpha on it publishes one
-  move followed by nothing. DECISIONS.md carries the measurement that could not
+  move followed by nothing. The FAQ carries the measurement that could not
   demonstrate this end to end and why the restriction is kept regardless.
 - **Nothing is stored from an abandoned search.** Once the budget is spent a
   frame returns a placeholder, and a placeholder in the table outlives the
@@ -249,7 +249,7 @@ hand, is not.
 - **A later set is a new file, never an edit.** `bench` counts and paired-game
   results are comparable only within one set, so editing a set in place
   silently invalidates every number already attributed to it — including the
-  ones in DECISIONS.md entries that can no longer be re-run.
+  ones in FAQ answers that can no longer be re-run.
 - **Every line carries its provenance**, which is where the licensing rule
   bites hardest: the header names the rev and seed the set was generated from,
   and each line's own comment names the game behind it. A hand-assembled set
@@ -324,7 +324,7 @@ hand, is not.
 
   ⚠️ **This is a constraint on what may become load-bearing, not a claim that
   the engine runs on `wasm32-unknown-unknown`. It does not** — it compiles and
-  traps. The condition that retires the whole rule is in DECISIONS.md.
+  traps. The condition that retires the whole rule is in the FAQ.
 
 ## Tests
 
@@ -344,8 +344,8 @@ hand, is not.
   re-run the sabotages in the files the diff touches** — a note is trusted
   exactly because it was verified once, and a note that cannot fire is worse
   than none. Full-tree sweeps run at phase gates (E0 exit, E1 exit, before
-  E3's first training run), not per change; DECISIONS.md (2026-08-12) carries
-  why the per-change scope narrowed.
+  E3's first training run), not per change: a global rule is quadratic in
+  project age and would strangle the E1 queue.
 - **A test of an optimisation has to run on input the optimisation helps.**
   "It is the obvious fixture" is not evidence that it does: the transposition
   move is worth 14× on one position and 1.00× on the initial position, and the
@@ -356,7 +356,7 @@ hand, is not.
 - **A surface with no caller stays if — and only if — a *specific* caller can be
   named, and the name goes in its doc comment. Otherwise it goes.** "It'll
   probably be useful" is what this rule exists to prevent; a named caller is a
-  record rather than a wish. See DECISIONS.md for the exception that produced it.
+  record rather than a wish. The FAQ names the one exception.
 
 ### Fixture provenance
 

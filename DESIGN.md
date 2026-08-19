@@ -24,7 +24,7 @@ A shogi engine that places well on **floodgate** and in the **世界コンピュ
 
 `go mate` is out of scope: that is [`tsumeshogi-solver`](https://github.com/sugyan/tsumeshogi-solver)'s territory.
 
-**The dependency is a released version, not a git pin.** rinsai depends on `shunsai = "0.1"` from crates.io. Prototyping an API addition uses `[patch.crates-io]` with a path override; adopting it means **releasing shunsai** and raising rinsai's requirement. The loop is: try it on a shunsai branch → measure it on shunsai's own bench → adopt → release → bump. rinsai's **engine** crates are `publish = false` — nothing depends on a search engine as a library, and its artifact is a binary. The one publication-intended exception is `rinsai-game`, the rules library the match referee and [tuishogi](https://github.com/sugyan/tuishogi) share ([DECISIONS.md](./DECISIONS.md), 2026-08-12).
+**The dependency is a released version, not a git pin.** rinsai depends on `shunsai = "0.1"` from crates.io. Prototyping an API addition uses `[patch.crates-io]` with a path override; adopting it means **releasing shunsai** and raising rinsai's requirement. The loop is: try it on a shunsai branch → measure it on shunsai's own bench → adopt → release → bump. rinsai's **engine** crates are `publish = false` — nothing depends on a search engine as a library, and its artifact is a binary. The one publication-intended exception is `rinsai-game`, the rules library the match referee and [tuishogi](https://github.com/sugyan/tuishogi) share.
 
 ## 3. Route: NNUE + αβ first, DL/MCTS conditional
 
@@ -47,7 +47,7 @@ One repository, a Cargo workspace, with the training pipeline alongside the engi
 rinsai/
 ├── CLAUDE.md              # rules for implementation sessions
 ├── DESIGN.md              # this file: the plan
-├── DECISIONS.md           # what was decided, and what lost; retired in place
+├── FAQ.md                 # why it is this way and not that way
 ├── CONVENTIONS.md         # what is frozen, by subject
 ├── README.md              # what it is, and the name
 ├── NETS.md                # evaluation-file registry                    (E3)
@@ -111,7 +111,7 @@ Numbered **E0–E6** so as not to collide with shunsai's M0–M7. Rating targets
 - **shunsai API additions: none, deliberately.** E0 asked shunsai for nothing new — the layering's first contact with a real consumer.
 - Infrastructure: repository skeleton, USI conformance dialogue tests, a `bench` command, CI, and the frozen opening sets — balanced positions extracted in-house from high-rated floodgate games.
 - Verification: fixed-depth node counts as a regression test, a mate-in-1..5 suite, repetition and perpetual-check scenario tests.
-- **The retroactive audit E0's batching bought has run and passed**: a non-regression SPRT of the finished E0 against the step-3b engine. The numbers are in the decision log.
+- **The retroactive audit E0's batching bought has run and passed**: a non-regression SPRT of the finished E0 against the step-3b engine. The numbers are on issue #18.
 
 ### E1 — classical search, one feature at a time (size L, 1 feature = 1 SPRT)
 
@@ -126,12 +126,12 @@ move ordering is absent because it landed with the table at E0.
 6. Check extension — **more important than in chess**; watch its interference with perpetual-check repetition, which is a search-explosion risk
 7. SEE in qsearch — and with it the two things E0's quiescence leaves out: **non-capture promotions** (歩→と is a 500 cp event in rinsai's own table, so a capture-only quiescence is blind to と金作り — a shogi-specific gap with no chess analogue) and **checks**, which also need `gives_check`. ⚠️ **This item also owns extending the repetition path into quiescence**, whose exclusion rests on an argument that generating checks and quiet promotions ends. CONVENTIONS.md carries the rule and the condition.
 8. Futility / razoring — hand value belongs in the margin. **Baseline: E0's quiescence is deliberately unpruned.** Also owns `QS_MAX_CHECK_PLIES`, which E0 set by measurement and without an instrument.
-9. Aspiration windows. ⚠️ This item owes `negamax_root` the ability to tell a fail-low from an abandoned iteration; the decision log carries why it cannot today.
+9. Aspiration windows. ⚠️ This item owes `negamax_root` the ability to tell a fail-low from an abandoned iteration; the FAQ carries why it cannot today.
 10. **Quiescence probes and stores in the transposition table.** Measured at E0 and **not** shipped there: it halves the tree on every fixture tried, which is the opposite of what the conventional argument predicts, and node count is not an instrument for strength. ⚠️ It rebaselines every `bench` count, so it wants a pull request of its own.
 11. **Scoring the first repetition on the search path as a draw**, rather than the fourth occurrence the rule names. Standard practice, it prunes cycles, and it is a search heuristic rather than the rule. ⚠️ It rebaselines every `bench` count, unlike E0's version, which moved none.
 12. Singular extensions, and the rest
 
-**SPRT discipline** — the parameters are in [CLAUDE.md](./CLAUDE.md) and are not restated here. What is specific to E1 is the pacing: **one item on this list is one SPRT**, in list order, and an item that fails to pass is recorded in the decision log with its numbers rather than retried until it does.
+**SPRT discipline** — the parameters are in [CLAUDE.md](./CLAUDE.md) and are not restated here. What is specific to E1 is the pacing: **one item on this list is one SPRT**, in list order, and an item that fails to pass is recorded on its issue with its numbers rather than retried until it does.
 
 **Measurement is serial; implementation is not.** Features are built ahead, each on its own branch with its unit tests and bench counts, while the harness drains one SPRT at a time — a fixed-node game between deterministic engines is noise-immune, so the queue runs beside development sessions. Merge on pass, rebase the queue behind it. The bottleneck is machine time, which is the correct one.
 

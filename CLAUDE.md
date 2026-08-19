@@ -2,7 +2,7 @@
 
 Rules an implementation session must follow. The plan is [DESIGN.md](./DESIGN.md),
 what is frozen is [CONVENTIONS.md](./CONVENTIONS.md), why is
-[DECISIONS.md](./DECISIONS.md). **What is next, deferred or broken is a GitHub
+[FAQ.md](./FAQ.md). **What is next, deferred or broken is a GitHub
 issue** — `gh issue list`. What landed is `git log` and the pull requests.
 
 ## 1. What rinsai is
