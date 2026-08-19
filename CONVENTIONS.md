@@ -1,19 +1,13 @@
 # rinsai — frozen conventions
 
-What the code already assumes. **Changing any of these needs a
-[FAQ.md](./FAQ.md) answer**, because something is built on it.
+What the code already assumes, and **something is built on every line of it** —
+that is the admission test. A rule for writing new code is not one of these and
+is in [CLAUDE.md](./CLAUDE.md); the argument behind a rule is in
+[FAQ.md](./FAQ.md); a rule the item's own doc comment already states is in
+neither, because one copy or none.
 
-Organised by subject rather than by the step that froze it. A rule here is what
-the code assumes, stated in a few lines; if it takes a paragraph, what is being
-written is the argument, and the argument belongs in the FAQ. The
-moment a rule lands here, **the entry behind it retires to a line**, in the same
-pull request.
-
-## Source layout
-
-- **A module with children is `foo.rs` beside `foo/`, never `foo/mod.rs`.** It
-  is shunsai's layout too (`src/sliders.rs` beside `src/sliders/`), so it is the
-  family convention rather than a preference.
+Organised by subject. A rule here is stated in a few lines: if it takes a
+paragraph, what is being written is the argument.
 
 ## Vocabulary and scores
 
@@ -234,39 +228,7 @@ hand, is not.
   the engine runs on `wasm32-unknown-unknown`. It does not** — it compiles and
   traps. The condition that retires the whole rule is in the FAQ.
 
-## Tests
-
-- **No test may name a move the engine chose.** shunsai's public documentation
-  says nothing about generation order either way, so it is an unspecified
-  implementation detail. Assert "this is legal here" by replaying the move into
-  a position the test builds itself.
-- **A sabotage note is only worth writing if the mutation was made and the test
-  went red** — made at the site the note is attached to, not merely somewhere
-  its subject appears — and it has to sit on the test it describes. ⚠️ **It may
-  state what that run showed and no more.** "In either run", "in both loops",
-  "every row but the first" are generalisations past the mutation actually
-  applied, and each has shipped as a false note while satisfying the sentence
-  above — the mutation was made, a test did go red, and the note then claimed
-  a second site nobody touched. Name the site mutated and the test that fired;
-  if a neighbouring site was not tried, try it or say so. ⚠️ **After a change,
-  re-run the sabotages in the files the diff touches** — a note is trusted
-  exactly because it was verified once, and a note that cannot fire is worse
-  than none. Full-tree sweeps run at phase gates (E0 exit, E1 exit, before
-  E3's first training run), not per change: a global rule is quadratic in
-  project age and would strangle the E1 queue.
-- **A test of an optimisation has to run on input the optimisation helps.**
-  "It is the obvious fixture" is not evidence that it does: the transposition
-  move is worth 14× on one position and 1.00× on the initial position, and the
-  first version of its test used the second. Where a fixture is what makes a
-  test able to fail, say so in its doc and — where the test can — assert the
-  property the fixture was chosen for, so that the day it stops holding the test
-  says so instead of going quiet.
-- **A surface with no caller stays if — and only if — a *specific* caller can be
-  named, and the name goes in its doc comment. Otherwise it goes.** "It'll
-  probably be useful" is what this rule exists to prevent; a named caller is a
-  record rather than a wish. The FAQ names the one exception.
-
-### Fixture provenance
+## Fixture provenance
 
 The shared fixtures come from shunsai (MIT, same author),
 `benches/suite/common.rs`, where their perft values are cross-checked against

@@ -109,6 +109,27 @@ found zero defects in its code.
 - Move generation correctness is **shunsai's**, held there by differential
   testing against `shogi_legality_lite`. Do not re-test it here.
 
+**Writing one.**
+
+- **No test may name a move the engine chose** — shunsai's generation order is
+  unspecified. Assert "this is legal here" by replaying the move into a position
+  the test builds itself.
+- **A test of an optimisation has to run on input the optimisation helps.** "It
+  is the obvious fixture" is not evidence that it does. Where the fixture is
+  what makes the test able to fail, say so in its doc and assert the property it
+  was chosen for, so the day it stops holding the test says so.
+- **A sabotage note is written only after the mutation was made at that site and
+  that test went red**, and it may state what that run showed and no more. ⚠️
+  "In either run", "in both loops", "every row but the first" are
+  generalisations past the mutation applied, and each has shipped as a false
+  note. If a neighbouring site was not tried, try it or say so. **After a
+  change, re-run the sabotages in the files the diff touches**; full-tree sweeps
+  are for phase gates.
+- **A surface with no caller stays only if a *specific* caller can be named, and
+  the name goes in its doc comment.** Otherwise it goes.
+- **A module with children is `foo.rs` beside `foo/`, never `foo/mod.rs`** — the
+  family layout, shunsai's too.
+
 ## 6. Depending on shunsai, and the other consumer
 
 - rinsai depends on a **released version** (`shunsai = "0.1"`), never a git pin.
