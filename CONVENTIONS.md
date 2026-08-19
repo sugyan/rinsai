@@ -35,35 +35,19 @@ pull request.
 - **`Depth` is signed whole plies.** No fractional `ONE_PLY` scheme. Signed
   because quiescence runs at negative depth, counting down from zero towards
   `-QS_MAX_CHECK_PLIES` — note the sign; the constant itself is positive.
-- **`MAX_PLY = 128`**, sizing the search stack, the mate band and the move
-  buffer together.
 - **Three score bands, in this order: evaluations, then a repetition won or
-  lost, then the mates.** `clamp_to_eval` clamps below the *lowest* of the two
-  upper bands, so clearing it clears both. ⚠️ A repetition value is **flat** —
-  it carries no distance to the root, unlike a mate score — which keeps the
-  transposition table's mate-by-ply adjustment the only ply-relative score in
-  the engine.
+  lost, then the mates**, asserted as one chain by
+  `the_three_bands_do_not_overlap`. `clamp_to_eval` clamps below the *lowest* of
+  the two upper bands, so clearing it clears both.
 
 ## Evaluation
 
-- **Piece values are a starting point for SPSA at E4, not a measurement.** The
-  ordering comes from the rules of shogi — empty-board destination counts,
-  slider or stepper, colour-bound or not, promotion potential — the magnitudes
-  are interpolated on that ordering, and everything is rounded to a multiple of
-  five so that nobody reads them as fitted. Pawn = 100 anchors it. Two
-  modelling choices worth naming: a **promoted minor is exactly a gold on the
-  board**, because it moves exactly as a gold and anything else would be a claim
-  about the position rather than the material; and **a piece in hand is worth
-  more than the same piece on the board**, by the widest margin for the kinds
-  whose board placement is most constrained. The margins themselves are the
-  table in `eval`. "と金は金以上" then falls out on its own.
-  The one known simplification: 成銀 is genuinely worse than 銀 sometimes (a
+- **A piece in hand is worth more than the same piece on the board**, by the
+  widest margin for the kinds whose board placement is most constrained. The
+  margins are the table in `eval`, which carries the rest of the derivation.
+- The one known simplification: **成銀 is genuinely worse than 銀 sometimes** (a
   silver retreats diagonally, a promoted one does not) and this model says it is
   always 50 better. Left unmodelled deliberately; E3 replaces the whole table.
-- ⚠️ **The values are ours, and that is a licensing property, not a preference.**
-  CLAUDE.md forbids reusing a table from a GPL engine. The rounding to fives is
-  the visible evidence, and `eval::tests::every_value_is_a_round_number` is what
-  keeps it true.
 
 ## Search
 
@@ -71,47 +55,22 @@ pull request.
   excluding bulk-counted leaves.** Frozen because these numbers are a
   regression test, and a convention changed afterwards invalidates the whole
   committed set.
-- **The poll interval is 1024 nodes**, checked at the top of the interior node,
-  at the top of every quiescence node, and once per deepening iteration — *not*
-  per root move, which would break the first-root-move guarantee below.
+- **The budget is polled at the top of the interior node, at the top of every
+  quiescence node, and once per deepening iteration — *not* per root move**,
+  which would break the first-root-move guarantee. `POLL_INTERVAL_NODES` says
+  why every increment must be seen by a poll.
 
-  ⚠️ **Quiescence has to poll.** The test is an *exact* multiple, safe only
-  while every increment inside the tree is seen by something that polls; a
-  quiescence search that counted without polling could step clean over every
-  multiple, missing `stop`, the deadline and the node limit unpredictably.
-  Sabotage: drop the quiescence poll —
-  `a_deep_search_still_answers_a_node_limit` goes red.
-
-  ⚠️ **`negamax_root`'s own increment is not polled**, so an iteration
-  beginning at `nodes ≡ 1023 (mod 1024)` consumes that multiple at the root
-  with no poll. Bounded and benign, but an exception to the sentence above
-  rather than an instance of it.
-
-  ⚠️ **`self.nodes` accumulates across iterations and must not be reset per
-  iteration**, or the poll starves where no single iteration reaches 1024 nodes
-  on its own. This is **not** what makes the first root move complete — that is
-  `Budget::without_limits` below, which stands on its own. Two separate
-  properties of one counter; welding them with a "because" is a mistake this
-  project made once already.
+  ⚠️ **`self.nodes` accumulating across iterations is not what makes the first
+  root move complete** — that is `Budget::without_limits`, which stands on its
+  own. Two separate properties of one counter; welding them with a "because"
+  is a mistake this project made once already.
 
 - **The search answers with a move it actually searched, unless `stop` cut the
-  first root move short.** The mechanism is structural: **the first iteration's
-  first root move runs against `Budget::without_limits`**, the same budget with
-  the clock and the node limit suspended. Without it, a poll landing inside that
-  subtree leaves `negamax_root` returning `None`, the deepening loop breaking,
-  and the answer sitting at the unsearched seed — a move in shunsai's
-  unspecified generation order, with no `info` line emitted at all.
+  first root move short**, and the mechanism is `Budget::without_limits` rather
+  than a rule anybody has to remember.
 
-  ⚠️ **Root move 0 and no further.** Alpha is still `-INFINITE` there, so any
-  finite score raises it; relieving the rest of the iteration buys nothing.
-
-  ⚠️ **`signals.stopped()` stays live** through it, which is why it is a second
-  budget rather than a flag that skips the poll.
-
-- **Each iteration re-seeds the root list with its own answer.** Without it, an
-  iteration cut short reports the best of whatever prefix it reached, which can
-  be a *worse* move than the last completed iteration chose. Root-only; not the
-  interior move ordering E1 is about.
+- **Each iteration re-seeds the root list with its own answer.** Root-only; not
+  the interior move ordering E1 is about.
 
 - **`MoveBuf::get` returns a `Move` by value, not a slice**, and that is what
   makes the recursion compile: a slice would borrow the buffer across the
@@ -119,40 +78,16 @@ pull request.
   because it persists across iterations and gets reordered.
 
 - **千日手 is decided where a child is dispatched, not at the top of the
-  interior node.** Two things depend on the site: the depth-1 iteration
-  dispatches straight into quiescence, so a check inside the interior node
-  leaves it blind to the move that ends the game; and a cut-off that enters
-  neither node function leaves the node-counting convention above untouched.
-  ⚠️ The child's line has to be cleared on that path, or a parent that raises
-  alpha on the verdict publishes a variation running past the end of the game.
-
-- ⚠️ **A repetition verdict does reach the transposition table, by way of the
-  parent.** The verdict node's own key is never probed or stored, but the parent
-  takes the returned score as its `best` and stores it under a key that carries
-  no path. So a later probe can hand back a draw or a 連続王手 score for a
-  position that no repetition reached. This is the accepted imprecision, not a
-  guarantee.
+  interior node**, and the verdict reaches the transposition table by way of
+  the parent. `NegamaxSearcher::child` carries both and what they cost.
 
 - **The repetition path is extended at interior nodes only, and quiescence is a
-  deliberate hole in it.** Quiescence is the overwhelming majority of all nodes,
-  so keeping the push and the scan out of it is most of what the rule costs. The
-  hole is narrow rather than closed: a quiescence subtree's *entry* position is
-  one its interior parent pushed, and a quiescence line cannot return to that
-  entry — every ply but at most `QS_MAX_CHECK_PLIES` is a capture, and the only
-  move quiescence has that puts a piece back on the board is a drop from an
-  evasion. ⚠️ **That argument does not cover a quiescence position coinciding
-  with one from the game's own history**, which would be a fourth occurrence the
-  search does not see. ⚠️ **E1's SEE-in-quiescence item ends the bound too**:
-  once quiescence generates checks and non-capture promotions a quiescence node
-  can play a quiet move, so that item owns extending the path into quiescence.
+  deliberate hole in it**, narrow rather than closed. The argument and what it
+  does not cover are on the `path` field.
 
 - **A child gives the move buffer back exactly as it found it, asserted at the
   boundary rather than left to a test.** Forgetting a `truncate` is a leak, not
-  a wrong answer — every ply reads its own base, so the search still plays
-  correctly — so no ordinary test sees it, and with two node types an interior
-  node's own `truncate` destroys the evidence of anything its quiescence
-  children left behind. The invariant is a `debug_assert_eq!` on either side of
-  every child call.
+  a wrong answer, so no ordinary test sees it.
 
 ## Time control
 
@@ -206,13 +141,6 @@ pull request.
   cleared and not refilled, so a parent that raises alpha on it publishes one
   move followed by nothing. The FAQ carries the measurement that could not
   demonstrate this end to end and why the restriction is kept regardless.
-- **Nothing is stored from an abandoned search.** Once the budget is spent a
-  frame returns a placeholder, and a placeholder in the table outlives the
-  search that made it — every later search then reads it as a proved value.
-- **The table survives a `go` and is cleared by `usinewgame`.** A position's
-  value does not stop being true because the clock moved. What a new search does
-  instead is *age* the table, so its own entries win replacement contests
-  against the previous search's without erasing them.
 - **`USI_Hash` is queued through the search FIFO, never acknowledged.** The
   worker drains one queue, so waiting for a resize would hang the protocol
   thread behind whatever search is in front of it — an `isready` during
@@ -220,11 +148,6 @@ pull request.
 - **Table size is an input to every node count.** A bigger table evicts less, so
   a count quoted without a size is not a result, and `bench` fixes its own size
   rather than reading `USI_Hash`.
-- **The allocation is fallible, and a shortfall is reported.** `USI_Hash`
-  advertises sizes most machines cannot give; an infallible `vec![_; len]`
-  answers a refusal by aborting the process, from the worker thread, on a value
-  the engine itself offered. A smaller table plus a diagnostic is the only
-  answer compatible with "bad input never stops the loop".
 
 ## `bench`
 
@@ -274,19 +197,6 @@ hand, is not.
   two-sided window is wrong in both directions**, so it is not the safe
   reading.
 
-## The SPRT harness
-
-- **A fixed-node run may not take more than one lap of the opening set**, and
-  the harness refuses rather than warns. Under `--nodes` a repeated opening is a
-  repeated *game* for engines that answer a node budget deterministically, and
-  the replays are indistinguishable from independent pairs downstream —
-  `sprt::tests::replication_multiplies_the_llr_it_should_not_move` is what that
-  costs the statistic. ⚠️ **A clock is exempt**: elapsed time differs between
-  replays, so a lapped opening there is a fresh game rather than a copy.
-- **`--concurrency > 1` under a clock warns rather than refuses**, and the run
-  is recorded as `noisy` in its log, so it cannot later be read as a
-  measurement it was not.
-
 ## The `info` line
 
 - **It carries `depth seldepth time nodes nps hashfull score pv`, and nothing
@@ -295,10 +205,8 @@ hand, is not.
   **unconditionally**, including when it is uninteresting: a token that comes
   and goes makes the line's shape depend on the position, which is how a
   reader's bug becomes one that reproduces on some positions and not others.
-- **`seldepth` resets per iteration; `nodes` accumulates across them.** The
-  asymmetry is deliberate. USI prints `seldepth` beside `depth` and it means the
-  selective depth *of that iteration*. `nodes` accumulates for an unrelated
-  reason — resetting it starves the poll, above.
+- **`seldepth` resets per iteration; `nodes` accumulates across them**, for two
+  unrelated reasons the `seldepth` field carries.
 
 ## Portability
 
