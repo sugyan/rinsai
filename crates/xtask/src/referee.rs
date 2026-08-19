@@ -258,7 +258,7 @@ pub fn play_game(
                 Outcome::MaxMoves => (Winner::Neither, EndReason::MaxMoves, None),
                 // ⚠️ Narrowing: `Outcome` has one variant for the three
                 // `EndReason` keeps apart, so this arm answers with the one
-                // that says least. Why they stay apart is DECISIONS.md's.
+                // that says least.
                 Outcome::Abandoned { loser } => (Winner::opponent_of(loser), EndReason::Died, None),
             };
         }

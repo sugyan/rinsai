@@ -32,7 +32,7 @@ path = "/Users/you/dev/sugyan/shogi/rinsai/target/release/rinsai"
 USI_Hash = "256"
 
 # GPL sparring binaries live in the local-only ../benchmarks repository and
-# are only ever run as separate processes (CLAUDE.md §2, run-vs-link).
+# are only ever run as separate processes — nothing GPL is linked or shipped.
 [engines.yaneuraou-material]
 name = "YaneuraOu MaterialLv1"
 path = "/Users/you/dev/sugyan/shogi/benchmarks/YaneuraOu/source/YaneuraOu-by-gcc"

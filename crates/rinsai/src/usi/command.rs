@@ -2,8 +2,8 @@
 //!
 //! This is our own code on purpose. The `usi` crate is a GUI-side engine
 //! driver: its `GuiCommand` can be *written* but not read, so it cannot parse
-//! anything an engine receives. And DESIGN.md wants the protocol loop to be
-//! ours precisely so it can carry its own conformance tests.
+//! anything an engine receives. Owning the loop is also what lets it carry
+//! its own conformance tests.
 
 use std::time::Duration;
 

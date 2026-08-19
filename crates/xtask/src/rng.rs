@@ -5,8 +5,8 @@
 //! ours to freeze. splitmix64 is Sebastiano Vigna's public-domain generator;
 //! shunsai's `examples/gen_bench_positions.rs` (MIT, same author) uses the
 //! same pair for the same reason. ⚠️ That path is in shunsai's **repository**;
-//! the published crate ships `src/` only, so the provenance scan CLAUDE.md §2
-//! requires has to read it there.
+//! the published crate ships `src/` only, so a provenance scan has to read it
+//! there.
 
 /// The next value of the generator, advancing `state`.
 pub fn splitmix64(state: &mut u64) -> u64 {

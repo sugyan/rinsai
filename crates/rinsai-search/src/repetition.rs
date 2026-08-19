@@ -48,8 +48,7 @@ impl Repetition {
 /// ⚠️ **`key` filters and `hands` confirm, and dropping the second compiles and
 /// stays silent.** shunsai's key already covers the hands, so the comparison
 /// adds no information about shogi — it is a guard against a 64-bit collision
-/// handing back a position that merely hashes alike. CLAUDE.md prescribes the
-/// pair.
+/// handing back a position that merely hashes alike.
 ///
 /// ⚠️ **A game rooted at a mid-game `position sfen …` cannot see a repetition
 /// that began before its root**, because those plies are not in `path`. The
@@ -67,8 +66,7 @@ pub(crate) fn verdict(path: &[HistoryEntry]) -> Option<Repetition> {
     // ⚠️ **A null move breaks that and nothing here would notice.** Pushing an
     // entry for a pass shifts the parity of everything below it, and this walk
     // then compares `current` only against the opponent's positions and returns
-    // `None` for every real repetition in the subtree. DESIGN.md's E1 item 5
-    // owns it.
+    // `None` for every real repetition in the subtree.
     let mut seen = 0;
     let mut first = None;
     let mut i = now;

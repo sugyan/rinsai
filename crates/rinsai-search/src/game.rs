@@ -36,16 +36,16 @@ type Record = shogi_core::Position;
 
 /// What repetition detection needs to know about a position that has occurred.
 ///
-/// CLAUDE.md names this exact triple: `key` filters, hand equality confirms,
-/// and the `in_check` run decides the perpetual-check case, where the checking
-/// side loses. The crate's `repetition` module is what reads it.
+/// `key` filters, hand equality confirms, and the `in_check` run decides the
+/// perpetual-check case, where the checking side loses. The crate's
+/// `repetition` module is what reads it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct HistoryEntry {
     /// shunsai's incremental Zobrist key: board, hands and side to move, but
     /// *not* ply — which is exactly what makes it usable as a repetition filter.
     pub key: u64,
     /// Confirms a `key` match. Confirmation, not proof: only a full board
-    /// compare would be proof, and CLAUDE.md prescribes this pair.
+    /// compare would be proof.
     pub hands: [Hand; 2],
     /// Whether the side to move was in check.
     pub in_check: bool,
@@ -248,14 +248,11 @@ impl Game {
     /// A copy of [`Self::position`] — the board a searcher does its do/undo on.
     ///
     /// A method rather than a `position().clone()` at the call site, so that the
-    /// cross-check below runs on the path every search takes. DECISIONS.md
-    /// carries why the search wants this board rather than one rebuilt from the
-    /// record.
+    /// cross-check below runs on the path every search takes.
     ///
     /// ⚠️ **The cross-check is a `debug_assert`, compiled out of the release
     /// binary that actually plays**, so the guarantee is "the test suite would
-    /// have caught a drift", not "a live game will". DECISIONS.md carries that
-    /// trade and what would reopen it.
+    /// have caught a drift", not "a live game will".
     #[must_use]
     pub fn search_board(&self) -> Position {
         debug_assert_eq!(

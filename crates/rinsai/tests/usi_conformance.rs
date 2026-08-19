@@ -1,7 +1,7 @@
 //! USI conformance dialogues.
 //!
-//! The protocol loop is our own code, so it carries its own tests (DESIGN.md
-//! E0). Two properties make the suite deterministic and **sleep-free**:
+//! The protocol loop is our own code, so it carries its own tests. Two
+//! properties make the suite deterministic and **sleep-free**:
 //!
 //! 1. `usi::run` returns only after the search thread has been joined, so when
 //!    it returns every byte has been written and flushed. Each script ends with

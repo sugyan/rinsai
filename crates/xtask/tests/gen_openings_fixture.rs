@@ -3,9 +3,8 @@
 //! must reproduce `tests/fixtures/expected-openings.sfen` byte for byte.
 //!
 //! The full-scale form of the same claim — regenerating a committed set
-//! leaves `git diff` empty — is run by hand, on the inputs CONVENTIONS.md
-//! names under "Frozen position sets". Each run is recorded in its pull
-//! request. This test is the half CI holds.
+//! leaves `git diff` empty — is run by hand, from the rev its header
+//! records. This test is the half CI holds.
 
 use xtask::openings::{DayInput, PipelineConfig, generate};
 
@@ -65,8 +64,9 @@ fn fixture_config() -> PipelineConfig {
 /// then reviewed like code.
 #[test]
 fn the_pipeline_reproduces_the_committed_golden_output_byte_for_byte() {
-    let generated =
-        generate(&fixture_days(), &fixture_config(), "fixture").expect("the fixtures suffice");
+    let generated = generate(&fixture_days(), &fixture_config(), "fixture")
+        .expect("the fixtures suffice")
+        .0;
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/expected-openings.sfen"
@@ -82,8 +82,12 @@ fn the_pipeline_reproduces_the_committed_golden_output_byte_for_byte() {
 fn two_runs_in_one_process_emit_identical_bytes() {
     let days = fixture_days();
     let cfg = fixture_config();
-    let first = generate(&days, &cfg, "fixture").expect("the fixtures suffice");
-    let second = generate(&days, &cfg, "fixture").expect("the fixtures suffice");
+    let first = generate(&days, &cfg, "fixture")
+        .expect("the fixtures suffice")
+        .0;
+    let second = generate(&days, &cfg, "fixture")
+        .expect("the fixtures suffice")
+        .0;
     assert_eq!(first, second);
 }
 
@@ -93,12 +97,16 @@ fn two_runs_in_one_process_emit_identical_bytes() {
 fn a_different_seed_selects_a_different_subset() {
     let days = fixture_days();
     let cfg = fixture_config();
-    let baseline = generate(&days, &cfg, "fixture").expect("the fixtures suffice");
+    let baseline = generate(&days, &cfg, "fixture")
+        .expect("the fixtures suffice")
+        .0;
     let other_cfg = PipelineConfig {
         seed: cfg.seed + 1,
         ..cfg
     };
-    let other = generate(&days, &other_cfg, "fixture").expect("the fixtures suffice");
+    let other = generate(&days, &other_cfg, "fixture")
+        .expect("the fixtures suffice")
+        .0;
     let openings = |text: &str| {
         text.lines()
             .filter(|l| l.starts_with("startpos"))
@@ -143,7 +151,9 @@ fn a_score_from_an_interrupted_iteration_does_not_decide_a_candidate() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/floodgate-capped"
     ));
-    let generated = generate(&days, &cfg, "fixture").expect("the one candidate is kept");
+    let generated = generate(&days, &cfg, "fixture")
+        .expect("the one candidate is kept")
+        .0;
 
     let picked: Vec<&str> = generated
         .lines()
