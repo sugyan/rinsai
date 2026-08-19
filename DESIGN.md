@@ -1,6 +1,6 @@
 # rinsai — design
 
-This document is the canonical plan for `rinsai`. For the movegen layer it stands on, see [`shunsai`](https://github.com/sugyan/shunsai)'s own `DESIGN.md`; the division of labour between the two is §2 here and §1–§2 there.
+This document is the canonical plan for `rinsai`. For the movegen layer it stands on, see [`shunsai`](https://github.com/sugyan/shunsai)'s own `DESIGN.md`. The division of labour between the two is the scope section below.
 
 ## 1. Goal
 
@@ -10,7 +10,7 @@ A shogi engine that places well on **floodgate** and in the **世界コンピュ
 
 **Premises, confirmed with the author (2026-07-31):**
 
-- **Licence**: engine *and* training pipeline stay **`MIT OR Apache-2.0`, clean-room**. GPL work may be read and reimplemented, never ported. **Running** GPL software as a separate process carries no obligation — see [CLAUDE.md](./CLAUDE.md) §2, run-vs-link.
+- **Licence**: engine *and* training pipeline stay **`MIT OR Apache-2.0`, clean-room**. GPL work may be read and reimplemented, never ported. **Running** GPL software as a separate process carries no obligation — see [CLAUDE.md](./CLAUDE.md) on run-vs-link.
 - **Compute**: a cloud GPU budget on the order of tens of thousands of yen per month. The development machine is an Apple Silicon Mac.
 - **Time**: no deadline. Milestones are feature-based. WCSC entry waits until the engine is strong enough (entry is usually Feb–Mar, the tournament in May; 電竜戦 in November is the dress rehearsal).
 
@@ -47,29 +47,26 @@ One repository, a Cargo workspace, with the training pipeline alongside the engi
 rinsai/
 ├── CLAUDE.md              # rules for implementation sessions
 ├── DESIGN.md              # this file: the plan
-├── DECISIONS.md           # what was decided, and what lost; retired in place  (added at E0)
-├── CONVENTIONS.md         # what is frozen, by subject             (added at E0)
+├── DECISIONS.md           # what was decided, and what lost; retired in place
+├── CONVENTIONS.md         # what is frozen, by subject
 ├── README.md              # what it is, and the name
-├── NETS.md                # evaluation-file registry (added at E3)
-├── Cargo.toml             # [workspace]                      (added at E0)
+├── NETS.md                # evaluation-file registry                    (E3)
+├── Cargo.toml             # [workspace]
 ├── crates/
 │   ├── rinsai-game/       # lib: the rules layer — legality-gated play, undo, 千日手 and
 │   │                      #      連続王手 adjudication; the match referee, shared with tuishogi
 │   ├── rinsai-search/     # lib: αβ + TT + qsearch + time management + repetition + eval
 │   │                      #      the only crate that depends on shunsai
 │   ├── rinsai/            # bin: the engine. USI on stdio by default, --csa for floodgate
-│   └── xtask/             # bin: fetch-floodgate / gen-openings / sprt; fetch-net and
-│                          #      release join later  (added at E0 steps 6+7)
-├── train/                 # PyTorch: dataset, model, quantize, export   (added at E3)
-├── positions/             # bench-v1.sfen (frozen, E0 step 3b); openings-v1.sfen, openings-v2.sfen (E0 step 6), openings-v3.sfen
-├── tools/                 # match harness config, ladder definitions  (added at E0 step 7)
-└── .github/workflows/     # fmt / clippy -D warnings / test / MSRV / cargo-deny  (added at E0)
+│   └── xtask/             # bin: fetch-floodgate / gen-openings / sprt;
+│                          #      fetch-net and release join later
+├── train/                 # PyTorch: dataset, model, quantize, export   (E3)
+├── positions/             # the frozen bench and opening sets
+├── tools/                 # match harness config, ladder definitions
+└── .github/workflows/     # fmt / clippy -D warnings / test / MSRV / cargo-deny
 ```
 
-Entries carry the phase that creates them; anything unmarked exists today. (The
-`bench --no-run` step this list originally named is not there and will not be:
-rinsai's `bench` is a **binary subcommand**, the Stockfish convention, not a
-criterion target — see E0 step 3b.)
+An entry marked with a phase arrives then; everything else exists today.
 
 **The training pipeline lives in this repository, not its own.** The network architecture, the quantization scheme and the data format are each defined twice — once in Rust for inference, once in Python for training — and any drift between the two is a silent strength bug that SPRT reads as "that patch was bad". Being able to change both in one commit is what prevents it. A secondary benefit: the WCSC appeal document's claim of own-data-and-own-trainer is demonstrable from one repository's history.
 
@@ -77,9 +74,9 @@ criterion target — see E0 step 3b.)
 
 | Crate | Split off at | Because |
 |---|---|---|
-| `rinsai-game` | E0 step 7 (exists) | the match referee and tuishogi share one rules layer, and a crate boundary is what a second repository can adopt; moved from tuishogi rather than written — [DECISIONS.md](./DECISIONS.md), 2026-08-12 |
+| `rinsai-game` | E0 (exists) | the match referee and tuishogi share one rules layer, and a crate boundary is what a second repository can adopt; moved from tuishogi rather than written |
 | `rinsai-nnue` | E3 | SIMD backends (NEON / AVX2) and PyTorch-parity tests want their own test surface. **Draw the boundary carefully**: the accumulator stack parallels the *search* stack, so `nnue` owns pure inference and the `Accumulator` type, while pushing and popping it stays in the search. |
-| `rinsai-protocol` | E2 | when the CSA client arrives and wants to share the **session layer** with USI: both drive the same `SearchDriver`, `Game` and time management, and both need "one answer per turn, structurally" to hold. **Not** the line-oriented loop, and **not** a codec — the two protocols share no grammar, no move notation (`+7776FU` against `7g7f`) and no state machine. Recorded in DECISIONS.md's 2026-08-10 entry on sharing the USI layer. |
+| `rinsai-protocol` | E2 | when the CSA client arrives and wants to share the **session layer** with USI: both drive the same `SearchDriver`, `Game` and time management, and both need "one answer per turn, structurally" to hold. **Not** the line-oriented loop, and **not** a codec — the two protocols share no grammar, no move notation (`+7776FU` against `7g7f`) and no state machine. |
 | `rinsai-selfplay` | E3 | data generation drives the search library in-process rather than over USI, so it needs its own binary |
 
 **One binary, not two.** USI on stdio is the default mode — that is what a GUI and [Ayane](https://github.com/yaneurao/Ayane) do: launch the executable and speak USI — and `--csa` selects the floodgate client. Two binaries would each embed the network and duplicate the time-management and search-driver glue.
@@ -94,7 +91,7 @@ criterion target — see E0 step 3b.)
 | Self-play data | **Object storage** | the shard manifest: generator rev, seed, position count, opening set, label depth, checksum |
 | Game records, SPRT logs | local + object storage | positions the engine misplayed, as test fixtures |
 
-A `halfkp_256x2-32-32` network is almost entirely its feature transformer (125,388 × 256 × int16, 61 MiB), and E3–E4 produce dozens across generations; self-play data runs to tens of GB per generation. Neither belongs in git. The registry and the manifests do: they are the provenance chain that §7's pre-release scan and a WCSC appeal document both need. **The ledger is the artifact that has to be version-controlled — the weights are not.**
+A `halfkp_256x2-32-32` network is almost entirely its feature transformer (125,388 × 256 × int16, 61 MiB), and E3–E4 produce dozens across generations; self-play data runs to tens of GB per generation. Neither belongs in git. The registry and the manifests do: they are the provenance chain that the pre-release scan and a WCSC appeal document both need. **The ledger is the artifact that has to be version-controlled — the weights are not.**
 
 ### Sparring opponents, and the run-vs-link boundary
 
@@ -106,41 +103,39 @@ The match harness and the SPRT scripts are **own code in this repository** and o
 
 Numbered **E0–E6** so as not to collide with shunsai's M0–M7. Rating targets are floodgate estimates.
 
-### E0 — baseline: play legal moves and don't hang pieces (size M)
+### E0 — baseline: play legal moves and don't hang pieces (size M) — **done**
 
-- USI shell (`position` / `go` / `stop` / `gameover`), iterative-deepening negamax αβ, **TT and quiescence search from the start** (material evaluation without qsearch fails on the horizon effect), simple time management, material evaluation.
-  - ⚠️ "From the start" means from the start of *E0*, not of every sub-step. The split ships step 2 without them, knowingly: step 2's engine is horizon-effect-prone and is supposed to be, step 3a is the fix, and separating them is what makes step 3a's diff attributable. [DECISIONS.md](./DECISIONS.md), 2026-08-07, when step 3 became 3a (quiescence) and 3b (the transposition table and `bench`).
-  - ⚠️ Likewise "simple time management": step 2 honours only the budgets it is *told* (`movetime`, `byoyomi`), and deciding a per-move allowance from `btime` is step 5.
-- **Repetition (千日手) is mandatory at E0 and lives here, not in shunsai.** Stack `(key(), Hand, in_check())` per ply; use `key()` as the first filter and hand equality to confirm. Perpetual check — where the checking side loses — is decided from the `in_check()` history. shunsai holds no game history by design, so this is the engine's responsibility.
-- Harness: **an own Rust USI match harness and SPRT driver in `crates/xtask`**, refereeing on `crates/rinsai-game` — decided when step 7 arrived and Ayane turned out to lack fixed-node play, repetition adjudication and legality checking ([DECISIONS.md](./DECISIONS.md), 2026-08-12). Sparring by running GPL binaries: node-limited YaneuraOu → 技巧2.
-- **shunsai API additions: none, deliberately.** E0 asks shunsai for nothing new — the layering's first contact with a real consumer.
-- ⚠️ **The remaining sub-steps land as two pull requests, harness first**: steps 6+7 (openings, match harness, SPRT), then step 5 (time management) — so the new instrument gates step 5's real-time behaviour, and its first run is a non-regression SPRT of the finished E0 against the step-3b engine. [DECISIONS.md](./DECISIONS.md), 2026-08-12; the gates are in the step-5 issues.
-- Infrastructure: repository skeleton, CLAUDE.md, USI conformance dialogue tests, a `bench` command (fixed positions × fixed depth, following the Stockfish convention), CI, and `openings-v1` — balanced positions extracted in-house from high-rated floodgate games, reusing the method of shunsai's `examples/gen_bench_positions.rs`.
-- Verification: fixed-depth node counts as a regression test (the search analogue of perft), a mate-in-1..5 suite, repetition and perpetual-check scenario tests.
+- USI shell (`position` / `go` / `stop` / `gameover`), iterative-deepening negamax αβ with a transposition table and quiescence search, time management, material evaluation.
+- **Repetition (千日手) is engine-side, not shunsai's.** Stack `(key(), Hand, in_check())` per ply; `key()` filters, hand equality confirms, and the `in_check()` history decides perpetual check. shunsai holds no game history by design.
+- Harness: **an own Rust USI match harness and SPRT driver in `crates/xtask`**, refereeing on `crates/rinsai-game`. Sparring by running GPL binaries: node-limited YaneuraOu → 技巧2.
+- **shunsai API additions: none, deliberately.** E0 asked shunsai for nothing new — the layering's first contact with a real consumer.
+- Infrastructure: repository skeleton, USI conformance dialogue tests, a `bench` command, CI, and the frozen opening sets — balanced positions extracted in-house from high-rated floodgate games.
+- Verification: fixed-depth node counts as a regression test, a mate-in-1..5 suite, repetition and perpetual-check scenario tests.
+- **The retroactive audit E0's batching bought has run and passed**: a non-regression SPRT of the finished E0 against the step-3b engine. The numbers are in the decision log.
 
 ### E1 — classical search, one feature at a time (size L, 1 feature = 1 SPRT)
 
-Introduction order, with the shogi-specific caveats that differ from chess:
+Introduction order, with the shogi-specific caveats that differ from chess. TT
+move ordering is absent because it landed with the table at E0.
 
-1. ~~TT move ordering~~ — **moved to E0 step 3b, with the table itself** ([DECISIONS.md](./DECISIONS.md), 2026-08-06). A transposition table whose move nobody tries first is half a table, and leaving it here would run steps 3–7, SPRT bring-up included, on a search with no ordering at all.
-2. MVV-LVA for captures, promotion-aware. **Baseline: E0 step 3a's quiescence is deliberately unordered**, so this is measured against it.
-3. Killers — **drops can be killers**
-4. History — **butterfly boards are impossible, because drops have no `from`**. Index by (piece kind × side, `to`) to unify board moves and drops. Countermove and continuation history later.
-5. **Null-move pruning — safer than in chess**, because drops make zugzwang effectively absent. Exclude only when in check, plus endgame verification. ⚠️ **It is also the first item to meet E0 step 4's repetition path, and the collision is silent.** That path is scanned two entries at a time because it alternates side to move; a pass pushed onto it shifts the parity of the whole subtree below, and the scan then compares against the opponent's positions only and reports no repetition at all. Either keep the pass off the path or make the walk parity-agnostic — and note that no fixture can catch this, because every repetition test reaches its verdict through the game's history rather than through the tree.
-6. LMR — checks, evasions and capture-promotions exempt
-7. Check extension — **more important than in chess**; watch its interference with perpetual-check repetition, which is a search-explosion risk
-8. SEE in qsearch — and with it the two things E0 step 3a's quiescence leaves out: **non-capture promotions** (歩→と is a 500 cp event in rinsai's own table, so a capture-only quiescence is blind to と金作り — a shogi-specific gap with no chess analogue) and **checks**, which also need `gives_check`. ⚠️ **This item also owns extending the repetition path into quiescence.** E0 step 4 leaves quiescence out of it, on an argument that holds only while a quiescence line's non-capture plies are bounded by `QS_MAX_CHECK_PLIES` — which is exactly what generating checks and quiet promotions ends. CONVENTIONS.md carries the rule and the condition.
-9. Futility / razoring — hand value belongs in the margin. **Baseline: E0 step 3a's quiescence is deliberately unpruned.** Also owns `QS_MAX_CHECK_PLIES`, which E0 set to 2 by measurement and without an instrument
-10. Aspiration windows
-11. **Quiescence probes and stores in the transposition table.** Measured at E0 step 3b and **not** shipped there — DECISIONS.md carries the numbers. It halves the tree on every fixture tried, which is the opposite of what the conventional argument predicts, and it arrives here because it is a separable search change and because node count is not an instrument for strength. ⚠️ It also rebaselines every `bench` count, so it wants a pull request of its own whatever else is going on.
-12. **Scoring the first repetition on the search path as a draw**, rather than the fourth occurrence the rule names. Standard practice, it prunes cycles, and it is a search heuristic rather than the rule — which is why E0 step 4 implements the rule and leaves this here, where an SPRT can decide it. ⚠️ It rebaselines every `bench` count, unlike step 4's version, which moved none
-13. Singular extensions, and the rest
+1. MVV-LVA for captures, promotion-aware. **Baseline: E0's quiescence is deliberately unordered.**
+2. Killers — **drops can be killers**
+3. History — **butterfly boards are impossible, because drops have no `from`**. Index by (piece kind × side, `to`) to unify board moves and drops. Countermove and continuation history later.
+4. **Null-move pruning — safer than in chess**, because drops make zugzwang effectively absent. Exclude only when in check, plus endgame verification. ⚠️ **It is the first item to meet E0's repetition path, and the collision is silent.** That path is scanned two entries at a time because it alternates side to move; a pass pushed onto it shifts the parity of the whole subtree below, and the scan then compares against the opponent's positions only and reports no repetition at all. Either keep the pass off the path or make the walk parity-agnostic — and no fixture can catch this, because every repetition test reaches its verdict through the game's history rather than through the tree.
+5. LMR — checks, evasions and capture-promotions exempt
+6. Check extension — **more important than in chess**; watch its interference with perpetual-check repetition, which is a search-explosion risk
+7. SEE in qsearch — and with it the two things E0's quiescence leaves out: **non-capture promotions** (歩→と is a 500 cp event in rinsai's own table, so a capture-only quiescence is blind to と金作り — a shogi-specific gap with no chess analogue) and **checks**, which also need `gives_check`. ⚠️ **This item also owns extending the repetition path into quiescence**, whose exclusion rests on an argument that generating checks and quiet promotions ends. CONVENTIONS.md carries the rule and the condition.
+8. Futility / razoring — hand value belongs in the margin. **Baseline: E0's quiescence is deliberately unpruned.** Also owns `QS_MAX_CHECK_PLIES`, which E0 set by measurement and without an instrument.
+9. Aspiration windows. ⚠️ This item owes `negamax_root` the ability to tell a fail-low from an abandoned iteration; the decision log carries why it cannot today.
+10. **Quiescence probes and stores in the transposition table.** Measured at E0 and **not** shipped there: it halves the tree on every fixture tried, which is the opposite of what the conventional argument predicts, and node count is not an instrument for strength. ⚠️ It rebaselines every `bench` count, so it wants a pull request of its own.
+11. **Scoring the first repetition on the search path as a draw**, rather than the fourth occurrence the rule names. Standard practice, it prunes cycles, and it is a search heuristic rather than the rule. ⚠️ It rebaselines every `bench` count, unlike E0's version, which moved none.
+12. Singular extensions, and the rest
 
-**SPRT discipline** — the parameters are in [CLAUDE.md](./CLAUDE.md) and are not restated here. What is specific to E1 is the pacing: **one item on this list is one SPRT**, in list order, and an item that fails to pass is recorded in DECISIONS.md with its numbers rather than retried until it does.
+**SPRT discipline** — the parameters are in [CLAUDE.md](./CLAUDE.md) and are not restated here. What is specific to E1 is the pacing: **one item on this list is one SPRT**, in list order, and an item that fails to pass is recorded in the decision log with its numbers rather than retried until it does.
 
-**Measurement is serial; implementation is not.** Features are built ahead, each on its own branch with its unit tests and bench counts, while the harness drains one SPRT at a time — a fixed-node game between deterministic engines is noise-immune (CLAUDE.md §3), so the queue runs beside development sessions. Merge on pass, rebase the queue behind it. The bottleneck is machine time, which is the correct one.
+**Measurement is serial; implementation is not.** Features are built ahead, each on its own branch with its unit tests and bench counts, while the harness drains one SPRT at a time — a fixed-node game between deterministic engines is noise-immune, so the queue runs beside development sessions. Merge on pass, rebase the queue behind it. The bottleneck is machine time, which is the correct one.
 
-**This is where shunsai API additions start** — see §6.
+**This is where shunsai API additions start** — see the catalogue below.
 
 ### E2 — real-world infrastructure: resident on floodgate (size M)
 
@@ -170,7 +165,7 @@ Introduction order, with the shogi-specific caveats that differ from chess:
 ### E5 — WCSC preparation (size M)
 
 - Entry threshold **R3800+**; below that, defer a year and continue E4. **電竜戦 in November is the dress rehearsal** — CSA connection, long-run operation, declaration wins under real conditions.
-- Feature freeze 4–6 weeks before. Appeal document (the clean-room policy and own training are good material). Library declaration — `shogi_core`, `shunsai`, own crates; check that year's rules. Hardware: a large cloud instance with an on-site laptop fallback. Pre-release provenance scan, applying §7 to the engine and the trainer alike.
+- Feature freeze 4–6 weeks before. Appeal document (the clean-room policy and own training are good material). Library declaration — `shogi_core`, `shunsai`, own crates; check that year's rules. Hardware: a large cloud instance with an on-site laptop fallback. Pre-release provenance scan, over the engine and the trainer alike.
 
 ### E6 — decision point: DL / MCTS / consultation (only if the conditions hold)
 
@@ -192,11 +187,11 @@ Each addition is prototyped on a shunsai branch, measured on shunsai's own bench
 | (optional) a `DirtyPieces`-returning `do_move` | judged E3 → E4 | the incremental-AttackInfo trade family |
 | (measurement only) magic vs qugiy vs `pext` | E1 once a TT-backed bench exists, and E4 on x86 | shunsai 2026-07-27 / 07-29 |
 | (measurement only) lifting the `king_danger` neighbourhood filter | only if a demand appears | shunsai 2026-07-30 |
-| SFEN I/O | **never added** | stays external on `shogi_usi_parser` (§2) |
+| SFEN I/O | **never added** | stays external on `shogi_usi_parser` |
 
 ## 7. Licensing
 
-`MIT OR Apache-2.0`, for the engine and the training pipeline alike. Adopts shunsai's §7 verbatim, plus one sharpening.
+`MIT OR Apache-2.0`, for the engine and the training pipeline alike — shunsai's policy, adopted verbatim and sharpened in one place.
 
 **The operative rules — the permissive list, the GPL list, and run-vs-link — are in [CLAUDE.md](./CLAUDE.md), which is where an implementation session reads them.** They are not repeated here; a licensing rule kept in two places is a licensing rule that can disagree with itself.
 
@@ -209,10 +204,3 @@ What belongs to the *plan* rather than to the rules is the consequence: **there 
 1. **The measurement loop from E0 onward is the most important thing**: patch → `bench` (node-count agreement, the search analogue of perft) → fixed-node paired games → SPRT → merge. **Record the rejected numbers too** — shunsai's habit of keeping the losing measurements applies here unchanged.
 2. **Strength ladder**: Lesserkai → node-limited YaneuraOu (1k / 10k / 100k / 1M, giving evenly spaced grades from one binary) → 技巧2 → full YaneuraOu → floodgate rating.
 3. **Correctness**: mate suites, repetition and declaration scenario tests, USI conformance dialogue tests. On the shunsai side the existing differential tests against `shogi_legality_lite` keep holding the movegen layer.
-
----
-
-**The decision log is [DECISIONS.md](./DECISIONS.md).** Cite it by the entry's
-date. ⚠️ This file has no `## 9.` heading, deliberately: CI's citation guard
-resolves `FILE.md §N` against the headings, so a surviving citation to section
-nine fails there rather than silently pointing at nothing.

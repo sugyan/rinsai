@@ -3,17 +3,11 @@
 What the code already assumes. **Changing any of these needs a
 [DECISIONS.md](./DECISIONS.md) entry**, because something is built on it.
 
-Organised by subject rather than by the step that froze it: the step is an
-accident of history, and three lists ordered by it were three lists nobody could
-search. Where a convention has an argument behind it, the argument is in
-DECISIONS.md; this file carries the rule, and a measurement is written once
-beside whichever of the two it justifies.
-
-A rule here is what the code assumes, stated in a few lines. If it takes a
-paragraph, what is being written is the argument — and the moment the rule
-lands here, **the DECISIONS.md entry behind it retires to a line**, in the same
-pull request. One file carries the rule, the other the shortest record of why
-the alternatives lost; neither carries both.
+Organised by subject rather than by the step that froze it. A rule here is what
+the code assumes, stated in a few lines; if it takes a paragraph, what is being
+written is the argument, and the argument belongs in the decision log. The
+moment a rule lands here, **the entry behind it retires to a line**, in the same
+pull request.
 
 ## Source layout
 
@@ -74,99 +68,83 @@ the alternatives lost; neither carries both.
 ## Search
 
 - **Node counting: one node per `search`/`qsearch` entry, including the root,
-  excluding bulk-counted leaves.** Frozen because step 3b makes these numbers a
+  excluding bulk-counted leaves.** Frozen because these numbers are a
   regression test, and a convention changed afterwards invalidates the whole
-  committed set. shunsai settled the same question one repository over.
+  committed set.
 - **The poll interval is 1024 nodes**, checked at the top of the interior node,
   at the top of every quiescence node, and once per deepening iteration — *not*
-  per root move, which would break the first-root-move guarantee below. The
-  value is inherited and untuned.
+  per root move, which would break the first-root-move guarantee below.
 
-  ⚠️ **Quiescence has to poll, and the reason is not tidiness.** The test is
-  `nodes.is_multiple_of(POLL_INTERVAL_NODES)` — an *exact* multiple — safe only while
-  every increment *inside the tree* is seen by something that polls. A
-  quiescence search that counted nodes without polling would leave the values
-  seen at interior-node entries non-consecutive, and they could then step clean
-  over every multiple of the interval: `stop`, the deadline and the node limit
-  all missed, and missed unpredictably rather than reliably. The mutation was
-  made; the test that goes red is `a_deep_search_still_answers_a_node_limit`.
+  ⚠️ **Quiescence has to poll.** The test is an *exact* multiple, safe only
+  while every increment inside the tree is seen by something that polls; a
+  quiescence search that counted without polling could step clean over every
+  multiple, missing `stop`, the deadline and the node limit unpredictably.
+  Sabotage: drop the quiescence poll —
+  `a_deep_search_still_answers_a_node_limit` goes red.
 
-  ⚠️ **The one exception: `negamax_root`'s own increment is not polled.** Since
-  `self.nodes` accumulates across iterations, an iteration beginning at
-  `nodes ≡ 1023 (mod 1024)` consumes that multiple at the root and no poll fires
-  at it. Bounded and benign — every later increment in that iteration *is*
-  polled, so the next multiple is at most one interval away — but it is an
-  exception to the sentence above, not an instance of it.
+  ⚠️ **`negamax_root`'s own increment is not polled**, so an iteration
+  beginning at `nodes ≡ 1023 (mod 1024)` consumes that multiple at the root
+  with no poll. Bounded and benign, but an exception to the sentence above
+  rather than an instance of it.
 
   ⚠️ **`self.nodes` accumulates across iterations and must not be reset per
-  iteration**, or the poll starves in a sparse position: in a two-lone-kings
-  position no single iteration through depth 6 reaches 1024 nodes on its own, so
-  a per-iteration counter never fires the poll and `stop` and any deadline go
-  unnoticed for that whole stretch. This is **not** what makes the first root
-  move complete — that is `Budget::without_limits` below, which stands on its
-  own. Two separate properties of one counter; welding them with a "because" is
-  a mistake this project made once already.
+  iteration**, or the poll starves where no single iteration reaches 1024 nodes
+  on its own. This is **not** what makes the first root move complete — that is
+  `Budget::without_limits` below, which stands on its own. Two separate
+  properties of one counter; welding them with a "because" is a mistake this
+  project made once already.
 
 - **The search answers with a move it actually searched, unless `stop` cut the
-  first root move short.** The mechanism
-  is structural: **the first iteration's first root move runs against
-  `Budget::without_limits`**, the same budget with the clock and the node limit
-  suspended. Without it, a poll landing inside that subtree leaves
-  `negamax_root` returning `None`, the deepening loop breaking, and the answer
-  sitting at the unsearched seed — a move in shunsai's unspecified generation
-  order, with no `info` line emitted at all.
+  first root move short.** The mechanism is structural: **the first iteration's
+  first root move runs against `Budget::without_limits`**, the same budget with
+  the clock and the node limit suspended. Without it, a poll landing inside that
+  subtree leaves `negamax_root` returning `None`, the deepening loop breaking,
+  and the answer sitting at the unsearched seed — a move in shunsai's
+  unspecified generation order, with no `info` line emitted at all.
 
   ⚠️ **Root move 0 and no further.** Alpha is still `-INFINITE` there, so any
-  finite score raises it; relieving the rest of the iteration buys nothing and
-  overruns the budget by what it costs.
+  finite score raises it; relieving the rest of the iteration buys nothing.
 
   ⚠️ **`signals.stopped()` stays live** through it, which is why it is a second
-  budget rather than a flag that skips the poll: `stop` means quit, and the poll
-  is where it is read.
+  budget rather than a flag that skips the poll.
 
-- **Each iteration re-seeds the root list with its own answer.** Without it,
-  deepening is only repeated work: an iteration cut short reports the best of
-  whatever prefix of the root list it reached, which can be a *worse* move than
-  the last completed iteration chose. Root-only; not the interior move ordering
-  E1 is about.
+- **Each iteration re-seeds the root list with its own answer.** Without it, an
+  iteration cut short reports the best of whatever prefix it reached, which can
+  be a *worse* move than the last completed iteration chose. Root-only; not the
+  interior move ordering E1 is about.
 
 - **`MoveBuf::get` returns a `Move` by value, not a slice**, and that is what
   makes the recursion compile: a slice would borrow the buffer across the
   recursive `&mut self` call. **The root move list lives outside the buffer**,
-  because it persists across iterations and gets reordered, which is not what a
-  ply-threaded buffer is for.
+  because it persists across iterations and gets reordered.
 
 - **千日手 is decided where a child is dispatched, not at the top of the
   interior node.** Two things depend on the site: the depth-1 iteration
   dispatches straight into quiescence, so a check inside the interior node
   leaves it blind to the move that ends the game; and a cut-off that enters
-  neither node function leaves the node-counting convention above untouched. ⚠️ The child's line has to be
-  cleared on that path, or a parent that raises alpha on the verdict publishes
-  a variation running past the end of the game.
+  neither node function leaves the node-counting convention above untouched.
+  ⚠️ The child's line has to be cleared on that path, or a parent that raises
+  alpha on the verdict publishes a variation running past the end of the game.
 
 - ⚠️ **A repetition verdict does reach the transposition table, by way of the
-  parent.** The verdict node's own key is never probed or stored — it returns
-  before either node function is entered — but the parent takes the returned
-  score as its `best` and stores it under a key that carries no path. So a
-  later probe can hand back a draw or a 連続王手 score for a position that no
-  repetition reached. This is the accepted imprecision, not a guarantee;
-  DECISIONS.md carries it and names the unbuilt fix.
+  parent.** The verdict node's own key is never probed or stored, but the parent
+  takes the returned score as its `best` and stores it under a key that carries
+  no path. So a later probe can hand back a draw or a 連続王手 score for a
+  position that no repetition reached. This is the accepted imprecision, not a
+  guarantee.
 
 - **The repetition path is extended at interior nodes only, and quiescence is a
-  deliberate hole in it.** Quiescence is the overwhelming majority of all
-  nodes, so keeping the push and the scan out of it is most of what the rule
-  costs. The hole is
-  narrow rather than closed: a quiescence subtree's *entry* position is one its
-  interior parent pushed, and a quiescence line cannot return to that entry —
-  every ply but at most `QS_MAX_CHECK_PLIES` is a capture, and the only move
-  quiescence has that puts a piece back on the board is a drop from an evasion.
-  ⚠️ **What that argument does not cover is a quiescence position coinciding
-  with one from the game's own history**, which would be a fourth occurrence
-  the search does not see — a known imprecision of the same family as the ones
-  quiescence already carries, not a proof of impossibility. ⚠️ **E1's item 8
-  ends the bound too**: once quiescence generates checks and non-capture
-  promotions a quiescence node can play a quiet move, so that item owns
-  extending the path into quiescence.
+  deliberate hole in it.** Quiescence is the overwhelming majority of all nodes,
+  so keeping the push and the scan out of it is most of what the rule costs. The
+  hole is narrow rather than closed: a quiescence subtree's *entry* position is
+  one its interior parent pushed, and a quiescence line cannot return to that
+  entry — every ply but at most `QS_MAX_CHECK_PLIES` is a capture, and the only
+  move quiescence has that puts a piece back on the board is a drop from an
+  evasion. ⚠️ **That argument does not cover a quiescence position coinciding
+  with one from the game's own history**, which would be a fourth occurrence the
+  search does not see. ⚠️ **E1's SEE-in-quiescence item ends the bound too**:
+  once quiescence generates checks and non-capture promotions a quiescence node
+  can play a quiet move, so that item owns extending the path into quiescence.
 
 - **A child gives the move buffer back exactly as it found it, asserted at the
   boundary rather than left to a test.** Forgetting a `truncate` is a leak, not
@@ -272,10 +250,10 @@ hand, is not.
   results are comparable only within one set, so editing a set in place
   silently invalidates every number already attributed to it — including the
   ones in DECISIONS.md entries that can no longer be re-run.
-- **Every line carries its provenance in the file's own header**, which is
-  where the licensing rule bites hardest (CLAUDE.md §2). A *generated* set
-  interpolates its own counters into that header, so the file cannot disagree
-  with the run that made it.
+- **Every line carries its provenance**, which is where the licensing rule
+  bites hardest: the header names the rev and seed the set was generated from,
+  and each line's own comment names the game behind it. A hand-assembled set
+  says where each position came from instead.
 - **What shapes a generated set travels with the code, with two exceptions.**
   The filters, the balance search's depth, node cap and table size, the target
   and the seed are all `PipelineConfig` fields a frozen constructor fills, so
@@ -294,7 +272,20 @@ hand, is not.
   The last `info` line published may belong to an iteration the node cap
   interrupted, whose score is a lower bound. ⚠️ **A lower bound against a
   two-sided window is wrong in both directions**, so it is not the safe
-  reading; DECISIONS.md carries what it cost v1.
+  reading.
+
+## The SPRT harness
+
+- **A fixed-node run may not take more than one lap of the opening set**, and
+  the harness refuses rather than warns. Under `--nodes` a repeated opening is a
+  repeated *game* for engines that answer a node budget deterministically, and
+  the replays are indistinguishable from independent pairs downstream —
+  `sprt::tests::replication_multiplies_the_llr_it_should_not_move` is what that
+  costs the statistic. ⚠️ **A clock is exempt**: elapsed time differs between
+  replays, so a lapped opening there is a fresh game rather than a copy.
+- **`--concurrency > 1` under a clock warns rather than refuses**, and the run
+  is recorded as `noisy` in its log, so it cannot later be read as a
+  measurement it was not.
 
 ## The `info` line
 
@@ -387,7 +378,7 @@ committed bench position set, which is where the licensing rule bites hardest.
 - **`the_first_root_move_is_never_abandoned`'s fixture** is two plies on from
   the matsuri position, reached by rinsai's own search.
 - **The committed floodgate records** under `crates/xtask/tests/fixtures/` are
-  game records — factual data (DESIGN.md §7) — copied from the local cache
+  game records — factual data — copied from the local cache
   `cargo run -p xtask -- fetch-floodgate` fills. There are two corpora and the
   second is deliberately a single game: `floodgate/` feeds the extractor's
   reproducibility gate, and `floodgate-capped/` exists because **no candidate
@@ -398,5 +389,5 @@ committed bench position set, which is where the licensing rule bites hardest.
   composed 詰将棋 is not covered by the argument above: the argument is that a
   *position* is a fact about a board rather than an expression, and a problem
   set is exactly the case where that stops being true. So the suite constructs
-  its own, the way CLAUDE.md §2 requires tables and books to be generated
-  rather than pasted.
+  its own, the way the licensing rule requires tables and books to be
+  generated rather than pasted.
