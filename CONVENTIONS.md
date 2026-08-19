@@ -245,8 +245,8 @@ committed bench position set, which is where the licensing rule bites hardest.
 - **The 593-legal-move position**
   `R8/2K1S1SSk/4B4/9/9/9/9/9/1L1L1L3 b RBGSNLP3g3n17p 1` — same file, same
   standing.
-- **`the_first_root_move_is_never_abandoned`'s fixture** is two plies on from
-  the matsuri position, reached by rinsai's own search.
+- **`RELIEF_FIXTURE`**, which the three first-root-move tests share, is two
+  plies on from the matsuri position, reached by rinsai's own search.
 - **The committed floodgate records** under `crates/xtask/tests/fixtures/` are
   game records — factual data — copied from the local cache
   `cargo run -p xtask -- fetch-floodgate` fills. There are two corpora and the
@@ -254,10 +254,10 @@ committed bench position set, which is where the licensing rule bites hardest.
   reproducibility gate, and `floodgate-capped/` exists because **no candidate
   in the first one separates the balance filter's two possible rules**, at any
   cap tried. Its one game was chosen for a position that does.
-- **The mate-in-1..5 ladder and both repetition fixtures are our own
-  construction**, built for these tests and verified by searching them. ⚠️ A
-  composed 詰将棋 is not covered by the argument above: the argument is that a
-  *position* is a fact about a board rather than an expression, and a problem
-  set is exactly the case where that stops being true. So the suite constructs
-  its own, the way the licensing rule requires tables and books to be
-  generated rather than pasted.
+- **The mate-in-1..5 ladder, both repetition fixtures and the move-ordering
+  fixture are our own construction**, built for these tests and verified by
+  searching them. ⚠️ A composed 詰将棋 is not covered by the argument above:
+  the argument is that a *position* is a fact about a board rather than an
+  expression, and a problem set is exactly the case where that stops being
+  true. So the suite constructs its own, the way the licensing rule requires
+  tables and books to be generated rather than pasted.

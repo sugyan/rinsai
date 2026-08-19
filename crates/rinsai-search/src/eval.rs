@@ -56,6 +56,23 @@ const HAND: [i32; PieceKind::NUM] = [
     0, 0, 0, 0, 0, 0, 0,
 ];
 
+/// What `kind` is worth standing on the board.
+///
+/// Caller: [`crate::ordering`], which ranks a capture by what it wins and by
+/// what wins it.
+pub(crate) fn board_value(kind: PieceKind) -> i32 {
+    BOARD[kind.array_index()]
+}
+
+/// What capturing a `kind` wins: its value on the board, plus its value in the
+/// captor's hand — **a promoted piece unpromotes when it is taken**, so a と金
+/// is won at a gold's board value and a pawn's hand value.
+///
+/// Caller: [`crate::ordering`].
+pub(crate) fn capture_gain(kind: PieceKind) -> i32 {
+    BOARD[kind.array_index()] + HAND[kind.unpromote().unwrap_or(kind).array_index()]
+}
+
 /// The material balance in centipawns, **from the side to move**.
 ///
 /// Positive is good for whoever is to move; a parent negates its child. ⚠️ No

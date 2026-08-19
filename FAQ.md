@@ -85,6 +85,17 @@ across five fixtures and four depths, super-linearly in depth. MVV-LVA, killers
 and history stayed at E1 — those are interior-node heuristics and each wants its
 own SPRT.
 
+### Why is a capture's ordering key a pair rather than one scaled number?
+
+Because the multiplier the conventional single number needs is not one anybody
+can defend here. Folding "take with the cheapest piece" into the same integer
+as "win the most material" needs a scale above the dearest attacker divided by
+the smallest gap two capture gains can have, and both halves of that ratio are
+properties of the evaluation table — which E3 replaces wholesale. A pair states
+the priority instead of encoding it, and
+`the_attacker_never_outranks_the_material` checks it over every (victim,
+attacker, promote) triple rather than over the ones somebody thought of.
+
 ### Why doesn't quiescence probe the transposition table?
 
 It should, and E1 owns it. The conventional expectation — quiescence is 91–99%
