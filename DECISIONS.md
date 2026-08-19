@@ -135,6 +135,25 @@ Newest last, live and retired interleaved in date order. Read it for what is liv
   - **`EndReason` is not collapsed onto `Outcome`, though #28 raises the question.** The harness keeps `Died`, `Protocol` and `Timeout` apart because the run summary tallies them apart; `Outcome::Abandoned` is one variant for all three, so the collapse would delete what a degraded run prints about itself. **Reopens if** the summary stops needing the three apart, or `Outcome` grows the distinction.
   - ⚠️ **A consumer that only `Display`s an `Outcome` compiles clean against a new variant** and renders a sentence nobody chose; `#[non_exhaustive]` does not help, because the hazard is the absent `match` rather than an exhaustive one. Nothing here can fix that for a downstream.
 
+- **2026-08-19 — a generated set's history is traced by a tag on the rev its header names.**
+  - **Decided.** Each `positions/openings-v*.sfen` has a tag
+    `openings-vN-generated` pointing at the rev its own header records, pushed
+    with the set. The rule is in [CONVENTIONS.md](./CONVENTIONS.md).
+  - **Rejected: relying on the branch surviving**, which is what had been
+    holding v1 and v2 together without anybody deciding it. This repository has
+    never made a merge commit, so a set's generating rev is never on `main`; the
+    two older revs were reachable only because their branches were never
+    deleted, and nothing said they had to be.
+  - ⚠️ **Rejected after measuring, and the expectation was the reverse:** using
+    *the commit that added the file* as the handle, on the argument that it is
+    on `main` and its tree must contain the generator. It does not. Review
+    commits land between generating a set and merging it, so the adding commit
+    carries a **later** generator — measured, `openings.rs` differs by 83 lines
+    for v1 and 9 for v2 between the two. A handle that is easy to reach and
+    wrong is worse than the rev.
+  - **Reopens if** the sets stop being generated from a rev-stamped header, or
+    if tags stop being pushed with the artefact.
+
 ## Recorded but deliberately not built
 
 [CLAUDE.md](./CLAUDE.md) forbids building for a consumer that does not exist

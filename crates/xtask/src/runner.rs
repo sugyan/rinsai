@@ -82,6 +82,39 @@ impl Control {
     }
 }
 
+/// Refuses a pair budget that would take more than one lap of the opening set.
+///
+/// ⚠️ **Under `--nodes` a repeated opening is a repeated game** for an engine
+/// that answers a node budget deterministically — rinsai by construction,
+/// having no thread option to set before E2, and an opponent only if its
+/// roster entry says so. The replays are indistinguishable from independent
+/// pairs downstream, and
+/// `sprt::tests::replication_multiplies_the_llr_it_should_not_move` is what
+/// that costs the statistic.
+///
+/// Refused rather than warned about, for the reason [`load_openings`] gives for
+/// refusing a duplicated line.
+///
+/// A clock is exempt: elapsed time differs between replays, so a lapped opening
+/// there is a fresh game rather than a copy.
+fn check_budget_fits_openings(
+    control: Control,
+    budget: u64,
+    openings: usize,
+    budget_flag: &str,
+) -> Result<(), String> {
+    if control.is_clock() || budget <= openings as u64 {
+        return Ok(());
+    }
+    Err(format!(
+        "a fixed-node budget of {budget} pairs over {openings} openings would replay each opening \
+         about {:.1}x, and a replayed deterministic game is a copied observation rather than a new \
+         one — the verdict would be drawn from {openings} pairs' evidence scaled up by the replay \
+         count. Play at most {openings} pairs ({budget_flag} {openings}), or open from a larger set",
+        budget as f64 / openings.max(1) as f64,
+    ))
+}
+
 struct Args {
     candidate: String,
     baseline: String,
@@ -150,6 +183,15 @@ pub fn run(args: &[String]) -> ExitCode {
     };
 
     let budget = args.pairs.unwrap_or(args.max_pairs);
+    let budget_flag = if args.pairs.is_some() {
+        "--pairs"
+    } else {
+        "--max-pairs"
+    };
+    if let Err(e) = check_budget_fits_openings(args.control, budget, openings.len(), budget_flag) {
+        eprintln!("sprt: {e}");
+        return ExitCode::FAILURE;
+    }
     let plans: Vec<[GamePlan; 2]> = schedule::pairings(openings.len(), args.seed)
         .take(budget as usize)
         .collect();
@@ -561,19 +603,13 @@ fn log_game(
         )
         .str("reason", &format!("{:?}", record.reason))
         .u64("plies", record.plies as u64)
+        .u64("opening_plies", record.opening_plies as u64)
         .str("moves", &record.moves_usi)
-        // Which side `times_us[0]` belongs to. ⚠️ Not derivable from the
-        // fields beside it: `plies` counts moves played and `times_us` counts
-        // moves asked for, and the two differ by one on every ending where the
-        // last ask was never played. Over half of `openings-v2` starts an odd
-        // number of plies in, so guessing from parity gets the colours
-        // backwards more often than not.
         .str(
             "first_timed_mover",
-            if record.opening_plies.is_multiple_of(2) {
-                "black"
-            } else {
-                "white"
+            match record.first_timed_mover {
+                Color::Black => "black",
+                Color::White => "white",
             },
         )
         .u64("black_ms", ms(record.spent[Color::Black.array_index()]))
@@ -656,7 +692,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut candidate = None;
     let mut baseline = None;
     let mut config_path = PathBuf::from("tools/opponents.toml");
-    let mut openings_path = PathBuf::from("positions/openings-v2.sfen");
+    let mut openings_path = PathBuf::from("positions/openings-v3.sfen");
     let mut nodes = None;
     let mut candidate_nodes = None;
     let mut baseline_nodes = None;
@@ -805,7 +841,7 @@ fn usage() -> ExitCode {
          \x20   (--nodes N | --candidate-nodes N --baseline-nodes N \\\n\
          \x20    | --time-ms N --byoyomi-ms N) \\\n\
          \x20   (--gain | --non-regression | --elo0 E --elo1 E) \\\n\
-         \x20   [--config tools/opponents.toml] [--openings positions/openings-v2.sfen] \\\n\
+         \x20   [--config tools/opponents.toml] [--openings positions/openings-v3.sfen] \\\n\
          \x20   [--pairs N] [--max-pairs {DEFAULT_MAX_PAIRS}] [--alpha 0.05] [--beta 0.05] \\\n\
          \x20   [--seed 1] [--concurrency 1] [--move-timeout-ms 30000]\n\
          \n\
@@ -847,6 +883,42 @@ mod tests {
         let mut v = strings(&["--candidate", "a", "--baseline", "b", "--gain"]);
         v.extend(strings(extra));
         parse_args(&v)
+    }
+
+    /// ⚠️ **Sabotage**: make the guard's comparison `budget < openings as u64`,
+    /// or drop the `is_clock` short-circuit, and the first and third cases go
+    /// red in turn.
+    #[test]
+    fn a_fixed_node_budget_may_not_outrun_its_opening_set() {
+        let nodes = Control::Nodes {
+            candidate: 1,
+            baseline: 1,
+            hang_timeout: Duration::from_secs(30),
+        };
+        let clock = Control::Clock(TimeControl {
+            main: Duration::from_secs(300),
+            byoyomi: Duration::from_millis(200),
+        });
+
+        assert!(
+            check_budget_fits_openings(nodes, 256, 256, "--max-pairs").is_ok(),
+            "one lap exactly"
+        );
+        let over = check_budget_fits_openings(nodes, 2000, 256, "--max-pairs")
+            .expect_err("2000 over 256 laps");
+        assert!(over.contains("7.8x"), "the replay factor is named: {over}");
+        // The advice has to name the flag that set the budget, or following it
+        // reproduces the error.
+        assert!(over.contains("--max-pairs 256"), "{over}");
+        let pairs = check_budget_fits_openings(nodes, 2000, 256, "--pairs")
+            .expect_err("the same budget, set the other way");
+        assert!(pairs.contains("--pairs 256"), "{pairs}");
+        // A replayed opening is not a replayed game once elapsed time decides
+        // moves, so the same budget is a real sample there.
+        assert!(
+            check_budget_fits_openings(clock, 2000, 256, "--max-pairs").is_ok(),
+            "a clock laps legitimately"
+        );
     }
 
     #[test]
@@ -1007,6 +1079,7 @@ mod tests {
             moves_usi: String::new(),
             detail: None,
             opening_plies: 0,
+            first_timed_mover: Color::Black,
             spent: [Duration::ZERO; Color::NUM],
             move_times: Vec::new(),
         }
@@ -1038,5 +1111,9 @@ mod tests {
         assert!(line.contains(r#""black_ms":1500"#), "{line}");
         assert!(line.contains(r#""white_ms":300"#), "{line}");
         assert!(line.contains(r#""times_us":[1200000,300000]"#), "{line}");
+        // The two fields `GameRecord`'s docs describe by their place in this
+        // row, so a rename or a reorder cannot pass quietly.
+        assert!(line.contains(r#""opening_plies":0,"moves""#), "{line}");
+        assert!(line.contains(r#""first_timed_mover":"black""#), "{line}");
     }
 }

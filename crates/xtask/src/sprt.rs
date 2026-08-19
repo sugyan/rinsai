@@ -174,6 +174,38 @@ mod tests {
         assert!((got - 1.391).abs() < 1e-3, "{got}");
     }
 
+    /// ⚠️ **Replicating a sample multiplies the LLR by the replication factor,
+    /// and this function has no way to know it happened** — the score is
+    /// unmoved, so nothing else reports it. It is a property of the statistic,
+    /// not a defect here: the estimator is told `n` independent pairs and there
+    /// is no such thing as a duplicate pair to it.
+    ///
+    /// What makes it reachable is a caller playing more pairs than its opening
+    /// set holds against deterministic engines, where a replayed opening is a
+    /// replayed game. `runner::check_budget_fits_openings` is the guard, and
+    /// this test is the arithmetic it cites.
+    #[test]
+    fn replication_multiplies_the_llr_it_should_not_move() {
+        let once = PairCounts {
+            counts: [12, 13, 199, 26, 6],
+        };
+        for factor in [2u64, 8, 100] {
+            let replicated = PairCounts {
+                counts: once.counts.map(|c| c * factor),
+            };
+            assert_eq!(
+                replicated.score(),
+                once.score(),
+                "replication moves no score, which is why it is silent"
+            );
+            let (a, b) = (llr(&once, -5.0, 0.0), llr(&replicated, -5.0, 0.0));
+            assert!(
+                (b - a * factor as f64).abs() < 1e-9,
+                "{factor}x: {b} against {a} scaled"
+            );
+        }
+    }
+
     /// Pairs that never split a point are a trinomial over {0, ½, 1}; the
     /// pentanomial formula must agree with that reindexed instance exactly.
     #[test]

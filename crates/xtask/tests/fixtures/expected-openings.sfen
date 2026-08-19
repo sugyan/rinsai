@@ -2,8 +2,8 @@
 #
 # One USI `position` argument per line (`startpos moves …`); `#` starts a
 # comment and blank lines are ignored — the same conventions as
-# bench-v1.sfen. The SPRT harness plays every line twice per pair, colours
-# swapped (CLAUDE.md §3).
+# bench-v1.sfen. The SPRT harness makes a pair out of one line, playing it
+# twice with the colours swapped (CLAUDE.md §3).
 #
 # ⚠️ FROZEN. Paired-game results are comparable only within one opening set,
 # so a later set is a new file, openings-v3.sfen, never an edit to this one.
@@ -30,8 +30,7 @@
 #     and d= is the depth it came from: the deepest iteration that searched
 #     *every* root move. A search the node cap interrupts is judged on the
 #     last iteration that finished, never on the partial one — whose score
-#     is the best over a prefix of the root list and so a lower bound. That
-#     is the one thing v2 changed from v1, which read the partial line.
+#     is the best over a prefix of the root list and so a lower bound.
 # Regeneration from the same cached inputs, rev and seed is byte-identical
 # (`--rev` replays the rev recorded above, since HEAD moves when the file
 # is committed); crates/xtask/tests/gen_openings_fixture.rs is the
