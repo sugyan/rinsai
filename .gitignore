@@ -20,3 +20,6 @@ __pycache__/
 # Match, SPRT and floodgate output
 /games/
 /logs/
+
+# Personal overrides for this checkout; the shared settings are committed.
+/.claude/settings.local.json

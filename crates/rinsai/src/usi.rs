@@ -161,8 +161,8 @@ impl<W: Write + Send + 'static> Engine<W> {
             GuiCommand::Position(args) => self.set_position(&args),
             GuiCommand::Go(limits) => self.go(limits),
             GuiCommand::GoMate => {
-                // Mate solving is `tsumeshogi-solver`'s territory (DESIGN.md
-                // §2). `notimplemented` is the specification's own token for
+                // Mate solving is `tsumeshogi-solver`'s territory.
+                // `notimplemented` is the specification's own token for
                 // exactly this, and it is not a `bestmove`.
                 self.out.line("checkmate notimplemented");
             }

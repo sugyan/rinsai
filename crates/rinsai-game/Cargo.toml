@@ -1,8 +1,8 @@
 [package]
 name = "rinsai-game"
 description = "A shogi game with legality-gated moves, undo, and rule-decided outcomes: 詰み, 千日手, 連続王手の千日手"
-# Versioned apart from the workspace: this crate is publication-intended (the
-# engine crates are not — DESIGN.md §4), so its version follows its own API.
+# Versioned apart from the workspace: this crate is publication-intended and
+# the engine crates are not, so its version follows its own API.
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true

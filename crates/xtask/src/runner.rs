@@ -5,9 +5,9 @@
 //! Under `--nodes` no clock reading can change a move — the only ones are the
 //! hang-detection timeouts and the log directory's name — so a result does
 //! not depend on what else the machine is doing, and the queue may run beside
-//! other work. Under a clock the elapsed time *is* the measurement, so
-//! CLAUDE.md §3's quiet-machine rule binds and `--concurrency` above 1 makes
-//! the run a smoke test rather than a measurement.
+//! other work. Under a clock the elapsed time *is* the measurement, so it
+//! needs a quiet machine and `--concurrency` above 1 makes the run a smoke
+//! test rather than a measurement.
 //!
 //! Determinism per game comes from fresh processes: no table state, no
 //! option drift, nothing carried between games.
@@ -217,7 +217,7 @@ pub fn run(args: &[String]) -> ExitCode {
     if args.control.is_clock() && concurrency > 1 {
         eprintln!(
             "sprt: {concurrency} workers on the clock — elapsed time is the measurement here, so \
-             this run is a smoke test rather than a result (CLAUDE.md §3)"
+             this run is a smoke test rather than a result"
         );
     }
 
@@ -440,13 +440,13 @@ pub fn run(args: &[String]) -> ExitCode {
         if concurrency > 1 {
             println!(
                 "⚠️  {concurrency} workers on the clock: elapsed time is the measurement here, so \
-                 this run is a smoke test rather than a result (CLAUDE.md §3)"
+                 this run is a smoke test rather than a result"
             );
         }
     }
     // An engine that timed out or died is scored as an ordinary loss, so a
     // degraded run reads as a clean verdict unless the reasons are named
-    // beside it (CLAUDE.md §3: a noisy run is not a result).
+    // beside it — a noisy run is not a result.
     if !abnormal.is_empty() {
         let games: u64 = abnormal.iter().map(|(_, n)| n).sum();
         let detail = abnormal

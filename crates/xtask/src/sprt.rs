@@ -18,7 +18,7 @@
 //! ```
 //!
 //! stopping at `ln(β/(1−α))` (accept H0) or `ln((1−β)/α)` (accept H1). The
-//! test parameters themselves are CLAUDE.md §3's and arrive from the caller.
+//! test parameters themselves arrive from the caller.
 
 /// The expected score at an Elo gap — the logistic curve USI engines' rating
 /// lists assume.

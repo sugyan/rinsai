@@ -1,8 +1,8 @@
 //! `rinsai bench` — fixed positions at a fixed depth, reporting node counts.
 //!
-//! The search analogue of perft (CLAUDE.md §3): **a patch that moves a count
-//! without meaning to is a bug rather than an improvement**. The times beside
-//! them are for the operator; nothing depends on them.
+//! The search analogue of perft: **a patch that moves a count without meaning
+//! to is a bug rather than an improvement**. The times beside them are for the
+//! operator; nothing depends on them.
 //!
 //! ⚠️ **Everything that could move a count is fixed here, not inherited** — the
 //! position set, the depth, and the table size.

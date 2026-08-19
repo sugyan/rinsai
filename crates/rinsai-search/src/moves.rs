@@ -22,8 +22,7 @@ pub const MAX_LEGAL_MOVES: usize = 593;
 /// `MAX_LEGAL_MOVES * MAX_PLY`, sliced per ply, generation appending and the
 /// caller truncating back on the way out — is shunsai's own
 /// `perft_materialize` (`examples/perft.rs` in its repository, not the
-/// published crate), and the alternatives it was chosen over are argued in
-/// DECISIONS.md.
+/// published crate).
 ///
 /// **The moves come out by value, one at a time, and that is load-bearing.**
 /// A `&[Move]` handed back here would borrow the buffer for as long as the
@@ -60,11 +59,10 @@ impl MoveBuf {
     /// Appends every legal move whose destination holds an enemy piece, and
     /// returns the index the caller must [`truncate`](Self::truncate) back to.
     ///
-    /// Quiescence's generator. shunsai has no captures-only generation
-    /// (DESIGN.md §6 assigns it to E1), so the full legal walk still runs; what
-    /// does **not** run is materialisation, since a [`MoveSet`] hands over its
-    /// destinations as [`Bitboard`](shunsai::Bitboard)s. step 3a measured
-    /// what the walk costs.
+    /// Quiescence's generator. shunsai has no captures-only generation, so the
+    /// full legal walk still runs; what does **not** run is materialisation,
+    /// since a [`MoveSet`] hands over its destinations as
+    /// [`Bitboard`](shunsai::Bitboard)s.
     ///
     /// The result is a subset of [`Self::generate`]'s, so one ply still cannot
     /// exceed [`MAX_LEGAL_MOVES`].

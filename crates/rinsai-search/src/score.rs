@@ -60,7 +60,7 @@ impl Score {
     ///   needs none: a repetition ends the game where it stands rather than
     ///   `n` plies further on. That keeps the table's mate-by-ply adjustment
     ///   the only ply-relative score in the engine. It does **not** mean the
-    ///   value stays out of the table — CONVENTIONS.md says where it gets in.
+    ///   value stays out of the table.
     pub const REPETITION: Self = Self(30_000);
 
     /// A score in centipawns, where a pawn is 100.

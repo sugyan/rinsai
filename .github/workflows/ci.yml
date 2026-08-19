@@ -33,9 +33,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
 
-      # Guards CONVENTIONS.md's Portability rule at the only point CI can
-      # check it: `rinsai-search`'s library, which is the search core the rule
-      # is about, plus its whole dependency tree. The `rinsai` binary is
+      # `rinsai-search`'s library is the search core, and its whole dependency
+      # tree has to keep compiling for wasm32. The `rinsai` binary is
       # deliberately out of scope — it is stdio and process handling, which is
       # native by construction.
       #
@@ -53,8 +52,7 @@ jobs:
       # Doc comments link into each other and into the design record. A link
       # that no longer resolves — a renamed item, a moved module — is quiet
       # drift `cargo test` does not see. ⚠️ This is the *only* prose defect CI
-      # can catch: a false claim is not a broken link, which is why CLAUDE.md
-      # §4 makes the rule "write less" rather than "check harder".
+      # can catch: a false claim is not a broken link.
       - name: Docs build with no broken links
         run: cargo doc --workspace --no-deps --all-features --locked
         env:
@@ -74,30 +72,6 @@ jobs:
             echo "::error::A shunsai feature is enabled. Never do this from here — the WARNING beside [workspace.dependencies] in Cargo.toml says what each flag costs."
             exit 1
           fi
-
-      # A "§N" citation is prose, so nothing else in this pipeline looks at
-      # it — and the project has now shipped two families of stale ones: three
-      # citations to a CLAUDE.md section that never existed, and three to a
-      # DESIGN.md section that had been moved out. Both were repaired by hand,
-      # one instance at a time. This is the gate that stops the third family.
-      - name: Every "FILE.md §N" citation resolves
-        run: |
-          bad=0
-          # Field separator is the citation itself, so a line with two of them
-          # yields both. `|| true` for the same reason as the steps below: a
-          # file with no citations must not kill the step.
-          grep -rhoE '[A-Za-z_]+\.md §[0-9]+' \
-               --include='*.md' --include='*.rs' --include='*.toml' \
-               --include='*.yml' . 2>/dev/null | sort -u > /tmp/cites || true
-          while read -r file section; do
-            [ -f "$file" ] || { echo "::error::citation names a file that does not exist: $file $section"; bad=1; continue; }
-            n=${section#§}
-            grep -qE "^#{2,3} ${n}\. " "$file" || {
-              echo "::error::$file has no section ${n}, but something cites '$file $section'"
-              bad=1
-            }
-          done < /tmp/cites
-          exit $bad
 
       - name: Exactly one shogi_core in the graph
         run: |
@@ -122,8 +96,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets --locked
 
-  # CLAUDE.md's top rule (stay permissive, no GPL reuse), mechanized as far as a
-  # dependency-graph check can take it. See deny.toml.
+  # Stay permissive, no GPL reuse — mechanized as far as a dependency-graph
+  # check can take it. See deny.toml.
   deny:
     runs-on: ubuntu-latest
     steps:

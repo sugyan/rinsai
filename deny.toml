@@ -1,9 +1,9 @@
-# cargo-deny — CLAUDE.md's top rule (stay permissive, no GPL reuse), mechanized.
+# cargo-deny — stay permissive, no GPL reuse, mechanized.
 #
 # This checks the *dependency graph*. It cannot detect a copied GPL algorithm;
-# that is what the pre-release provenance scan (CLAUDE.md §2) is for. What it
-# does catch is the easy failure: a permissively-licensed crate somewhere in the
-# tree quietly gaining a copyleft dependency.
+# that is what the pre-release provenance scan is for. What it does catch is
+# the easy failure: a permissively-licensed crate somewhere in the tree
+# quietly gaining a copyleft dependency.
 
 [advisories]
 # Checked, and the reason is recorded because every other choice in this file

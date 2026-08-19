@@ -91,7 +91,7 @@ const MAX_DEPTH: Depth = MAX_PLY as Depth - 1;
 /// check back, need not be a capture, and its move list is *every* legal move
 /// including drops. Left uncounted those chains dominate the whole search.
 /// ⚠️ Two is the measured minimum that is also correct, and the cost is **not**
-/// monotone in the cap — DECISIONS.md carries the sweep and why that surprises.
+/// monotone in the cap.
 ///
 /// ⚠️ Evaluating a position that is still in check is a known lie, bounded by
 /// how many times a line may be checked rather than by how long it is. E1's
@@ -141,7 +141,7 @@ impl Neg for Window {
 /// parent failing high — its line then never surfaces — or untouched.
 ///
 /// ⚠️ **That is a reading of the code, not an observation.** A sweep could not
-/// reproduce it end to end; DECISIONS.md carries it and why the rule is kept.
+/// reproduce it end to end; the rule is kept regardless.
 fn cuts(hit: &Hit, window: &Window) -> bool {
     match hit.bound {
         Bound::Lower => hit.score >= window.beta,
@@ -153,8 +153,7 @@ fn cuts(hit: &Hit, window: &Window) -> bool {
 /// What this search is allowed to spend.
 ///
 /// `movetime` is taken exactly; every other clock produces an allowance this
-/// type derives from the mover's own remaining time. CONVENTIONS.md carries the
-/// time-control rules.
+/// type derives from the mover's own remaining time.
 struct Budget<'a> {
     signals: &'a SearchSignals,
     /// ⚠️ On the [`Clock`] later handed to [`Self::expired`], not on any
@@ -200,7 +199,6 @@ impl<'a> Budget<'a> {
     }
 
     /// How long this `go` may spend thinking, or `None` if it named no clock.
-    /// CONVENTIONS.md carries the time-control rules.
     fn allowance(limits: &Limits, mover: Color, margin: Duration) -> Option<Duration> {
         if let Some(movetime) = limits.movetime {
             return Some(movetime);
@@ -242,7 +240,8 @@ impl<'a> Budget<'a> {
     /// poll landing inside that subtree would leave
     /// [`NegamaxSearcher::negamax_root`] returning `None` and the answer sitting
     /// at the unsearched seed — a move in shunsai's unspecified generation
-    /// order. CONVENTIONS.md carries the rule and why root move 0 is enough.
+    /// order. Root move 0 is enough: alpha is still `-INFINITE` there, so any
+    /// finite score raises it.
     ///
     /// ⚠️ **`signals.stopped()` stays live**, which is why this is a second
     /// budget rather than a flag that skips the poll: `stop` means quit, and
@@ -257,8 +256,8 @@ impl<'a> Budget<'a> {
     }
 
     /// ⚠️ **`clock` is read lazily, inside the `is_some_and`.** A budget of
-    /// `depth` or `nodes` alone must not consult a clock at all — CONVENTIONS.md
-    /// carries that rule — so the reading cannot be hoisted into an argument.
+    /// `depth` or `nodes` alone must not consult a clock at all, so the
+    /// reading cannot be hoisted into an argument.
     fn expired(&self, nodes: u64, clock: &impl Clock) -> bool {
         self.signals.stopped()
             || self.node_limit.is_some_and(|limit| nodes >= limit)
@@ -317,8 +316,9 @@ pub struct NegamaxSearcher<C = RealClock> {
     path: Vec<HistoryEntry>,
     nodes: u64,
     /// The deepest ply reached, quiescence included. Reset **per iteration**,
-    /// unlike [`Self::nodes`], which accumulates across them — CONVENTIONS.md
-    /// carries both rules and the asymmetry is deliberate.
+    /// unlike [`Self::nodes`], which accumulates across them. The asymmetry is
+    /// deliberate: USI's `seldepth` means the selective depth *of an
+    /// iteration*, while resetting `nodes` would starve the poll.
     seldepth: usize,
     /// Sticky. Once the budget is spent every frame returns at once without
     /// polling again, so an abandoned subtree cannot spend time on its way out.
@@ -481,8 +481,8 @@ impl<C: Clock> NegamaxSearcher<C> {
     ///
     /// ⚠️ **Returning here keeps the verdict node's own key out of the table,
     /// and nothing more.** The caller takes the returned score as its `best`
-    /// and stores *that* under a key with no path in it — CONVENTIONS.md
-    /// carries the imprecision.
+    /// and stores *that* under a key with no path in it, so a later probe can
+    /// hand back a repetition score for a position no repetition reached.
     #[inline]
     fn child(
         &mut self,
@@ -1112,7 +1112,7 @@ mod tests {
     /// Proving it is the second half and the one that can fail quietly: the
     /// line is replayed into a game the test builds itself and the final
     /// position must have no legal move. ⚠️ Naming a move instead would be
-    /// asserting shunsai's unspecified generation order — CONVENTIONS.md.
+    /// asserting shunsai's unspecified generation order.
     fn assert_mate_in(args: &str, plies: i64) {
         let (_, lines) = run(args, depth(u32::try_from(plies).expect("a short mate")));
         let last = lines.last().expect("the search reported something");
@@ -1124,7 +1124,7 @@ mod tests {
     /// from `args`, and ends with the loser having no move.
     ///
     /// ⚠️ Naming a move instead would be asserting shunsai's unspecified
-    /// generation order — CONVENTIONS.md.
+    /// generation order.
     fn assert_mate_is_real(args: &str, line: &str, plies: i64) {
         let pv = pv_of(line);
         assert_eq!(i64::try_from(pv.len()).expect("short pv"), plies, "{line}");
@@ -1141,9 +1141,8 @@ mod tests {
         );
     }
 
-    /// The suite DESIGN.md's E0 verification list asks for: a mate at every
-    /// distance from one move to five, each found at exactly the depth it needs
-    /// and each proved by replay.
+    /// A mate at every distance from one move to five, each found at exactly
+    /// the depth it needs and each proved by replay.
     ///
     /// ⚠️ **The distance is asserted, not merely reported.** The deepening
     /// loop stops at the first iteration that returns a mate score, so a
@@ -1159,8 +1158,7 @@ mod tests {
     /// green, `bench` included** — no test here or anywhere reaches it. A mate
     /// that surfaces in a reported line is always resolved in quiescence
     /// first, because quiescence runs past the nominal depth and the deepening
-    /// loop stops at the first iteration that returns a mate score. DECISIONS.md
-    /// records it beside the same asymmetry in `pv[ply].clear()`.
+    /// loop stops at the first iteration that returns a mate score.
     #[test]
     fn finds_a_mate_at_every_distance_from_one_to_five() {
         for (moves, hand) in [(1, "-"), (2, "p"), (3, "2p"), (4, "3p"), (5, "4p")] {
@@ -1297,8 +1295,7 @@ mod tests {
     /// *root* score, and the root is the one node that neither probes nor
     /// stores, so a verdict-derived entry left at ply 1 or below would not show
     /// here. What it does catch is the verdict leaking through a shared
-    /// searcher's table all the way to a fresh root; CONVENTIONS.md carries the
-    /// leak that stays.
+    /// searcher's table all the way to a fresh root.
     #[test]
     fn a_repetition_verdict_does_not_survive_into_a_position_without_it() {
         let mut searcher = searcher();
@@ -1809,8 +1806,7 @@ mod tests {
     /// `Score::mated_in(0)` instead of `mated_in(ply)` and the announced
     /// distance is wrong, or drop its `pv[ply].clear()` and a stale line from
     /// an earlier subtree hangs off the mate. ⚠️ Making *either* mutation in
-    /// [`Self::negamax`] instead changes nothing here or anywhere — DECISIONS.md
-    /// records both halves of that asymmetry.
+    /// [`Self::negamax`] instead changes nothing here or anywhere.
     #[test]
     fn finds_the_mate_in_one() {
         let (_, lines) = run("sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1", depth(4));
@@ -1830,7 +1826,7 @@ mod tests {
     ///
     /// Sabotage: append the child line before the move in `update_pv`, or drop
     /// **[`Self::qsearch`]'s** `pv[ply].clear()`. ⚠️ Not [`Self::negamax`]'s —
-    /// that copy has no observable effect, which DECISIONS.md records.
+    /// that copy has no observable effect.
     ///
     /// ⚠️ **The replay is the part with teeth; the head comparison at the end
     /// is nearly free.** `best` is `self.pv[0][0]` and the printed line is
@@ -1866,7 +1862,7 @@ mod tests {
     /// Sabotage: score a mated node `Score::mated_in(0)` instead of
     /// `mated_in(ply)` **in [`Self::qsearch`]** and the announced distance
     /// stops matching the line. ⚠️ Not [`Self::negamax`]'s copy, which no test
-    /// reaches — see DECISIONS.md.
+    /// reaches.
     #[test]
     fn a_reported_mate_is_a_real_mate() {
         let args = "sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1";
@@ -2139,8 +2135,8 @@ mod tests {
     ///
     /// A ceiling with room on both sides, like
     /// [`quiescence_is_bounded_on_the_drop_heavy_fixture`]. ⚠️ **The fixture is
-    /// load-bearing** — the ordering is worth nothing at the initial position and
-    /// up to 14.02× here; DECISIONS.md carries the sweep that picked it.
+    /// load-bearing** — the ordering is worth nothing at the initial position,
+    /// and a great deal here.
     ///
     /// Sabotage: drop the `buf.swap`.
     #[test]
@@ -2201,8 +2197,8 @@ mod tests {
     /// The rule [`cuts`] exists for, as a table.
     ///
     /// ⚠️ **A unit test on purpose: no end-to-end test catches an in-window
-    /// exact cut.** DECISIONS.md carries the sweep that failed to, and why the
-    /// restriction is kept anyway.
+    /// exact cut.** A sweep looking for one found none, and the restriction is
+    /// kept anyway: the path is reachable and the argument is about soundness.
     ///
     /// Sabotage: `Bound::Exact => true`.
     #[test]
@@ -2429,9 +2425,9 @@ mod tests {
 
     /// A budget carrying no deadline is never polled against a clock.
     ///
-    /// CONVENTIONS.md's portability rule rests on this, and `bench` cannot see
-    /// it: hoisting the reading out of [`Budget::expired`]'s `is_some_and`
-    /// moves no node count, so nothing else here would go red.
+    /// Keeping the search reachable without a wall clock rests on this, and
+    /// `bench` cannot see it: hoisting the reading out of [`Budget::expired`]'s
+    /// `is_some_and` moves no node count, so nothing else here would go red.
     ///
     /// Sabotage: give `expired` a `now: Duration` parameter and read the clock
     /// at the three poll sites.

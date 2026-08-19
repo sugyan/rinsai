@@ -5,16 +5,16 @@
 # compiles this in with `include_str!`, so `rinsai bench` does not depend on the
 # working directory.
 #
-# PROVENANCE. CLAUDE.md §2 forbids reusing material from a GPL engine, and a
-# committed position set is where that bites hardest, so every line below says
-# where it came from. A *diagram* is a fact about a board rather than an
-# expression — which is why the two taken from the shogi perft literature are
-# clean even though GPL engines carry the same two — but the chain is written
-# down rather than assumed.
+# PROVENANCE. Reusing material from a GPL engine is forbidden, and a committed
+# position set is where that bites hardest, so every line below says where it
+# came from. A *diagram* is a fact about a board rather than an expression —
+# which is why the two taken from the shogi perft literature are clean even
+# though GPL engines carry the same two — but the chain is written down rather
+# than assumed.
 #
-# ⚠️ FROZEN. The node counts these produce are a regression test (CLAUDE.md §3),
-# so adding, removing or reordering a line rebaselines every one of them.
-# A later set is a new file, `bench-v2.sfen`, not an edit to this one.
+# ⚠️ FROZEN. The node counts these produce are a regression test, so adding,
+# removing or reordering a line rebaselines every one of them. A later set is a
+# new file, `bench-v2.sfen`, not an edit to this one.
 
 # --- own: the start of a game, and three ordinary continuations of it. Played
 # --- by hand from the rules, not copied from any engine's suite.

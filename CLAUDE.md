@@ -1,108 +1,142 @@
 # CLAUDE.md — rinsai project instructions
 
-This file defines project rules that every implementation session (Claude Code) **must follow**. For background and detail, see [DESIGN.md](./DESIGN.md).
+Rules an implementation session must follow. The plan is [DESIGN.md](./DESIGN.md),
+what is frozen is [CONVENTIONS.md](./CONVENTIONS.md), why is
+[DECISIONS.md](./DECISIONS.md). **What is next, deferred or broken is a GitHub
+issue** — `gh issue list`. What landed is `git log` and the pull requests.
 
-## 1. Project overview
+## 1. What rinsai is
 
-`rinsai` (凛彩) is a Rust **shogi engine** — search, evaluation, and the protocols to play real games. The goal is to place well on **floodgate** and in the **世界コンピュータ将棋選手権 (WCSC)**. It is built on [`shunsai`](https://github.com/sugyan/shunsai) for legal move generation and position management, and on [`shogi_core`](https://github.com/rust-shogi-crates/shogi_core) (MIT) for the fundamental types.
+A Rust **shogi engine** — search, evaluation and the protocols to play real
+games — aiming at floodgate and the 世界コンピュータ将棋選手権 (WCSC). Built on
+[`shunsai`](https://github.com/sugyan/shunsai) for move generation and on
+`shogi_core` for the fundamental types. Route: **NNUE + αβ first**; DL/MCTS is
+deferred behind the conditions written in DESIGN.md's E6, not rejected. Work is
+staged **E0–E6**; know which phase a task belongs to before starting it.
 
-- **Route**: **NNUE + αβ first**; DL/MCTS is a conditional later option, not a rejected one. The conditions are written down in DESIGN.md E6 — do not start DL work without checking them.
-- **Scope**: search, evaluation, NNUE inference and training, USI/CSA, time management, repetition (千日手), declaration (入玉宣言), self-play, the match harness. **Move generation is not in scope** — it belongs to shunsai. Neither is SFEN parsing (`shogi_usi_parser`) or mate solving (`tsumeshogi-solver`).
-- **Phases**: staged **E0–E6** (numbered so as not to collide with shunsai's M0–M7). See DESIGN.md §5. Know which phase a piece of work belongs to before starting it.
-- **Where the work stands is in the repository, not in a document.** `gh issue list` is what is open and what is next; `gh pr list` and `git log` are what landed, each pull request carrying its own narrative. There is no progress file, and adding one back needs a DECISIONS.md entry saying what could not be said in an issue.
+**In scope**: search, evaluation, NNUE inference and training, USI/CSA, time
+management, 千日手, 入玉宣言, self-play, the match harness.
 
-**Each document has one job, and nothing is written in two of them.**
+**Not in scope, and do not reimplement**: move generation and position
+management (shunsai), SFEN/USI parsing (`shogi_usi_parser`), mate solving
+([`tsumeshogi-solver`](https://github.com/sugyan/tsumeshogi-solver)).
 
-| File | Holds | Shape |
-|---|---|---|
-| [DESIGN.md](./DESIGN.md) | the plan — goal, scope, route, roadmap E0–E6 | forward-looking; edited when the plan changes |
-| CLAUDE.md | the rules a session must follow | this file |
-| [CONVENTIONS.md](./CONVENTIONS.md) | what is frozen and already built on, by subject | the rule, not its argument; adding one retires a DECISIONS.md entry |
-| [DECISIONS.md](./DECISIONS.md) | what was decided, what was rejected and why it lost, and what would reopen it | one entry per decision, **live** until the rule freezes, then **retired in place** to a line. Conclusions are superseded, never revised |
-| — what is next, what is deferred, what is broken | **a GitHub issue** | `gh issue list` |
-| — how something was found, which review caught it, what a draft said, the order events happened in | **the pull request description**, and nowhere in the repository | `git log` is the index |
+## 2. ⚠️ Top rule: licensing — stay permissive, no GPL reuse
 
-**One test, before writing any of it.** *Would a session holding this checkout,
-`git log` and the pull request descriptions get something **wrong** without this
-paragraph?* If it would only be less informed about how the work went, that is
-history, and history is already stored — do not write it. ⚠️ **The volume is
-mine to keep down; it is not a thing to measure or gate on.** The five documents
-above outgrew the code they describe before this rule existed, because two of
-them had no stopping condition written into their shape, and a third existed
-only to narrate what `git log` already held.
+The licence is **`MIT OR Apache-2.0`**, for the engine *and* the training
+pipeline.
 
-## 2. ⚠️ Top rule: licensing (stay permissive, no GPL reuse)
+**May reuse, retaining the copyright notices.** MIT:
+[haitaka](https://github.com/tofutofu/haitaka),
+[cozy-chess](https://github.com/analog-hors/cozy-chess), the `shogi_core`
+family, `shogi_usi_parser`, the `usi` and `csa` crates. Apache-2.0:
+[Ayane](https://github.com/yaneurao/Ayane). Public write-ups: CPW, the NNUE and
+AlphaZero-family papers, the Qugiy appeal document.
 
-The project licence is **`MIT OR Apache-2.0`**, for the engine **and** the training pipeline. Obey the following when generating code.
+**Must not copy or port.** YaneuraOu, dlshogi, tanuki-, cshogi, 技巧2,
+shogi-server, Stockfish, Fairy-Stockfish, and the old
+[yasai](https://github.com/sugyan/yasai) — sugyan's own work, but GPL-3.0 and
+derived from apery_rust, so porting from it is forbidden too. Understanding a
+technique and **writing it yourself** is fine; read-and-copy inherits GPL.
 
-**May reference / reuse (permissive)**
-- MIT: [haitaka](https://github.com/tofutofu/haitaka), [cozy-chess](https://github.com/analog-hors/cozy-chess), the [`shogi_core`](https://github.com/rust-shogi-crates/shogi_core) family, `shogi_usi_parser`, the `usi` and `csa` crates
-- Apache-2.0: [Ayane](https://github.com/yaneurao/Ayane) (the USI match runner) — vendoring and modifying it is allowed
-- Public write-ups: CPW, the NNUE papers, the AlphaZero-family papers, the Qugiy appeal document
-- When reusing from permissive sources, **retain the copyright notices**
+⚠️ **Run-vs-link is what makes this project practical.** *Running* a GPL program
+as a separate process creates no obligation — nothing GPL is linked or
+distributed — so sparring ladders, CSA bridges and local match servers are all
+available. GPL checkouts and binaries live **only** in the local-only,
+unpublished `../benchmarks` repository, never here. The harness spawns
+processes and nothing more; opponent paths come from a gitignored local config
+(`tools/opponents.toml`, with an `.example` committed).
 
-**Must not reference / copy (GPL)**
-- **YaneuraOu / dlshogi / tanuki- / cshogi / 技巧2 / shogi-server / Stockfish / Fairy-Stockfish / the old yasai**
-- Understanding a technique and **writing it yourself** is fine. **Do not read-and-copy or port** — that inherits GPL.
-- ⚠️ The old [yasai](https://github.com/sugyan/yasai) is sugyan's own work but is **GPL-3.0** (derived from apery_rust). Porting from it is **also forbidden**.
+**Training is written from scratch in PyTorch.** YaneuraOu's learner,
+nnue-pytorch and tanuki- are GPL — read them for ideas, never port. The data
+format is in-house and deliberately not PackedSfen-compatible. **Generate
+tables and books with our own generators**; never paste from elsewhere. Run a
+**provenance scan before any release**, over the engine and the trainer alike.
 
-**⚠️ run-vs-link — the distinction that makes this project practical**
-- **Running** a GPL program as a separate process creates **no obligation here**: nothing GPL is linked, nothing GPL is distributed. Sparring ladders, CSA bridges and local match servers are therefore all available.
-- GPL checkouts and binaries live **only** in the local-only, unpublished `../benchmarks` repository — **never in this one**. The harness here spawns processes and nothing more; opponent paths come from a gitignored local config (`.example` is committed).
-- **There is no major permissive reference for search code** (the strong chess engines are GPL too). Search is written from CPW, papers and first principles. Accept the cost; do not shortcut it.
+## 3. The measurement loop
 
-**Other**
-- **Training is written from scratch in PyTorch.** YaneuraOu's learner, nnue-pytorch and tanuki- are GPL — read them for ideas, never port. The data format is in-house and deliberately not PackedSfen-compatible.
-- **Generate tables and books with our own generators** — never paste from elsewhere.
-- Run a **provenance scan before any release**, applied to the engine *and* the trainer. Trained networks must be demonstrably the product of own data and own trainer via the manifest chain.
+Nothing is adopted on argument: `patch → bench → fixed-node paired games → SPRT
+→ merge`.
 
-## 3. The measurement loop — this is the project's spine
+- **`bench`** (fixed positions × fixed depth) is the search analogue of perft. A
+  patch that moves a node count unintentionally is a bug, not an improvement.
+- **SPRT**: gains at elo0=0 / elo1=5; non-regression gates at elo0=−5 / elo1=0;
+  α=β=0.05. **Paired openings with colours swapped are mandatory.** Feature
+  patches run at fixed nodes; speed and time-management patches run in real time.
+- **One feature = one SPRT.** Do not bundle. ⚠️ This governs **strength
+  patches** — changes whose intended effect is Elo. Correctness and
+  infrastructure work is gated by its own deterministic suites (scenario,
+  conformance, parity, `bench`) and may land batched.
+- **Record the rejected numbers too.** A measured loss is a result worth
+  keeping. Write a measurement **once**, beside the thing it justifies.
+- **Timing needs a quiet machine.** A fixed-node game between deterministic
+  engines is decided by the opening and the budgets, so that queue may run
+  beside other work. Timing measurements and real-time SPRTs may not.
+- **Never run engine matches above `--concurrency 3`** on the development
+  machine — each worker is two engine processes at full CPU. Say what will be
+  spawned before launching a fleet, and give every long-running process a bound.
 
-Nothing is adopted on argument. `patch → bench → fixed-node paired games → SPRT → merge`.
+## 4. Prose
 
-- **`bench`** (fixed positions × fixed depth) is the search analogue of perft: node-count agreement is a regression test, and a patch that changes node counts unintentionally is a bug, not an improvement.
-- **SPRT**: gain tests at elo0=0 / elo1=5; non-regression gates at elo0=-5 / elo1=0; α=β=0.05. **Paired openings with colours swapped are mandatory.** Feature patches run at fixed nodes; speed and time-management patches run in real time.
-- **One feature = one SPRT.** Do not bundle. ⚠️ The rule governs **strength patches** — changes whose intended effect is Elo. Correctness and infrastructure work is gated by its own deterministic suites (scenario, conformance, parity, `bench`) and may land batched; DECISIONS.md (2026-08-12) draws the line.
-- **Record the rejected numbers too.** This is shunsai's habit and it carries over: a measured loss is a result worth keeping. **A measurement is written once, beside the thing it justifies** — the rule in CONVENTIONS.md, the decision in DECISIONS.md, or the doc comment of the code whose shape it explains. Never twice: two copies drift, and this project has already caught one pair 2× apart and a second that had quietly diverged.
-- Benchmarking needs a quiet machine. A noisy run is not a result. ⚠️ This binds **times and real-time games**: a fixed-node game between deterministic engines is decided by the opening and the budgets, not by load, so the fixed-node SPRT queue may run beside other work — timing measurements and real-time SPRTs may not.
+**Write less.** No compiler and no test reads these sentences, so the lever is
+volume, not care. A review that found eleven false claims in one step's prose
+found zero defects in its code.
 
-## 4. Prose has an address
-
-A doc comment answers three questions and no others: **what is this**, **how do I use it correctly**, **what will bite me**. Everything else has an address, and it is not the source file.
-
-| The sentence is… | Where it goes |
-|---|---|
-| the contract — what the item is, what a caller must guarantee | the doc comment |
-| a trap — a wrong use that compiles and stays silent | the doc comment, marked ⚠️ |
-| provenance — clean-room evidence, or an upstream citation with `file:line` | the doc comment |
-| a number | once, beside the rule, decision or code it justifies |
-| what was tried, measured, rejected, or predicted wrongly | DECISIONS.md |
-| a rule something is already built on | CONVENTIONS.md |
-| what a later step will do | a GitHub issue, or DESIGN.md's roadmap |
-| a restatement of the signature | deleted; it moves nowhere |
-
-**Why volume is the lever, and not care.** Three review passes established the same finding at increasing strength: a *measurement* in a comment goes stale silently; an *invariant* goes stale faster — six of them were false on the day they were written, against code in the same commit; and one step's review found **eleven false claims in its prose and zero defects in its code**. `cargo doc -D warnings` sees none of this and no CI job can, because an invariant is prose. The instrument that works is reading every claim in a diff against the code beneath it, and it has found new false claims every time it has been run. **A claim that is not written cannot be false.** That is the only instrument that scales, so the rule is to write less, not to check harder.
-
-Consequences worth stating outright:
-
-- **A comment that narrates history is a pull request description in the wrong file.** "It used to be X", "this was re-measured", "the note said otherwise" — none of that is a decision, and routing it to DECISIONS.md is how that file came to outweigh every other document in the repository put together. Only the *conclusion* is an entry: do not do X, because Y was measured. ⚠️ The one exception is a prediction measurement **refuted** — that keeps a live entry, because losing it costs somebody the experiment again.
-- **A forward reference stays only if it is load-bearing.** Naming the caller that keeps an unused surface alive (CONVENTIONS.md's named-caller rule) is load-bearing and fits on one line. "E1 will add killers here" is not; it belongs in the roadmap.
-- **A test's doc says what the test would catch, not what it caught last time.** A sabotage note is the deliberate exception to "the argument lives elsewhere": it has to sit on the test it describes.
-- **A false claim is answered by deleting it, not by rewriting it.** ⚠️ This is what a review's findings become, and getting it wrong makes the review a loop instead of a gate: a rewrite keeps the sentence's exposure and usually adds to it, so a pass answered in prose enlarges the surface the next pass reads. Try in order — **delete the sentence; replace it with a pointer; write the test that checks it** — and rewrite only if none of the three will do. A fact found in two places is collapsed to one, not corrected twice. Run a deletion pass *before* re-running the reviewer. ⚠️ Never write a comment correcting an earlier version of itself; the correction, if it is interesting, is a DECISIONS.md entry.
-- **A doc comment may only assert things about the item it documents.** Anything about code elsewhere is a pointer or it is nothing — never a restatement, however short and however true it looks. This is the rule the table's rows are instances of, and it is the one that predicts where the false claims are: every claim step 4's review refuted was about something the writer could not check from the same screen — a store a hundred lines down, another file, a test run not yet made, a sum. Not one contract sentence, whose subject *was* the item, was wrong.
+- A comment says **what the item is and what a caller must guarantee**, or
+  **what breaks silently** (mark it ⚠️). Nothing else.
+- **Do not write a number, a history, a plan, or a description of code
+  elsewhere.** A number goes in a constant or an assertion; history goes in the
+  pull request; a plan goes in an issue; other code gets a pointer or nothing.
+- **⚠️ Never reference a repository document from an artifact** — source,
+  manifest, generated file or CI. It does not resolve in `cargo doc` and it
+  ships with a published crate. State the rule where it is needed, or not at all.
+- **A false claim is deleted, not rewritten.** Try in order: delete the
+  sentence; replace it with a pointer; write the test that checks it.
+- **One copy or none.** A fact worth stating twice was worth stating once.
+- A test's doc says what the test would catch. A sabotage note may only state
+  the mutation actually made and the test that actually went red.
 
 ## 5. Correctness baseline
 
-- **Fixed-depth node counts** on a committed position set, as a regression test.
-- **Mate suites** (mate-in-1 through 5).
-- **Repetition and perpetual check**: 千日手 is engine-side — shunsai holds no game history by design. Stack `(key(), Hand, in_check())` per ply; `key()` filters, hand equality confirms, and the `in_check()` history decides the perpetual-check case (the checking side loses). Scenario tests are mandatory, from E0.
-- **Declaration (入玉宣言, 27-point rule)**: scenario tests, from E2.
-- **USI conformance dialogue tests** — the protocol loop is our own code, so it needs its own tests.
-- Move generation correctness is **shunsai's** responsibility, held there by differential testing against `shogi_legality_lite`. Do not re-test it here.
+- **Fixed-depth node counts** on the committed position set, as a regression test.
+- **Mate suites**, mate-in-1 through 5.
+- **千日手 and 連続王手** are engine-side — shunsai holds no game history by
+  design. Stack `(key(), Hand, in_check())` per ply; `key()` filters, hand
+  equality confirms, and the `in_check()` history decides perpetual check, where
+  the checking side loses. Scenario tests are mandatory, from E0.
+- **入玉宣言 (27-point rule)**: scenario tests, from E2.
+- **USI conformance dialogues** — the protocol loop is our own code.
+- Move generation correctness is **shunsai's**, held there by differential
+  testing against `shogi_legality_lite`. Do not re-test it here.
 
-## 6. Depending on shunsai
+## 6. Depending on shunsai, and the other consumer
 
-- rinsai depends on a **released version** (`shunsai = "0.1"`), not a git pin — DESIGN.md §2. **No SPRT number may be attributed to a git rev that is not a release.**
-- To add an API: prototype on a shunsai branch → **measure it on shunsai's own bench** → adopt → **release shunsai** → raise the requirement here. Never work around a missing API with a slow local reimplementation without saying so.
-- Several planned additions unlock a re-measurement that shunsai's decision log deliberately parked for this consumer — see DESIGN.md §6. When adding one, say which re-measurement it unlocks.
-- **E0 asks shunsai for no API addition**, deliberately: it is the layering's field test. It did absorb one break — `do_move` returning an `Undo` — which was shunsai's own pre-1.0 cleanup, not something E0 requested.
+- rinsai depends on a **released version** (`shunsai = "0.1"`), never a git pin.
+  **No SPRT number may be attributed to a rev that is not a release.**
+- To add an API: prototype on a shunsai branch → measure it on shunsai's own
+  bench → adopt → **release shunsai** → raise the requirement here. Never work
+  around a missing API with a slow local reimplementation without saying so.
+  Several additions unlock a re-measurement shunsai parked for this consumer —
+  see DESIGN.md's API catalogue, and say which one you are unlocking.
+- **`rinsai-game` has a second consumer**,
+  [tuishogi](https://github.com/sugyan/tuishogi), which depends on it by git
+  rev. ⚠️ An issue raised "from the other consumer" is only answerable by
+  reading tuishogi's actual call sites — the issue text has been wrong about
+  which API shape the consumer can use.
+
+## 7. What runs where
+
+The development machine is an Apple Silicon Mac; sessions also run in the cloud,
+where the checkout is all there is.
+
+**Available anywhere**: `cargo test` / `clippy` / `doc`, and `rinsai bench` —
+its node counts are deterministic, so they are a valid result from any machine.
+
+**Local only, and a cloud session must not claim otherwise**:
+- any timing measurement, and any real-time SPRT — a shared cloud runner is not
+  a quiet machine;
+- sparring and SPRT against GPL engines, which live in `../benchmarks`;
+- reading the sibling shunsai or tuishogi checkouts. shunsai arrives as a
+  crates.io dependency, and ⚠️ **the published crate ships `src/` only** — its
+  `benches/` and `examples/` are in the repository and nowhere in the vendored
+  source.
