@@ -1111,5 +1111,9 @@ mod tests {
         assert!(line.contains(r#""black_ms":1500"#), "{line}");
         assert!(line.contains(r#""white_ms":300"#), "{line}");
         assert!(line.contains(r#""times_us":[1200000,300000]"#), "{line}");
+        // The two fields `GameRecord`'s docs describe by their place in this
+        // row, so a rename or a reorder cannot pass quietly.
+        assert!(line.contains(r#""opening_plies":0,"moves""#), "{line}");
+        assert!(line.contains(r#""first_timed_mover":"black""#), "{line}");
     }
 }
