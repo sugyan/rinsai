@@ -45,7 +45,7 @@ enum Control {
     Nodes {
         candidate: u64,
         baseline: u64,
-        /// The hang detector. ⚠️ It lives inside this arm because a clock has
+        /// The hang detector. It lives inside this arm because a clock has
         /// no use for it: there the wait is bounded by the mover's allowance,
         /// and a bound that fired earlier would report a healthy long think
         /// as a wedged engine.
@@ -86,8 +86,8 @@ impl Control {
 ///
 /// ⚠️ **Under `--nodes` a repeated opening is a repeated game** for an engine
 /// that answers a node budget deterministically — rinsai by construction,
-/// having no thread option to set before E2, and an opponent only if its
-/// roster entry says so. The replays are indistinguishable from independent
+/// having no thread option to set, and an opponent only if its roster entry
+/// says so. The replays are indistinguishable from independent
 /// pairs downstream, and
 /// `sprt::tests::replication_multiplies_the_llr_it_should_not_move` is what
 /// that costs the statistic.
@@ -518,7 +518,7 @@ fn play_pair(
         // The loser's stderr is the post-mortem. A flag fall gets one too: it
         // is a normal result, but an engine that answered nothing may have
         // said why on stderr, and that is the only place a wedge is
-        // distinguishable from a slow search. ⚠️ It reads what is already
+        // distinguishable from a slow search. It reads what is already
         // buffered rather than settling, because settling polls for a death
         // that a flagged engine is not dying of.
         let offender = match record.winner {
@@ -885,7 +885,7 @@ mod tests {
         parse_args(&v)
     }
 
-    /// ⚠️ **Sabotage**: make the guard's comparison `budget < openings as u64`,
+    /// **Sabotage**: make the guard's comparison `budget < openings as u64`,
     /// or drop the `is_clock` short-circuit, and the first and third cases go
     /// red in turn.
     #[test]
@@ -976,7 +976,7 @@ mod tests {
         }
     }
 
-    /// ⚠️ The hang detector is refused under a clock rather than ignored or
+    /// The hang detector is refused under a clock rather than ignored or
     /// applied as an outer bound: a main time above it would otherwise end a
     /// healthy long think as a wedged engine, which is the confusion the
     /// flag-fall ending exists to remove.
@@ -1000,7 +1000,7 @@ mod tests {
     /// flag fall is the point of this change: it is a result, so counting it
     /// as a degraded run would misreport a legitimate loss.
     ///
-    /// ⚠️ Written as an exhaustive `match` rather than a list, so a variant
+    /// Written as an exhaustive `match` rather than a list, so a variant
     /// added later fails to compile here instead of quietly being normal.
     #[test]
     fn every_ending_is_classified_normal_or_abnormal() {

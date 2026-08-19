@@ -36,9 +36,9 @@ rinsai-search = { path = "crates/rinsai-search" }
 # would make every SPRT number afterwards noise. CI enforces it.
 
 [workspace.lints.rust]
-# `deny`, not `forbid`: E2 and E3 will need annotated exceptions, and `forbid`
-# cannot be lifted locally — which would force an edit to this file under
-# pressure and tempt a blanket removal.
+# `deny`, not `forbid`: an annotated exception cannot be granted under `forbid`,
+# which would force an edit to this file under pressure and tempt a blanket
+# removal.
 unsafe_code = "deny"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"

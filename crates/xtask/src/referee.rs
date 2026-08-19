@@ -89,7 +89,7 @@ pub enum EndReason {
     Checkmate,
     Resign,
     /// `bestmove win`, trusted as sent — the referee has no 27-point rule to
-    /// check it against until E2 builds one. ⚠️ An engine that declares
+    /// check it against. ⚠️ An engine that declares
     /// wrongly is scored a full win, so this arm is worth revisiting the
     /// first time a run's log shows one.
     Declaration,
@@ -196,7 +196,7 @@ impl Clock {
     /// which is never restored. `spent` accumulates under either control,
     /// where it is a cost rather than a rule.
     ///
-    /// ⚠️ Bookkeeping only. Whether the mover ran out is decided by whether it
+    /// Bookkeeping only. Whether the mover ran out is decided by whether it
     /// answered at all, not by comparing this total against the allowance —
     /// see [`play_game`]. Nothing here can flag.
     fn charge(&mut self, mover: Color, elapsed: Duration) {
@@ -256,7 +256,7 @@ pub fn play_game(
                     (Winner::of(winner), EndReason::Declaration, None)
                 }
                 Outcome::MaxMoves => (Winner::Neither, EndReason::MaxMoves, None),
-                // ⚠️ Narrowing: `Outcome` has one variant for the three
+                // Narrowing: `Outcome` has one variant for the three
                 // `EndReason` keeps apart, so this arm answers with the one
                 // that says least.
                 Outcome::Abandoned { loser } => (Winner::opponent_of(loser), EndReason::Died, None),
@@ -301,7 +301,7 @@ pub fn play_game(
             // fall is not abnormal, drop its post-mortem with it.
             Err(EngineError::Timeout { .. }) if matches!(spec, GoSpec::Clock(_)) => {
                 let allowance = spec.wait();
-                // ⚠️ Three decimals, not whole milliseconds: an engine whose
+                // Three decimals, not whole milliseconds: an engine whose
                 // last move overran by a fraction of one is the ordinary
                 // case, and rounded it would read "took 200 ms of the 200 ms
                 // it had", which states no reason for the loss it explains.
@@ -526,7 +526,7 @@ mod tests {
         assert_eq!(record.reason, EndReason::PerpetualCheck);
     }
 
-    /// ⚠️ **Sabotage**: derive the field from `opening_plies.is_multiple_of(2)`
+    /// **Sabotage**: derive the field from `opening_plies.is_multiple_of(2)`
     /// instead — the shape the log used to write — and the White-rooted case
     /// below goes red while the `startpos` one stays green, which is why no
     /// committed opening set could have caught it.
@@ -711,11 +711,6 @@ mod tests {
     /// An answer that arrived is played, however much of the allowance it
     /// took. Only silence flags \u{2014} so a seat that spends every millisecond it
     /// has and still answers keeps its move.
-    ///
-    /// ⚠️ This is the boundary the arithmetic version of this test got wrong:
-    /// judging on `elapsed >= allowance` discarded a legal move whenever the
-    /// harness's own parse pushed the total over, which a review reproduced in
-    /// 1243 of 2000 trials at 300 µs of margin.
     #[test]
     fn a_seat_that_answers_keeps_its_move_however_long_it_took() {
         let mut black = Scripted::moves(&["7g7f"]).taking(&[11_000]);
@@ -806,10 +801,9 @@ mod tests {
     }
 
     /// A seat that never answers under a clock has lost on time, not hung:
-    /// the wait it blew through was its own allowance. ⚠️ This is the hole
-    /// the issue exists to close — the same silence under a node budget is
-    /// `Timeout`, and `a_seat_error_maps_to_a_loss_with_the_matching_reason`
-    /// pins that half.
+    /// the wait it blew through was its own allowance. The same silence under
+    /// a node budget is `Timeout`, and
+    /// `a_seat_error_maps_to_a_loss_with_the_matching_reason` pins that half.
     #[test]
     fn a_seat_that_never_answers_under_a_clock_flags_rather_than_hangs() {
         let mut black = Scripted::one(Err(EngineError::Timeout {

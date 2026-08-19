@@ -10,7 +10,7 @@ fn main() -> ExitCode {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--version" | "-V" => {
-                // ⚠️ A direct write to stdout, legitimate for the same reason
+                // A direct write to stdout, legitimate for the same reason
                 // `bench` is: no protocol is running and the process exits when
                 // this returns. Everything a *session* writes goes through
                 // `Output`, because stdout is the USI channel and a stray

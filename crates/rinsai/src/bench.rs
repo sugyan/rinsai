@@ -4,7 +4,7 @@
 //! to is a bug rather than an improvement**. The times beside them are for the
 //! operator; nothing depends on them.
 //!
-//! ⚠️ **Everything that could move a count is fixed here, not inherited** — the
+//! **Everything that could move a count is fixed here, not inherited** — the
 //! position set, the depth, and the table size.
 
 // No protocol is running and the process exits when this returns — the same
@@ -17,7 +17,7 @@ use rinsai_search::{
     Game, Limits, NegamaxSearcher, SearchJob, SearchSignals, Searcher, SilentSink,
 };
 
-/// ⚠️ Compiled in rather than read at runtime, so a count cannot depend on the
+/// Compiled in rather than read at runtime, so a count cannot depend on the
 /// working directory the engine was launched from.
 const POSITIONS: &str = include_str!("../../../positions/bench-v1.sfen");
 
@@ -173,7 +173,7 @@ mod tests {
     /// The regression test proper: the committed counts are what the search
     /// produces today.
     ///
-    /// ⚠️ **It goes red for almost any search change, and that is its purpose.**
+    /// **It goes red for almost any search change, and that is its purpose.**
     /// When it fires, find out what moved before touching [`EXPECTED`].
     #[test]
     fn the_frozen_counts_are_what_the_search_produces() {

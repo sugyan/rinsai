@@ -2,7 +2,7 @@
 //!
 //! The dialogue suite drives `usi::run` in-process. This covers what that
 //! cannot reach: `main`'s argument handling, the real stdin/stdout wiring, and
-//! ⚠️ **whether output is flushed when stdout is a pipe rather than a
+//! **whether output is flushed when stdout is a pipe rather than a
 //! terminal** — an unflushed `bestmove` is the classic USI engine hang, and it
 //! is invisible to every in-process test.
 
@@ -28,7 +28,7 @@ fn version_is_reported_and_exits_cleanly() {
 
 /// `bench` is a subcommand of the same binary, so `main` has to route it and
 /// report its verdict in the exit status — what a CI job or a bisect script
-/// reads. ⚠️ **The plumbing, not the counts**: those have their own test beside
+/// reads. **The plumbing, not the counts**: those have their own test beside
 /// the table they are frozen in.
 #[test]
 fn bench_runs_from_the_command_line_and_reports_its_verdict() {
@@ -65,10 +65,9 @@ fn bench_runs_from_the_command_line_and_reports_its_verdict() {
 ///
 /// It also plays several plies the way a GUI does — waiting for each
 /// `bestmove` before sending the next `go` — and then requires stderr to be
-/// **empty**. ⚠️ That is the regression test for a bug this suite originally
-/// missed and a real game against YaneuraOu found: an engine that clears its
-/// "searching" state only on `stop` believes every completed search is still
-/// running and warns about a protocol violation on every move. An in-process
+/// **empty**. ⚠️ An engine that clears its "searching" state only on `stop`
+/// believes every completed search is still running and warns about a
+/// protocol violation on every move. An in-process
 /// dialogue cannot catch it, because there the script is consumed faster than
 /// the worker answers and a real overlap is indistinguishable from the bug.
 #[test]
@@ -125,7 +124,7 @@ fn a_scripted_game_over_real_pipes() {
             format!("position startpos moves {}", moves.join(" "))
         };
         writeln!(stdin, "{position}").expect("the engine is listening");
-        // ⚠️ **Alternating a clocked `go` with a bare one, because the two take
+        // **Alternating a clocked `go` with a bare one, because the two take
         // different paths through `Budget`** — the first derives an allowance
         // from `btime`, the second is the only place the `DEFAULT_DEPTH`
         // fallback is exercised through the real binary rather than in-process.
@@ -170,7 +169,7 @@ fn a_scripted_game_over_real_pipes() {
 
 /// A non-UTF-8 byte on stdin must not end the engine.
 ///
-/// See `usi::run` for why. ⚠️ This has to be a process test — the bytes never
+/// See `usi::run` for why. This has to be a process test — the bytes never
 /// survive a `&str` fixture.
 /// Sabotage: restore `for line in input.lines()` and the second `readyok`
 /// never arrives.

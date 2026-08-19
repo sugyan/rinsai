@@ -20,7 +20,7 @@ pub(crate) enum GuiCommand {
     },
     UsiNewGame,
     /// Everything after `position`, unparsed — `Game` owns that grammar,
-    /// because CSA (E2) and `bench` need the same rules.
+    /// because `bench` needs the same rules.
     Position(String),
     Go(Limits),
     /// `go mate …`. A different command, not a `go` with a flag: it answers
@@ -190,7 +190,7 @@ mod tests {
         );
     }
 
-    /// The value keeps its spaces: an `EvalFile` path (E3) will contain them.
+    /// The value keeps its spaces: a path value contains them.
     #[test]
     fn setoption_keeps_the_value_verbatim() {
         assert_eq!(

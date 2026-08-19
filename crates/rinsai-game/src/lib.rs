@@ -8,14 +8,6 @@
 //! from any engine's own movegen: a game refereed here is a differential test
 //! of its players, not an echo of one of them.
 //!
-//! Consumers: the match harness in this repository (`crates/xtask`), and the
-//! `tuishogi` board app once this crate is published.
-//!
-//! Provenance: moved from <https://github.com/sugyan/tuishogi> at
-//! `73d0d9c592d4c16fa6adb97b7c924bdf9bd52a05` (`src/game.rs` and
-//! `src/game/{moves,repetition,types}.rs`), MIT, same author; relicensed to
-//! this workspace's `MIT OR Apache-2.0` by the author.
-//!
 //! ⚠️ A [`Game`] rooted at a mid-game position cannot see a repetition whose
 //! earlier occurrences predate its root: the rule reads the history this
 //! `Game` recorded, and nothing else.

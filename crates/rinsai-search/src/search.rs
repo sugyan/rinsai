@@ -1,9 +1,7 @@
 //! The seam between a protocol and a search.
 //!
 //! Nothing here knows what USI is: a [`Searcher`] is handed a [`SearchJob`] and
-//! returns a [`BestMove`], and the caller — the engine binary today, a
-//! self-play driver at E3 — decides what to do with it. The shapes are chosen
-//! so that steps 2 to 5 add behaviour without changing a signature.
+//! returns a [`BestMove`], and the caller decides what to do with it.
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,7 +19,7 @@ use crate::score::Depth;
 ///
 /// Every field is acted on.
 ///
-/// ⚠️ The deadline is deliberately *not* part of this: time management extends
+/// The deadline is deliberately *not* part of this: time management extends
 /// on a fail-low and cuts short on an obvious move, so the search has to own
 /// the clock and see the raw parameters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -40,8 +38,8 @@ pub struct Limits {
 
 /// The flags that stop a search from outside it.
 ///
-/// Atomics rather than a channel, because E2's Lazy SMP broadcasts one `Arc`
-/// to every thread where a channel would need one per thread.
+/// Atomics rather than a channel, because a multi-threaded search broadcasts
+/// one `Arc` to every thread where a channel would need one per thread.
 ///
 /// ⚠️ A **fresh set is created per `go`**, so a `stop` that arrives late cannot
 /// abort the *next* search — the classic bug in globally-flagged engines.
@@ -121,9 +119,8 @@ pub struct SearchJob {
 pub enum BestMove {
     Play {
         mv: Move,
-        /// The move the opponent is expected to reply with. Always `None` until
-        /// E2 gives ponder something to stand on: a ponder move the engine
-        /// cannot actually back up is worse than none.
+        /// The move the opponent is expected to reply with. Always `None`: a
+        /// ponder move the engine cannot actually back up is worse than none.
         ponder: Option<Move>,
         /// The deepest iteration that searched **every** root move, or 0 when
         /// none did.
@@ -140,7 +137,6 @@ pub enum BestMove {
     },
     /// The side to move has no legal move.
     Resign,
-    // `Win` (入玉宣言) joins at E2, with the declaration rules.
 }
 
 /// Where `info` lines go while a search runs.
@@ -152,8 +148,8 @@ pub trait InfoSink: Send + Sync {
     fn info(&self, line: &str);
 }
 
-/// A no-op sink, for a search that nobody is watching. Caller: E3's self-play
-/// data generation, which drives the search in-process and wants it silent.
+/// A no-op sink, for a search that nobody is watching. Caller: `rinsai`'s
+/// `bench`, which drives the search in-process and wants it silent.
 /// (shunsai makes the same callback-not-channel choice in `generate_moves`.)
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SilentSink;
@@ -172,7 +168,7 @@ impl InfoSink for SilentSink {
 pub trait Searcher: Send {
     /// Runs one search, returning promptly once `job.signals.stopped()`.
     ///
-    /// ⚠️ It **returns** a [`BestMove`] rather than printing one. That is what
+    /// It **returns** a [`BestMove`] rather than printing one. That is what
     /// makes "exactly one `bestmove` per `go`" structural rather than a rule
     /// every code path has to remember.
     fn search(&mut self, job: &SearchJob, out: &dyn InfoSink) -> BestMove;
@@ -292,7 +288,7 @@ impl SearchDriver {
     /// Queues a delivery-margin change, in order with the searches around it.
     /// `false` if the worker is gone.
     ///
-    /// ⚠️ Queued and never acknowledged, for the reason [`Self::set_hash`]
+    /// Queued and never acknowledged, for the reason [`Self::set_hash`]
     /// carries.
     pub fn set_margin(&self, margin: Duration) -> bool {
         match &self.tx {
@@ -351,7 +347,7 @@ fn worker<S: Searcher>(
     emit: &dyn Fn(BestMove),
 ) {
     for command in rx {
-        // ⚠️ Two catches, two different guarantees. **This outer one keeps the
+        // Two catches, two different guarantees. **This outer one keeps the
         // *worker* alive**; the inner one below only keeps the *job* answered,
         // and since it is nested inside this one, losing it costs one answer
         // rather than the thread. Losing *this* catch ends the thread with the
@@ -504,7 +500,7 @@ mod tests {
     ///
     /// Sabotage: remove the inner `catch_unwind` and this fails on the
     /// `assert_eq!` below with the **first** job's answer missing
-    /// (`["resign"]` against `["resign", "resign"]`). ⚠️ It does not hang —
+    /// (`["resign"]` against `["resign", "resign"]`). It does not hang —
     /// the outer catch still lets `shutdown` join. See `worker`.
     ///
     /// (The panic message on stderr during this test is expected.)
@@ -632,10 +628,9 @@ mod tests {
     ///
     /// A driver remembering only the most recent job's signals raises `stop` on
     /// the one that has not started and joins on the one that is running —
-    /// which, for a search that ends only on `stop`, never returns. ⚠️
+    /// which, for a search that ends only on `stop`, never returns.
     /// `usi::run` cannot reach this because `Engine::go` stops the previous
-    /// search first, but [`SearchDriver`] is public API and E3's self-play
-    /// driver is its second caller.
+    /// search first, but [`SearchDriver`] is public API.
     ///
     /// Sabotage: replace the sweep in `submit` with `outstanding.clear()` and
     /// this times out.

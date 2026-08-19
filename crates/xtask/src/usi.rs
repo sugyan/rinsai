@@ -6,7 +6,7 @@
 //! recorded loss. Under a clock it is the mover's own allowance, so reaching
 //! it *is* the game's result.
 //!
-//! ⚠️ No orphans: [`UsiEngine`]'s `Drop` quits, waits briefly, then kills and
+//! No orphans: [`UsiEngine`]'s `Drop` quits, waits briefly, then kills and
 //! reaps — and it runs on unwinding panics, which the workspace keeps
 //! enabled. If the harness itself dies uncleanly, the child's stdin closes
 //! and a USI engine exits on EOF. Two engines exist per game and are
@@ -304,7 +304,7 @@ impl UsiEngine {
 
     /// The last lines the engine wrote to stderr.
     ///
-    /// ⚠️ Takes `&mut self` because it first gives a dying engine a moment to
+    /// Takes `&mut self` because it first gives a dying engine a moment to
     /// finish writing: `Died` is raised the instant *stdout* closes, and the
     /// stderr reader is a separate thread on a separate pipe, so reading the
     /// tail straight away most often returns nothing — in exactly the case
@@ -510,7 +510,7 @@ mod tests {
     }
 
     /// The hang timeout bounds a node budget and the allowance bounds a
-    /// clock. ⚠️ Not the smaller of the two: a main time longer than the hang
+    /// clock. Not the smaller of the two: a main time longer than the hang
     /// timeout would then end a healthy long think as a wedged engine, which
     /// is the confusion the two bounds exist to keep apart.
     #[test]
