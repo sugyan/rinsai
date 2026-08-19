@@ -104,8 +104,6 @@ impl Game {
 
     /// The position the game began at.
     ///
-    /// Named caller: `tuishogi`'s `app::root_of` (sugyan/rinsai#31).
-    ///
     /// ⚠️ Not [`Self::position`], which answers the position *now*. A root
     /// taken from that one names the position the game has **reached**, and the
     /// `moves` list is then replayed onto a position it was not played from.
@@ -318,8 +316,6 @@ impl Game {
     /// ⚠️ Nothing here implements the 27-point rule, so a wrong declaration is
     /// recorded as a full win. A caller that cannot afford that has to check the
     /// rule before calling, and this crate is not where that check lives yet.
-    ///
-    /// Named caller: tuishogi's `bestmove win` arm (sugyan/rinsai#28).
     pub fn declare(&mut self, winner: Color) {
         self.adjudicate(Outcome::Declaration { winner });
     }

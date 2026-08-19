@@ -806,10 +806,9 @@ mod tests {
     }
 
     /// A seat that never answers under a clock has lost on time, not hung:
-    /// the wait it blew through was its own allowance. ⚠️ This is the hole
-    /// the issue exists to close — the same silence under a node budget is
-    /// `Timeout`, and `a_seat_error_maps_to_a_loss_with_the_matching_reason`
-    /// pins that half.
+    /// the wait it blew through was its own allowance. The same silence under
+    /// a node budget is `Timeout`, and
+    /// `a_seat_error_maps_to_a_loss_with_the_matching_reason` pins that half.
     #[test]
     fn a_seat_that_never_answers_under_a_clock_flags_rather_than_hangs() {
         let mut black = Scripted::one(Err(EngineError::Timeout {
