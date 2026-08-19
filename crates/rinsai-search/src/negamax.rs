@@ -1907,7 +1907,9 @@ mod tests {
     /// per frame on the way out is the guarantee, not exactness.
     ///
     /// Sabotage: drop the node-limit arm from `Budget::expired` and this times
-    /// out rather than failing on the bound.
+    /// out rather than failing on the bound. Replacing
+    /// [`Self::qsearch`]'s poll condition with `false` fails it on the bound
+    /// instead — which is what makes quiescence's poll load-bearing.
     #[test]
     fn a_deep_search_still_answers_a_node_limit() {
         let limits = Limits {
