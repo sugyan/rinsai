@@ -201,7 +201,7 @@ mod tests {
 
     /// Every variant with the sentence it must render.
     ///
-    /// ⚠️ Written as an exhaustive `match` rather than a table, so a tenth
+    /// Written as an exhaustive `match` rather than a table, so a tenth
     /// variant fails to compile here. That forces an arm and not a row, so a
     /// variant can still reach the `match` without reaching the list above it.
     ///

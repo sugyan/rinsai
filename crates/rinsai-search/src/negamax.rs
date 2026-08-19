@@ -64,7 +64,7 @@ pub const DEFAULT_DELIVERY_MARGIN_MS: u64 = 30;
 /// unpredictably rather than reliably. This is why
 /// [`NegamaxSearcher::qsearch`] polls as well.
 ///
-/// ⚠️ **The one exception is [`NegamaxSearcher::negamax_root`]'s own
+/// **The one exception is [`NegamaxSearcher::negamax_root`]'s own
 /// increment.** `nodes` accumulates across iterations, so an iteration
 /// beginning at `nodes ≡ 1023 (mod 1024)` consumes that multiple at the root
 /// unpolled. Bounded and benign — every later increment in the iteration is
@@ -82,7 +82,7 @@ const MAX_DEPTH: Depth = MAX_PLY as Depth - 1;
 /// How many **checked** plies one quiescence line may spend before it gives up
 /// and evaluates where it stands.
 ///
-/// ⚠️ **It counts checks, not plies, and the two kinds of quiescence ply are
+/// **It counts checks, not plies, and the two kinds of quiescence ply are
 /// not alike.** A capture chain is self-limiting — every capture moves a piece
 /// off the board and quiescence plays no drops, so occupancy strictly decreases
 /// — and capping it is worse than unnecessary: a cap low enough to matter cuts
@@ -90,7 +90,7 @@ const MAX_DEPTH: Depth = MAX_PLY as Depth - 1;
 /// plies down. A check-evasion chain has no such argument: an evasion may give
 /// check back, need not be a capture, and its move list is *every* legal move
 /// including drops. Left uncounted those chains dominate the whole search.
-/// ⚠️ Two is the measured minimum that is also correct, and the cost is **not**
+/// ⚠️ The measured minimum that is also correct, and the cost is **not**
 /// monotone in the cap.
 ///
 /// ⚠️ Evaluating a position that is still in check is a known lie, bounded by
@@ -105,7 +105,7 @@ struct Window {
 }
 
 impl Window {
-    /// The full window, and ⚠️ **the only one
+    /// The full window, and **the only one
     /// [`NegamaxSearcher::negamax_root`] accepts** — it asserts as much, for
     /// the reason in that method's doc.
     fn open() -> Self {
@@ -138,9 +138,6 @@ impl Neg for Window {
 /// after [`NegamaxSearcher::negamax`]'s `pv[ply].clear()` and before its move
 /// loop, so the parent raises alpha on an empty line. Every other arm leaves the
 /// parent failing high — its line then never surfaces — or untouched.
-///
-/// ⚠️ **That is a reading of the code, not an observation.** A sweep could not
-/// reproduce it end to end; the rule is kept regardless.
 fn cuts(hit: &Hit, window: &Window) -> bool {
     match hit.bound {
         Bound::Lower => hit.score >= window.beta,
@@ -242,7 +239,7 @@ impl<'a> Budget<'a> {
     /// order. Root move 0 is enough: alpha is still `-INFINITE` there, so any
     /// finite score raises it.
     ///
-    /// ⚠️ **`signals.stopped()` stays live**, which is why this is a second
+    /// **`signals.stopped()` stays live**, which is why this is a second
     /// budget rather than a flag that skips the poll: `stop` means quit, and
     /// [`Self::expired`] is where it is read.
     fn without_limits(&self) -> Self {
@@ -332,7 +329,7 @@ pub struct NegamaxSearcher<C = RealClock> {
 impl NegamaxSearcher<RealClock> {
     /// A searcher whose table is the size `USI_Hash` advertises as its default.
     ///
-    /// ⚠️ **Not what a test wants.** It allocates [`DEFAULT_HASH_MB`] MiB, and
+    /// **Not what a test wants.** It allocates [`DEFAULT_HASH_MB`] MiB, and
     /// the suite builds a searcher per dialogue — use [`Self::with_hash_mb`]
     /// there.
     #[must_use]
@@ -343,7 +340,7 @@ impl NegamaxSearcher<RealClock> {
     /// A searcher with a table of `mb` MiB.
     ///
     /// Callers: `rinsai bench`, and every test that does not want a quarter of a
-    /// gigabyte. ⚠️ **Not `setoption name USI_Hash`** — that resizes the table
+    /// gigabyte. **Not `setoption name USI_Hash`** — that resizes the table
     /// the worker's searcher already owns, through [`Searcher::set_hash_mb`].
     #[must_use]
     pub fn with_hash_mb(mb: usize) -> Self {
@@ -396,7 +393,7 @@ impl<C: Clock> NegamaxSearcher<C> {
     /// It also ignores `window.beta` outright.
     ///
     /// `first_move`, when given, is what **root move 0 alone** is searched
-    /// against — see [`Budget::without_limits`] for what that buys. ⚠️ It is an
+    /// against — see [`Budget::without_limits`] for what that buys. It is an
     /// `Option` rather than a second `&Budget<'_>` because two adjacent
     /// references of one type are silently swappable, and swapping these puts
     /// the relief on every root move *except* the one that needs it.
@@ -455,9 +452,6 @@ impl<C: Clock> NegamaxSearcher<C> {
     /// means each of the two must own its increment, and a `negamax` that
     /// turned round and called `qsearch` would count the node twice.
     ///
-    /// ⚠️ **This is the interior seam, not the only one** — [`Self::qsearch`]
-    /// negates inside itself as well.
-    ///
     /// ⚠️ **This check covers interior-node children; [`Self::qsearch`] carries
     /// the matching one for the quiescence recursion, which never passes
     /// through here.** Forgetting a `truncate` is a leak rather than a wrong
@@ -466,7 +460,7 @@ impl<C: Clock> NegamaxSearcher<C> {
     /// before a test can reach it, which is why the assertion is at the
     /// boundary rather than in a test.
     ///
-    /// ⚠️ **It is also where 千日手 is decided.** Both callers push
+    /// **It is also where 千日手 is decided.** Both callers push
     /// [`Self::path`] immediately before calling this, so the position asked
     /// about is the one just reached. Every node below the root is entered
     /// through here, **the depth-1 iteration's children included** — that
@@ -670,8 +664,6 @@ impl<C: Clock> NegamaxSearcher<C> {
         if self.stopped {
             return Score::ZERO;
         }
-        // ⚠️ Quiescence polls, and that is load-bearing — see
-        // `POLL_INTERVAL_NODES`.
         if self.nodes.is_multiple_of(POLL_INTERVAL_NODES) && budget.expired(self.nodes, &self.clock)
         {
             self.stopped = true;
@@ -812,7 +804,7 @@ impl<C: Clock> Searcher for NegamaxSearcher<C> {
         self.nodes = 0;
         self.seldepth = 0;
         self.stopped = false;
-        // ⚠️ The table is *not* reset here — see the field. What this does is
+        // The table is *not* reset here — see the field. What this does is
         // age it, so entries from the previous `go` still answer probes but
         // lose every replacement contest against this search's own.
         self.tt.new_search();
@@ -978,7 +970,7 @@ mod tests {
         Game::from_usi_position(args).expect("the fixture parses")
     }
 
-    /// ⚠️ **Never [`NegamaxSearcher::new`] in a test.** It allocates
+    /// **Never [`NegamaxSearcher::new`] in a test.** It allocates
     /// [`DEFAULT_HASH_MB`] MiB, and the suite builds a searcher per `run` — of
     /// which one test can make several. One MiB is the smallest `USI_Hash`
     /// admits, so it is also the size the engine has to work at.
@@ -988,7 +980,7 @@ mod tests {
 
     /// A clock that advances one `step` every time it is read.
     ///
-    /// ⚠️ **Reads, not work**, which is what makes a budget test deterministic
+    /// **Reads, not work**, which is what makes a budget test deterministic
     /// where a wall clock cannot be: a search under it expires after a fixed
     /// number of polls, at the same depth on any machine. Which depth follows
     /// from the tree and has to be checked against a run, not reasoned about.
@@ -1081,7 +1073,7 @@ mod tests {
     /// makes this a suite over *distances* rather than five unrelated
     /// positions.
     ///
-    /// ⚠️ **The interposing pieces are pawns, and that is load-bearing rather
+    /// **The interposing pieces are pawns, and that is load-bearing rather
     /// than arbitrary.** Black captures whatever it interposes and may drop it
     /// straight back — and a gold or a silver dropped on 1b is mate on the
     /// spot, so with any other piece the ladder collapses to a shorter mate and
@@ -1091,7 +1083,7 @@ mod tests {
     /// argued: built with golds first, it answered mate 5 where mate 9 was
     /// intended.
     ///
-    /// ⚠️ **It is one geometry with a parameter**, so it establishes that the
+    /// **It is one geometry with a parameter**, so it establishes that the
     /// search reports mate distances correctly and proves them, and it
     /// establishes nothing about the variety of mating *shapes*.
     /// `finds_the_mate_in_one`'s 頭金 is a drop mate and the only other shape
@@ -1103,7 +1095,7 @@ mod tests {
     ///
     /// Proving it is the second half and the one that can fail quietly: the
     /// line is replayed into a game the test builds itself and the final
-    /// position must have no legal move. ⚠️ Naming a move instead would be
+    /// position must have no legal move. Naming a move instead would be
     /// asserting shunsai's unspecified generation order.
     fn assert_mate_in(args: &str, plies: i64) {
         let (_, lines) = run(args, depth(u32::try_from(plies).expect("a short mate")));
@@ -1115,7 +1107,7 @@ mod tests {
     /// The proving half: `line`'s principal variation is `plies` long, playable
     /// from `args`, and ends with the loser having no move.
     ///
-    /// ⚠️ Naming a move instead would be asserting shunsai's unspecified
+    /// Naming a move instead would be asserting shunsai's unspecified
     /// generation order.
     fn assert_mate_is_real(args: &str, line: &str, plies: i64) {
         let pv = pv_of(line);
@@ -1136,7 +1128,7 @@ mod tests {
     /// A mate at every distance from one move to five, each found at exactly
     /// the depth it needs and each proved by replay.
     ///
-    /// ⚠️ **The distance is asserted, not merely reported.** The deepening
+    /// **The distance is asserted, not merely reported.** The deepening
     /// loop stops at the first iteration that returns a mate score, so a
     /// fixture holding a shorter mate than its row claims announces the
     /// shorter number and fails the equality below. The depth each row is
@@ -1168,7 +1160,7 @@ mod tests {
     /// rook down; the one returns to the position the root is the third
     /// occurrence of.
     ///
-    /// ⚠️ **The rook is what makes the tests below able to fail.** On a
+    /// **The rook is what makes the tests below able to fail.** On a
     /// material-equal shuffle — the initial position answers this description
     /// too — a draw score and the evaluation are both zero, and the assertions
     /// would hold with the verdict deleted. Each test asserts the imbalance
@@ -1232,7 +1224,7 @@ mod tests {
     /// 連続王手の千日手 — the side that checked its way to the fourth
     /// occurrence loses, so the side being checked wins without a mate.
     ///
-    /// ⚠️ The score asserted here is the one number that cannot have come from
+    /// The score asserted here is the one number that cannot have come from
     /// the evaluation: the side to move is a rook *down*, and it reports a win.
     #[test]
     fn the_side_that_gave_every_check_loses_the_repetition() {
@@ -1310,7 +1302,7 @@ mod tests {
     /// list, so a budget that lands inside one leaves it out — which is the
     /// whole difference between it and the last `info` line's `depth`.
     ///
-    /// ⚠️ **The cap is load-bearing and the assertion says so out loud.** It
+    /// **The cap is load-bearing and the assertion says so out loud.** It
     /// has to land *inside* an iteration; one that happened to fall on a
     /// boundary would leave this green against a `completed_depth` that never
     /// consulted `self.stopped` at all.
@@ -1425,7 +1417,7 @@ mod tests {
     /// `go infinite` must not answer until it is told to, **even when there is
     /// nothing at all to think about**.
     ///
-    /// ⚠️ The fixture has no legal move on purpose: on the initial position the
+    /// The fixture has no legal move on purpose: on the initial position the
     /// "no answer within 200 ms" assertion passes because the search is still
     /// working, so it would stay green with the wait loop deleted — the whole
     /// thing it is here to catch. Sabotage: delete the loop in `finish` and
@@ -1506,13 +1498,13 @@ mod tests {
     /// root plus one for each move it tries.
     ///
     /// Both fixtures are capture-free one ply in, so every child stands pat
-    /// immediately and the equation is exactly `1 + N`. ⚠️ The initial
+    /// immediately and the equation is exactly `1 + N`. The initial
     /// position qualifies for a non-obvious reason: `7g7f` opens *Black's*
     /// bishop diagonal, and White's own pawn on 3c blocks the bishop on 2b, so
     /// `2b8h+` is not available.
     ///
     /// Sabotage: move `self.nodes += 1` below the stand-pat return in
-    /// `qsearch` and the count collapses. ⚠️ Not to 1 — the root window is
+    /// `qsearch` and the count collapses. Not to 1 — the root window is
     /// open, so the first root move's child cannot take the stand-pat cutoff.
     #[test]
     fn the_root_and_every_leaf_count_as_one_node() {
@@ -1658,7 +1650,7 @@ mod tests {
     /// The first root move is never abandoned, so the answer is always a move
     /// the search actually looked at.
     ///
-    /// ⚠️ **The fixture is load-bearing**: root move 0's subtree has to outlast
+    /// **The fixture is load-bearing**: root move 0's subtree has to outlast
     /// a poll interval, or the poll never fires inside it and this test cannot
     /// fail. `movetime 0` is the sharpest form of the question — the deadline
     /// has already passed when the search starts.
@@ -1732,7 +1724,7 @@ mod tests {
         // for the same reason.
         let args = "sfen l6nl/6+Pgk/2np1S3/p1p1p2Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn4p 3";
         // How far the relief carries the search when the limit is as tight as
-        // it can be. ⚠️ Not root move 0's subtree exactly: a poll fires only at
+        // it can be. Not root move 0's subtree exactly: a poll fires only at
         // an exact multiple of `POLL_INTERVAL_NODES`, so the root moves after
         // it run on until one of them lands on the next multiple, and this is
         // that rounded-up figure.
@@ -1753,10 +1745,7 @@ mod tests {
             "root move 0 is too cheap to poll inside: {floor}"
         );
 
-        // What the whole first iteration costs, unlimited. ⚠️ **This is the
-        // bound that pins the relief's *width*.** Comparing two runs that both
-        // stop inside the relief cannot: they stop at the same node, and the
-        // assertion is true by construction however wide the relief is.
+        // What the whole first iteration costs, unlimited.
         let (_, unlimited) = run(args, depth(1));
         let whole = field(unlimited.last().expect("an iteration finished"), "nodes");
         assert!(
@@ -1788,7 +1777,7 @@ mod tests {
     /// 頭金: a gold dropped on 5b, protected by the gold on 5c, with every
     /// flight square from 5a covered.
     ///
-    /// ⚠️ **The depth is not load-bearing.** The mate is found in the depth-1
+    /// **The depth is not load-bearing.** The mate is found in the depth-1
     /// iteration — `quiescence_does_not_stand_pat_in_check` asserts that
     /// directly — so the deepening loop breaks straight after it. The depth is
     /// kept because it costs nothing and the assertion is about the answer, not
@@ -1797,7 +1786,7 @@ mod tests {
     /// Sabotage: in **[`Self::qsearch`]**, score a mated node
     /// `Score::mated_in(0)` instead of `mated_in(ply)` and the announced
     /// distance is wrong, or drop its `pv[ply].clear()` and a stale line from
-    /// an earlier subtree hangs off the mate. ⚠️ Making *either* mutation in
+    /// an earlier subtree hangs off the mate. Making *either* mutation in
     /// [`Self::negamax`] instead changes nothing here or anywhere.
     #[test]
     fn finds_the_mate_in_one() {
@@ -1817,10 +1806,10 @@ mod tests {
     /// because no dialogue there gets past depth 1.
     ///
     /// Sabotage: append the child line before the move in `update_pv`, or drop
-    /// **[`Self::qsearch`]'s** `pv[ply].clear()`. ⚠️ Not [`Self::negamax`]'s —
+    /// **[`Self::qsearch`]'s** `pv[ply].clear()`. Not [`Self::negamax`]'s —
     /// that copy has no observable effect.
     ///
-    /// ⚠️ **The replay is the part with teeth; the head comparison at the end
+    /// **The replay is the part with teeth; the head comparison at the end
     /// is nearly free.** `best` is `self.pv[0][0]` and the printed line is
     /// `&self.pv[0]`, read one statement apart, so a reversed `update_pv` keeps
     /// them equal. Kept because it still fails the day `search` answers with
@@ -1869,7 +1858,7 @@ mod tests {
     ///
     /// Sabotage: drop the deadline arm from `Budget::expired`.
     ///
-    /// ⚠️ **It fails rather than hanging, and that is what the off-thread
+    /// **It fails rather than hanging, and that is what the off-thread
     /// `recv_timeout` above is for.** Something else in the suite does wedge on
     /// that mutation — `the_first_root_move_is_never_abandoned` searches on the
     /// calling thread — so a sweep that only watches the suite as a whole
@@ -1933,7 +1922,7 @@ mod tests {
 
     /// One line per iteration, deepening by one each time.
     ///
-    /// ⚠️ The fixture states a depth and so is never cut short, which is the
+    /// The fixture states a depth and so is never cut short, which is the
     /// only case this covers. A search that *is* cut short still emits a line
     /// for the iteration it was in the middle of, so "one line per **completed**
     /// iteration" would be a stronger claim than the code makes.
@@ -1964,7 +1953,7 @@ mod tests {
     /// ⚠️ **Vacuous unless the answer differs from the move shunsai generates
     /// first**, which is why the first assertion is there — it fails loudly
     /// when the fixture stops discriminating, rather than leaving the second
-    /// one passing for no reason. ⚠️ Only one of the five
+    /// one passing for no reason. Only one of the five
     /// fixtures measured still discriminates, which is why this one is named.
     ///
     /// Sabotage: delete the `root_moves.swap` in the deepening loop.
@@ -2089,7 +2078,7 @@ mod tests {
     /// each.
     ///
     /// One searcher, because what is measured is what the table carries between
-    /// the two. ⚠️ **`mb` is a parameter because table *size* moves a node count
+    /// the two. **`mb` is a parameter because table *size* moves a node count
     /// on its own** — a bigger table evicts less — so comparing two searches at
     /// different sizes measures that instead.
     fn twice(
@@ -2128,7 +2117,7 @@ mod tests {
     /// The transposition move is searched first, as a node-count tripwire.
     ///
     /// A ceiling with room on both sides, like
-    /// [`quiescence_is_bounded_on_the_drop_heavy_fixture`]. ⚠️ **The fixture is
+    /// [`quiescence_is_bounded_on_the_drop_heavy_fixture`]. **The fixture is
     /// load-bearing** — the ordering is worth nothing at the initial position,
     /// and a great deal here.
     ///
@@ -2157,7 +2146,7 @@ mod tests {
     /// A resize does too — an operator changing the configuration mid-session
     /// must not leave the search reading entries from the old table.
     ///
-    /// ⚠️ **The resize is to the size the searcher already has**, so what is
+    /// **The resize is to the size the searcher already has**, so what is
     /// measured is the clearing rather than the sizing: a different size also
     /// empties the table, and moves the count for its own reason.
     #[test]
@@ -2171,10 +2160,10 @@ mod tests {
     /// `hashfull` is real data rather than a constant: zero while nothing has
     /// been stored, and above zero once the search has filled some of the table.
     ///
-    /// ⚠️ **Depth 1 is genuinely zero**: the root dispatches its children
+    /// **Depth 1 is genuinely zero**: the root dispatches its children
     /// straight into quiescence, which does not touch the table.
     ///
-    /// ⚠️ **[`searcher`]'s one MiB is load-bearing for the second row**: at the
+    /// **[`searcher`]'s one MiB is load-bearing for the second row**: at the
     /// advertised default a search this shallow fills so little of the table
     /// that this reads zero permille, so the same assertion there could not pass.
     ///
@@ -2216,7 +2205,7 @@ mod tests {
             }
         }
         // At or past an edge, each bound cuts on the side it proves and not on
-        // the other. ⚠️ Inclusive: a score *equal* to β is a fail-high, which is
+        // the other. Inclusive: a score *equal* to β is a fail-high, which is
         // what makes this agree with the search's own `alpha >= beta`.
         for cp in [50, 51, 5_000] {
             assert!(cuts(&hit(Bound::Lower, cp), &window), "{cp} cp");
@@ -2311,7 +2300,7 @@ mod tests {
 
     /// When the margin binds, and the two ways it must not.
     ///
-    /// ⚠️ The main-time case is what pins the margin to the *cap*: take it off
+    /// The main-time case is what pins the margin to the *cap*: take it off
     /// the spend instead and only that assertion moves.
     #[test]
     fn the_margin_comes_off_a_derived_allowance_and_not_off_movetime() {
@@ -2383,7 +2372,7 @@ mod tests {
     /// A search under a derived allowance stops itself, between the first
     /// iteration and the last.
     ///
-    /// ⚠️ **Off the calling thread's wall clock entirely.** The budget is spent
+    /// **Off the calling thread's wall clock entirely.** The budget is spent
     /// by *reading* the clock, so this asserts the deadline reaches the search
     /// without the test measuring the machine it runs on.
     #[test]
@@ -2393,7 +2382,7 @@ mod tests {
             wtime: Some(Duration::from_millis(900)),
             ..Limits::default()
         };
-        // ⚠️ **Off the calling thread**, because a deadline that never arrives
+        // **Off the calling thread**, because a deadline that never arrives
         // runs to `MAX_DEPTH` rather than returning — on this thread that is a
         // wedged suite attributed to whichever test the sweep was watching.
         let (tx, rx) = mpsc::channel();

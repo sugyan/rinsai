@@ -13,7 +13,7 @@
 //!    searcher **honours** `infinite` — `CapturingSearcher` blocks on its own
 //!    flag and never reads `limits` — which is tested in `rinsai-search`.
 //!
-//! ⚠️ Which move the engine chose is *never* asserted: shunsai's public
+//! Which move the engine chose is *never* asserted: shunsai's public
 //! documentation says nothing about generation order, so naming a move here
 //! would be a false regression waiting for the next shunsai bump.
 //! [`assert_legal_after`] asserts the property that actually matters.
@@ -110,7 +110,7 @@ fn drive<S: Searcher + 'static>(searcher: S, script: &str) -> Vec<String> {
 
 /// Runs a script against the real engine.
 ///
-/// ⚠️ **One MiB of transposition table, not the advertised default**, because
+/// **One MiB of transposition table, not the advertised default**, because
 /// every dialogue here builds a searcher. Nothing in this file depends on the
 /// size; `usi::options` holds the test that the default is honoured.
 fn dialogue(script: &str) -> Vec<String> {
@@ -302,7 +302,7 @@ fn every_go_field_reaches_the_search() {
     assert!(sfen.starts_with("lnsgkgsnl"));
 }
 
-/// ⚠️ This asserts that `go infinite` *reaches the searcher* and that exactly
+/// This asserts that `go infinite` *reaches the searcher* and that exactly
 /// one `bestmove` comes back — not that the searcher honours it. `drive`
 /// injects [`CapturingSearcher`], which blocks on its own flag and never reads
 /// `limits`, so deleting the wait loop from `NegamaxSearcher::finish` leaves
@@ -400,7 +400,7 @@ fn usinewgame_is_silent_and_does_not_disturb_the_next_search() {
 /// actually changed it. An unknown one is accepted in silence, because the
 /// specification requires ignoring what an engine does not understand.
 ///
-/// ⚠️ The unhonoured option is `USI_Ponder`, not `USI_Hash`: the disclosure
+/// The unhonoured option is `USI_Ponder`, not `USI_Hash`: the disclosure
 /// deletes itself as each option's step lands, and `USI_Hash`'s has.
 #[test]
 fn setoption_discloses_the_accepted_but_unused_and_ignores_the_unknown() {
@@ -421,7 +421,7 @@ fn setoption_discloses_the_accepted_but_unused_and_ignores_the_unknown() {
 }
 
 /// …and an option that *is* acted on has to reach the searcher, with the value
-/// the operator sent. ⚠️ Delivery only: what happens to the memory is
+/// the operator sent. Delivery only: what happens to the memory is
 /// `rinsai-search`'s, since a dialogue could observe a resize only by timing.
 ///
 /// Sabotage: drop the `Slot::HashMb` arm from `Engine::set_option`.
@@ -437,7 +437,7 @@ fn setoption_usi_hash_reaches_the_searcher() {
     );
     assert!(lines.contains(&"readyok".to_owned()));
     assert_eq!(recorded.hash_mb(), vec![2, 4]);
-    // An honoured option must not also disclose itself as unused. ⚠️ Not
+    // An honoured option must not also disclose itself as unused. Not
     // "no line mentions it": the handshake declares it, which is required.
     assert!(
         !lines.iter().any(|l| l.contains("not yet used")),
@@ -446,11 +446,11 @@ fn setoption_usi_hash_reaches_the_searcher() {
 }
 
 /// The delivery margin reaches the searcher too, converted to a `Duration` at
-/// this boundary. ⚠️ Delivery only: a dialogue cannot observe what a margin does
+/// this boundary. Delivery only: a dialogue cannot observe what a margin does
 /// to a deadline without timing the search.
 ///
 /// Sabotage: empty the `Slot::DeliveryMarginMs` arm of `Engine::set_option` to
-/// `{}`. ⚠️ Not *deleting* it — `Slot`'s exhaustive `match` refuses to compile,
+/// `{}`. Not *deleting* it — `Slot`'s exhaustive `match` refuses to compile,
 /// which is the property that enum exists for.
 #[test]
 fn setoption_delivery_margin_reaches_the_searcher() {
@@ -523,7 +523,7 @@ fn crlf_line_endings_work() {
 /// included — is answered from the depth-1 iteration. Anything needing a search
 /// of a stated size lives in `rinsai-search`'s own tests or over real pipes.
 ///
-/// ⚠️ Same reason no *exact* `seldepth` can be asserted: the value is a race
+/// Same reason no *exact* `seldepth` can be asserted: the value is a race
 /// between the search and `quit`. It is emphatically **not** 1 — this fixture's
 /// depth-1 iteration goes deeper, because after `7g7f 3c3d` both bishop
 /// diagonals are open. Assertable here: the token's presence, shape and slot.
@@ -581,7 +581,7 @@ fn a_search_reports_progress_before_it_moves() {
 /// move tokens in, `position` replaying each one, and a 連続王手の千日手
 /// verdict out.
 ///
-/// ⚠️ **The one search property this harness can assert**, and only because
+/// **The one search property this harness can assert**, and only because
 /// the verdict is decided where a root child is dispatched rather than inside
 /// the interior node — every dialogue here is answered from the depth-1
 /// iteration, whose root children are all quiescence nodes. The score is a

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 /// Where a declared option's value is stored.
 ///
-/// ⚠️ It exists so that [`Options::set`] dispatches on **which option** rather
+/// It exists so that [`Options::set`] dispatches on **which option** rather
 /// than on what kind of control it is. Dispatching on the kind works only while
 /// there is at most one option per kind: the moment `Threads` joins `USI_Hash`
 /// as a second spin, `setoption name Threads value 4` silently writes the hash

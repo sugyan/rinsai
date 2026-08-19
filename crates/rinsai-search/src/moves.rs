@@ -170,7 +170,7 @@ impl Default for MoveBuf {
 /// shunsai has no `is_legal`: generation is always fully legal, so nothing
 /// inside it ever needs to ask. The caller is moves arriving over USI.
 ///
-/// ⚠️ **The search is not a caller and is not going to be.** A transposition
+/// **The search is not a caller and is not going to be.** A transposition
 /// move is validated by scanning the list its node generated anyway, which is
 /// one pass rather than a second `generate_moves` walk — see
 /// [`NegamaxSearcher`](crate::NegamaxSearcher). Anything else inside the search
@@ -310,14 +310,14 @@ mod tests {
         agrees_with_oracle(&position);
     }
 
-    /// Sabotage: swap the `promotions` / `non_promotions` selection. ⚠️ This
+    /// Sabotage: swap the `promotions` / `non_promotions` selection. This
     /// is not the only test that fires — the oracle tests do too, because the
     /// boards differ for any move outside the promotion zone. What this one
     /// adds is the *compulsory* case, where `non_promotions` is empty.
     #[test]
     fn a_compulsory_promotion_cannot_be_declined() {
         // A black pawn on 5b can only move to 5a, where unpromoted it would
-        // have no move ever again. ⚠️ The white king is on 1a, not 5a, so the
+        // have no move ever again. The white king is on 1a, not 5a, so the
         // destination is empty — a king capture is never generated, which
         // would make the fixture vacuous.
         let position = position("sfen 8k/4P4/9/9/9/9/9/9/4K4 b - 1");

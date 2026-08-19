@@ -19,7 +19,7 @@ use crate::score::Depth;
 ///
 /// Every field is acted on.
 ///
-/// ⚠️ The deadline is deliberately *not* part of this: time management extends
+/// The deadline is deliberately *not* part of this: time management extends
 /// on a fail-low and cuts short on an obvious move, so the search has to own
 /// the clock and see the raw parameters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -168,7 +168,7 @@ impl InfoSink for SilentSink {
 pub trait Searcher: Send {
     /// Runs one search, returning promptly once `job.signals.stopped()`.
     ///
-    /// ⚠️ It **returns** a [`BestMove`] rather than printing one. That is what
+    /// It **returns** a [`BestMove`] rather than printing one. That is what
     /// makes "exactly one `bestmove` per `go`" structural rather than a rule
     /// every code path has to remember.
     fn search(&mut self, job: &SearchJob, out: &dyn InfoSink) -> BestMove;
@@ -288,7 +288,7 @@ impl SearchDriver {
     /// Queues a delivery-margin change, in order with the searches around it.
     /// `false` if the worker is gone.
     ///
-    /// ⚠️ Queued and never acknowledged, for the reason [`Self::set_hash`]
+    /// Queued and never acknowledged, for the reason [`Self::set_hash`]
     /// carries.
     pub fn set_margin(&self, margin: Duration) -> bool {
         match &self.tx {
@@ -347,7 +347,7 @@ fn worker<S: Searcher>(
     emit: &dyn Fn(BestMove),
 ) {
     for command in rx {
-        // ⚠️ Two catches, two different guarantees. **This outer one keeps the
+        // Two catches, two different guarantees. **This outer one keeps the
         // *worker* alive**; the inner one below only keeps the *job* answered,
         // and since it is nested inside this one, losing it costs one answer
         // rather than the thread. Losing *this* catch ends the thread with the
@@ -500,7 +500,7 @@ mod tests {
     ///
     /// Sabotage: remove the inner `catch_unwind` and this fails on the
     /// `assert_eq!` below with the **first** job's answer missing
-    /// (`["resign"]` against `["resign", "resign"]`). ⚠️ It does not hang —
+    /// (`["resign"]` against `["resign", "resign"]`). It does not hang —
     /// the outer catch still lets `shutdown` join. See `worker`.
     ///
     /// (The panic message on stderr during this test is expected.)
@@ -628,7 +628,7 @@ mod tests {
     ///
     /// A driver remembering only the most recent job's signals raises `stop` on
     /// the one that has not started and joins on the one that is running —
-    /// which, for a search that ends only on `stop`, never returns. ⚠️
+    /// which, for a search that ends only on `stop`, never returns.
     /// `usi::run` cannot reach this because `Engine::go` stops the previous
     /// search first, but [`SearchDriver`] is public API.
     ///

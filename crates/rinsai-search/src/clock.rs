@@ -9,7 +9,7 @@ use std::time::Instant;
 /// A monotonic time source.
 ///
 /// `now()` returns time since an origin the implementation chose, not a
-/// wall-clock reading. ⚠️ [`Instant`] has no public constructor — the only way
+/// wall-clock reading. [`Instant`] has no public constructor — the only way
 /// to obtain one is [`Instant::now`] — so a trait returning `Instant` could
 /// only be implemented by something that reads the wall clock, which is the
 /// one thing this trait exists to make optional.

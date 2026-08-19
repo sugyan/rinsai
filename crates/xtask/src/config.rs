@@ -6,7 +6,7 @@
 //! grammar, documented in the committed `.example`:
 //! full-line `#` comments, blank lines, `[engines.<id>]` and
 //! `[engines.<id>.options]` headers, and `key = "value"` with double-quoted
-//! values (escapes: `\"` and `\\`). ⚠️ Anything else is a hard error, never
+//! values (escapes: `\"` and `\\`). Anything else is a hard error, never
 //! skipped: an ignored option key would silently change match conditions,
 //! which is the one failure mode a roster file must not have.
 

@@ -17,7 +17,7 @@ pub const MAX_PLY: usize = 128;
 /// A search depth, in **whole plies**, signed.
 ///
 /// Signed because quiescence runs at negative depth, entering at zero and
-/// counting down towards `-QS_MAX_CHECK_PLIES`. ⚠️ Note which constant that
+/// counting down towards `-QS_MAX_CHECK_PLIES`. Note which constant that
 /// is: it counts *checked* plies, not plies, so a capture chain never moves it.
 pub type Depth = i32;
 
@@ -53,10 +53,10 @@ impl Score {
     /// [`Self::is_mate`] answers `false` and the deepening loop does not break
     /// on it. Two consequences worth knowing:
     ///
-    /// * ⚠️ **`info` spells it `score cp`**, because USI has no vocabulary for
+    /// * **`info` spells it `score cp`**, because USI has no vocabulary for
     ///   a win that is not a mate. Reporting it as `score mate` would announce
     ///   a mate whose principal variation does not deliver one.
-    /// * ⚠️ **It carries no distance to the root**, unlike a mate score, and
+    /// * **It carries no distance to the root**, unlike a mate score, and
     ///   needs none: a repetition ends the game where it stands rather than
     ///   `n` plies further on. That keeps the table's mate-by-ply adjustment
     ///   the only ply-relative score in the engine. It does **not** mean the

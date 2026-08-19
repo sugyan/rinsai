@@ -318,7 +318,7 @@ mod tests {
     /// …and over a whole game, so that positions nobody thought to write down
     /// get walked too.
     ///
-    /// ⚠️ The generator is five lines inline rather than a `rand` dependency:
+    /// The generator is five lines inline rather than a `rand` dependency:
     /// every dependency is provenance-scan surface.
     #[test]
     fn the_fast_path_agrees_with_the_oracle_through_a_whole_game() {

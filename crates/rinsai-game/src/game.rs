@@ -584,8 +584,8 @@ mod tests {
         }
     }
 
-    /// The ⚠️ on `undo`: an adjudicated ending is not attached to a ply, so
-    /// nothing about popping one obviously clears it. A caller that told its
+    /// An adjudicated ending is not attached to a ply, so nothing about
+    /// popping one obviously clears it. A caller that told its
     /// players the game was over is what makes the revival worth pinning.
     #[test]
     fn undoing_past_an_adjudicated_ending_revives_the_game() {

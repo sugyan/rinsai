@@ -63,7 +63,7 @@ const GENERATION_STEP: u8 = Bound::MASK + 1;
 
 /// One slot.
 ///
-/// ⚠️ **The move is a [`CompactMove`] because `Option<CompactMove>` is two
+/// **The move is a [`CompactMove`] because `Option<CompactMove>` is two
 /// bytes *guaranteed*** — `#[repr(transparent)]` over a `NonZeroU16`, so the
 /// niche is promised. [`Move`] carries no `#[repr]`, so its size may change
 /// between compiler versions, and here that would change how many positions fit
@@ -93,7 +93,7 @@ pub(crate) struct Hit {
     pub(crate) score: Score,
     pub(crate) depth: Depth,
     pub(crate) bound: Bound,
-    /// ⚠️ Not known to be legal here — see the module doc.
+    /// Not known to be legal here — see the module doc.
     pub(crate) mv: Option<Move>,
 }
 
@@ -108,7 +108,7 @@ pub(crate) struct Table {
 }
 
 impl fmt::Debug for Table {
-    /// A summary, not the slots. ⚠️ Deriving this would make `{:?}` on a
+    /// A summary, not the slots. Deriving this would make `{:?}` on a
     /// searcher print millions of entries.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Table")
@@ -254,7 +254,7 @@ impl Table {
         let occupied = Bound::from_code(slot.age_bound).is_some();
         let stale = slot.age_bound & !Bound::MASK != self.generation;
         // Depth-preferred within a search, and anything from an earlier one
-        // gives way. ⚠️ Conventional and untuned: nothing here has measured a
+        // gives way. Conventional and untuned: nothing here has measured a
         // replacement policy against another.
         if occupied && !stale && depth < slot.depth {
             return;
@@ -330,7 +330,7 @@ mod tests {
     use crate::score::MAX_PLY;
 
     /// A 1 MiB table — what every test here wants, and what the rest of the
-    /// suite wants too. ⚠️ Nothing in a test may take [`DEFAULT_HASH_MB`]: the
+    /// suite wants too. Nothing in a test may take [`DEFAULT_HASH_MB`]: the
     /// suite builds a table per test.
     fn table() -> Table {
         Table::new(1)
@@ -567,7 +567,7 @@ mod tests {
         }
     }
 
-    /// The size arithmetic, without allocating any of it. ⚠️ The rounding is
+    /// The size arithmetic, without allocating any of it. The rounding is
     /// *down*, so the 3 MiB row below buys two.
     #[test]
     fn a_table_is_a_power_of_two_slots_no_larger_than_asked_for() {

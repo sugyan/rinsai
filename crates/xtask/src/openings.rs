@@ -138,7 +138,7 @@ pub struct Counters {
 }
 
 impl std::fmt::Display for Counters {
-    /// ⚠️ Every field is named here, and that is what keeps them alive: this
+    /// Every field is named here, and that is what keeps them alive: this
     /// is their only reader.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let qualifying =

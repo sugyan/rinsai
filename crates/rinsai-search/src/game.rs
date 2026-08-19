@@ -111,7 +111,7 @@ pub struct Game {
     board: Position,
     /// The record, advanced in lockstep with `board`. It lets the game emit
     /// SFEN — shunsai deliberately cannot — and it *is* the `position`
-    /// command's own semantics: the root plus the moves played. ⚠️ The plies
+    /// command's own semantics: the root plus the moves played. The plies
     /// before a mid-game `sfen` root are unknowable, and `initial_position()`
     /// is what says so.
     record: Record,
@@ -369,11 +369,9 @@ const PIECE_TOTALS: [(PieceKind, u8); 7] = [
 /// shunsai's hand counter over. Bounding the *total* per kind at the root
 /// closes both, because no legal move can create a piece.
 ///
-/// ⚠️ The king is bounded **per colour** — it never changes sides, so a per-set
-/// total of two would admit two black kings and no white one — and at *most*
-/// one rather than exactly one, because a 詰将棋 diagram routinely omits the
-/// attacking king. shunsai's `king_square` returns `Option` and documents
-/// `None` as legal.
+/// ⚠️ The king is bounded at *most* one per colour rather than exactly one,
+/// because a 詰将棋 diagram routinely omits the attacking king. shunsai's
+/// `king_square` returns `Option` and documents `None` as legal.
 fn check_piece_counts(partial: &PartialPosition) -> Result<(), PositionError> {
     let mut seen = [0u16; PieceKind::NUM];
     let mut kings = [0u16; 2];
@@ -540,7 +538,7 @@ mod tests {
         );
     }
 
-    /// ⚠️ It asserts the *error*, not the surviving board, and cannot do
+    /// It asserts the *error*, not the surviving board, and cannot do
     /// otherwise: `from_usi_position` is a constructor, so no `Game` escapes on
     /// the error path. That a rejected command leaves the engine's own board
     /// untouched is `usi::set_position`'s property, covered by
@@ -572,7 +570,7 @@ mod tests {
         );
     }
 
-    /// ⚠️ A GUI or a server could end the process with one line before this
+    /// A GUI or a server could end the process with one line before this
     /// existed — see [`Game::from_partial`].
     ///
     /// Sabotage: delete the `check_piece_counts` call in `from_partial`. ⚠️
@@ -769,7 +767,7 @@ mod tests {
     /// fires — the record stops advancing, so a board rebuilt from it is no
     /// longer the board `push_move` maintained.
     ///
-    /// ⚠️ A plain `assert_eq!` on purpose. `search_board` makes the same
+    /// A plain `assert_eq!` on purpose. `search_board` makes the same
     /// comparison, but as a `debug_assert`, so it is this test and not that one
     /// that holds the lockstep under `cargo test --release`.
     #[test]

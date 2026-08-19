@@ -10,7 +10,7 @@
 //! has exactly two callers, both here — the worker's emit closure built in
 //! [`run`], and `Engine::go`'s fallback for when the worker is gone.
 //!
-//! ⚠️ To audit it, grep `crates/*/src` for the **string literal**, opening
+//! To audit it, grep `crates/*/src` for the **string literal**, opening
 //! double-quote included; it must occur in `output.rs` and nowhere else.
 //! Grepping the bare word matches this sentence and proves nothing.
 //!
@@ -187,7 +187,7 @@ impl<W: Write + Send + 'static> Engine<W> {
 
     fn ready(&self) {
         // The specification lets an engine take arbitrarily long here, which is
-        // where slow initialisation belongs. ⚠️ Nothing uses that yet: the
+        // where slow initialisation belongs. Nothing uses that yet: the
         // transposition table is allocated in `main`, and a resize goes to the
         // worker rather than through here.
         for (name, planned) in self.options.unhonoured_changes() {
