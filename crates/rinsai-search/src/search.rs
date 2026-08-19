@@ -1,9 +1,7 @@
 //! The seam between a protocol and a search.
 //!
 //! Nothing here knows what USI is: a [`Searcher`] is handed a [`SearchJob`] and
-//! returns a [`BestMove`], and the caller — the engine binary today, a
-//! self-play driver at E3 — decides what to do with it. The shapes are chosen
-//! so that steps 2 to 5 add behaviour without changing a signature.
+//! returns a [`BestMove`], and the caller decides what to do with it.
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,8 +38,8 @@ pub struct Limits {
 
 /// The flags that stop a search from outside it.
 ///
-/// Atomics rather than a channel, because E2's Lazy SMP broadcasts one `Arc`
-/// to every thread where a channel would need one per thread.
+/// Atomics rather than a channel, because a multi-threaded search broadcasts
+/// one `Arc` to every thread where a channel would need one per thread.
 ///
 /// ⚠️ A **fresh set is created per `go`**, so a `stop` that arrives late cannot
 /// abort the *next* search — the classic bug in globally-flagged engines.
@@ -121,9 +119,8 @@ pub struct SearchJob {
 pub enum BestMove {
     Play {
         mv: Move,
-        /// The move the opponent is expected to reply with. Always `None` until
-        /// E2 gives ponder something to stand on: a ponder move the engine
-        /// cannot actually back up is worse than none.
+        /// The move the opponent is expected to reply with. Always `None`: a
+        /// ponder move the engine cannot actually back up is worse than none.
         ponder: Option<Move>,
         /// The deepest iteration that searched **every** root move, or 0 when
         /// none did.
@@ -140,7 +137,6 @@ pub enum BestMove {
     },
     /// The side to move has no legal move.
     Resign,
-    // `Win` (入玉宣言) joins at E2, with the declaration rules.
 }
 
 /// Where `info` lines go while a search runs.
@@ -152,8 +148,8 @@ pub trait InfoSink: Send + Sync {
     fn info(&self, line: &str);
 }
 
-/// A no-op sink, for a search that nobody is watching. Caller: E3's self-play
-/// data generation, which drives the search in-process and wants it silent.
+/// A no-op sink, for a search that nobody is watching. Caller: `rinsai`'s
+/// `bench`, which drives the search in-process and wants it silent.
 /// (shunsai makes the same callback-not-channel choice in `generate_moves`.)
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SilentSink;
@@ -634,8 +630,7 @@ mod tests {
     /// the one that has not started and joins on the one that is running —
     /// which, for a search that ends only on `stop`, never returns. ⚠️
     /// `usi::run` cannot reach this because `Engine::go` stops the previous
-    /// search first, but [`SearchDriver`] is public API and E3's self-play
-    /// driver is its second caller.
+    /// search first, but [`SearchDriver`] is public API.
     ///
     /// Sabotage: replace the sweep in `submit` with `outstanding.clear()` and
     /// this times out.

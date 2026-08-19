@@ -121,9 +121,7 @@ impl Score {
     }
 
     /// Clamps into the ordinary-evaluation band, so a static evaluation can
-    /// never masquerade as a mate or as a repetition. Caller: E3's inference
-    /// boundary, where the network's own scale makes the conversion unbounded
-    /// by construction.
+    /// never masquerade as a mate or as a repetition.
     ///
     /// ⚠️ Material evaluation deliberately does **not** use it: `eval` asserts
     /// its own range instead, because a clamp there would hide a broken value
@@ -150,8 +148,8 @@ impl Neg for Score {
     }
 }
 
-// Callers for the four impls below: E1's aspiration windows (`alpha - delta`,
-// `beta + delta`) and the transposition table's mate-score-by-ply adjustment.
+// Caller for the four impls below: the transposition table's
+// mate-score-by-ply adjustment.
 
 impl Add<i32> for Score {
     type Output = Self;

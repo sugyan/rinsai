@@ -1,15 +1,13 @@
 //! Material evaluation.
 //!
 //! Counts pieces, weights them, and reports the difference from the side to
-//! move. No piece-square tables, no king safety, no mobility; E3 replaces all
-//! of it with a network.
+//! move. No piece-square tables, no king safety, no mobility.
 //!
 //! ⚠️ **The values are ours, and that is a licensing property.** Reusing a
 //! table from a GPL engine is forbidden, so the ordering is derived from the
 //! rules of shogi and everything is rounded to a multiple of five so that
 //! nobody mistakes them for fitted values — `every_value_is_a_round_number` is
-//! what keeps that true. They are a starting point for SPSA at E4, not a
-//! measurement.
+//! what keeps that true. They are not measured values.
 
 use shogi_core::{Hand, PieceKind};
 use shunsai::Position;

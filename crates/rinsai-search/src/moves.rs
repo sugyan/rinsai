@@ -168,8 +168,7 @@ impl Default for MoveBuf {
 /// Whether `mv` is legal in `position`, without allocating.
 ///
 /// shunsai has no `is_legal`: generation is always fully legal, so nothing
-/// inside it ever needs to ask. The caller is moves arriving over USI, and from
-/// E2 over CSA.
+/// inside it ever needs to ask. The caller is moves arriving over USI.
 ///
 /// ⚠️ **The search is not a caller and is not going to be.** A transposition
 /// move is validated by scanning the list its node generated anyway, which is

@@ -86,8 +86,8 @@ impl Control {
 ///
 /// ⚠️ **Under `--nodes` a repeated opening is a repeated game** for an engine
 /// that answers a node budget deterministically — rinsai by construction,
-/// having no thread option to set before E2, and an opponent only if its
-/// roster entry says so. The replays are indistinguishable from independent
+/// having no thread option to set, and an opponent only if its roster entry
+/// says so. The replays are indistinguishable from independent
 /// pairs downstream, and
 /// `sprt::tests::replication_multiplies_the_llr_it_should_not_move` is what
 /// that costs the statistic.

@@ -94,8 +94,7 @@ const MAX_DEPTH: Depth = MAX_PLY as Depth - 1;
 /// monotone in the cap.
 ///
 /// ⚠️ Evaluating a position that is still in check is a known lie, bounded by
-/// how many times a line may be checked rather than by how long it is. E1's
-/// check extension replaces it.
+/// how many times a line may be checked rather than by how long it is.
 const QS_MAX_CHECK_PLIES: Depth = 2;
 
 /// An alpha-beta window, negated as a unit.
@@ -309,10 +308,7 @@ pub struct NegamaxSearcher<C = RealClock> {
     /// quiescence line against its own entry; it says nothing about a
     /// quiescence position coinciding with one from the *game's* history, which
     /// would be a fourth occurrence this search does not see. It is the same
-    /// family as the imprecisions [`Self::qsearch`]'s own doc lists, and E1
-    /// closes it with them — the item that gives quiescence checks and
-    /// non-capture promotions also ends the bound above, because a quiescence
-    /// node can then play a quiet move.
+    /// family as the imprecisions [`Self::qsearch`]'s own doc lists.
     path: Vec<HistoryEntry>,
     nodes: u64,
     /// The deepest ply reached, quiescence included. Reset **per iteration**,
@@ -397,8 +393,7 @@ impl<C: Clock> NegamaxSearcher<C> {
     /// **fail-low** comes back as `None` and [`Searcher::search`] breaks out of
     /// the deepening loop instead of re-searching — no wrong answer, no panic,
     /// and no failing test, because every test here searches an open window.
-    /// It also ignores `window.beta` outright. E1 owns both, and owes this
-    /// method a return type that tells fail-low apart from abandoned.
+    /// It also ignores `window.beta` outright.
     ///
     /// `first_move`, when given, is what **root move 0 alone** is searched
     /// against — see [`Budget::without_limits`] for what that buys. ⚠️ It is an
@@ -643,10 +638,8 @@ impl<C: Clock> NegamaxSearcher<C> {
     /// Without this a fixed-depth material search believes whatever the last
     /// ply happened to leave on the board — the horizon effect.
     ///
-    /// **It searches captures, and nothing else** — deliberately an unordered,
-    /// unpruned baseline for E1 to measure its additions against. ⚠️ It is
-    /// therefore blind to と金作り, a large material event, until E1 adds
-    /// non-capture promotions.
+    /// **It searches captures, and nothing else** — deliberately unordered and
+    /// unpruned. ⚠️ It is therefore blind to と金作り, a large material event.
     ///
     /// ⚠️ **Two imprecisions kept, and neither is confined to one branch.**
     ///
@@ -833,7 +826,7 @@ impl<C: Clock> Searcher for NegamaxSearcher<C> {
 
         // The game's own history is the front of the search's path — 千日手
         // counts positions reached in the game, not positions visited in the
-        // tree, and at E0 depths the earlier occurrences are behind the root
+        // tree, and a game repetition's earlier occurrences are behind the root
         // rather than inside the tree. Reserved past the seed so a deep line
         // cannot reallocate mid-search.
         self.path.clear();
@@ -905,8 +898,7 @@ impl<C: Clock> Searcher for NegamaxSearcher<C> {
             );
 
             // The next iteration starts from this one's answer, which is what
-            // makes the partial-iteration read above safe. Root-only; not the
-            // interior move ordering E1 is about.
+            // makes the partial-iteration read above safe. Root-only.
             if let Some(index) = self.root_moves.iter().position(|mv| *mv == best) {
                 self.root_moves.swap(0, index);
             }
@@ -2183,8 +2175,8 @@ mod tests {
     /// straight into quiescence, which does not touch the table.
     ///
     /// ⚠️ **[`searcher`]'s one MiB is load-bearing for the second row**: at the
-    /// advertised default an E0-depth search fills so little of the table that
-    /// this reads zero permille, so the same assertion there could not pass.
+    /// advertised default a search this shallow fills so little of the table
+    /// that this reads zero permille, so the same assertion there could not pass.
     ///
     /// Sabotage: report a constant.
     #[test]

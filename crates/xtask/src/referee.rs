@@ -89,7 +89,7 @@ pub enum EndReason {
     Checkmate,
     Resign,
     /// `bestmove win`, trusted as sent — the referee has no 27-point rule to
-    /// check it against until E2 builds one. ⚠️ An engine that declares
+    /// check it against. ⚠️ An engine that declares
     /// wrongly is scored a full win, so this arm is worth revisiting the
     /// first time a run's log shows one.
     Declaration,

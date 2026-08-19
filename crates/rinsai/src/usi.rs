@@ -92,7 +92,7 @@ where
     // error — so one stray byte ends the engine silently, exit status 0,
     // nothing in the log. Not exotic input: a Japanese Windows GUI speaks
     // CP932, so `setoption name EvalFile value C:\将棋\eval` is the shape that
-    // arrives, and E3 will ask for one.
+    // arrives.
     let mut input = input;
     let mut buf = Vec::new();
     loop {

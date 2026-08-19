@@ -46,9 +46,8 @@ pub(crate) struct OptionSpec {
 /// to be parsed regardless, and declaring them is what puts them in the GUI's
 /// settings dialog where an operator expects to find them.
 ///
-/// `Threads` arrives at E2 with Lazy SMP, `EvalFile` at E3 with the network,
-/// `BookFile` at E4. An option we do not declare but that someone sends is
-/// still accepted silently, so nothing breaks in the meantime.
+/// An option we do not declare but that someone sends is still accepted
+/// silently.
 ///
 /// The spin bounds are **conventional, not measured**, but they are honoured:
 /// `min 1` is a commitment that the transposition table works at 1 MiB, and the
@@ -79,7 +78,7 @@ pub(crate) const OPTIONS: &[OptionSpec] = &[
         name: "USI_Ponder",
         kind: OptionKind::Check { default: false },
         slot: Slot::Ponder,
-        planned: Some("E2, with ponder"),
+        planned: Some("ponder"),
     },
 ];
 
@@ -307,10 +306,10 @@ mod tests {
     /// Setting one option must leave every other alone.
     ///
     /// This is the test for the `Slot` indirection. Sabotage: dispatch on
-    /// `spec.kind` instead of `spec.slot` and add a second spin option (which is
-    /// what `Threads` will be at E2) — `setoption name Threads value 4` then
-    /// writes into `hash_mb` and this goes red. Written as a loop over `OPTIONS`
-    /// so it covers whatever the table holds later, not just today's two.
+    /// `spec.kind` instead of `spec.slot` and add a second spin option —
+    /// `setoption name Threads value 4` then writes into `hash_mb` and this
+    /// goes red. Written as a loop over `OPTIONS` so it covers whatever the
+    /// table holds.
     #[test]
     fn setting_one_option_does_not_disturb_the_others() {
         for spec in OPTIONS {
@@ -381,10 +380,7 @@ mod tests {
         assert!(options.unhonoured_changes().is_empty());
 
         assert!(options.set("USI_Ponder", Some("true")).is_ok());
-        assert_eq!(
-            options.unhonoured_changes(),
-            vec![("USI_Ponder", "E2, with ponder")]
-        );
+        assert_eq!(options.unhonoured_changes(), vec![("USI_Ponder", "ponder")]);
     }
 
     /// …and an option the engine *does* act on must stop disclosing itself, or
