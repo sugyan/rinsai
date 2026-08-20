@@ -30,6 +30,7 @@ use crate::eval;
 use crate::game::HistoryEntry;
 use crate::info::SearchInfo;
 use crate::moves::{MAX_LEGAL_MOVES, MoveBuf};
+use crate::ordering;
 use crate::repetition;
 use crate::score::{Depth, MAX_PLY, Score};
 use crate::search::{BestMove, InfoSink, Limits, SearchJob, SearchSignals, Searcher};
@@ -264,6 +265,34 @@ impl<'a> Budget<'a> {
     }
 }
 
+/// What one ply of the search carries from one of its nodes to the next.
+///
+/// ⚠️ **Cleared at the start of every search**, unlike the transposition
+/// table, which outlives a `go` on purpose. Dropping that clear reddens
+/// `usinewgame_empties_the_table`, which compares two searches of one position
+/// and would find the second ordering its quiet moves differently.
+#[derive(Debug, Default)]
+struct Stack {
+    /// The principal variation from this ply downwards.
+    ///
+    /// A triangular array was the alternative and does not fit: [`Move`] has
+    /// no `Default`, so `[[Move; N]; N]` needs `MaybeUninit` and the workspace
+    /// denies `unsafe_code`, while `[[Option<Move>; N]; N]` costs a row clear
+    /// on every node unless it also carries a per-ply length — at which point
+    /// it is a `Vec` with extra steps.
+    pv: Vec<Move>,
+    /// The quiet moves that most recently cut a node off *at this ply*, newest
+    /// first.
+    ///
+    /// Quiet, because a capture is already ranked ahead of every quiet move
+    /// and putting one here would only displace a capture with a capture.
+    ///
+    /// ⚠️ **A killer is a whole [`Move`], and a drop is one of them.** Chess
+    /// indexes this kind of table by `(from, to)`; a drop has no `from`, so
+    /// that shape cannot represent half of shogi's quiet moves.
+    killers: [Option<Move>; 2],
+}
+
 /// The searcher.
 ///
 /// Everything that has to survive between searches lives here, because the
@@ -275,15 +304,12 @@ pub struct NegamaxSearcher<C = RealClock> {
     /// buffer is for.
     root_moves: Vec<Move>,
     buf: MoveBuf,
-    /// The principal variation from each ply downwards.
+    /// One [`Stack`] entry per ply, `MAX_PLY + 1` of them because a node at
+    /// ply `MAX_PLY - 1` reads the entry below it.
     ///
-    /// `MAX_PLY + 1` lines, because a node at ply `MAX_PLY - 1` reads the line
-    /// below it. A triangular array was the alternative and does not fit:
-    /// [`Move`] has no `Default`, so `[[Move; N]; N]` needs `MaybeUninit` and
-    /// the workspace denies `unsafe_code`, while `[[Option<Move>; N]; N]` costs
-    /// a row clear on every node unless it also carries a per-ply length — at
-    /// which point it is a `Vec` with extra steps.
-    pv: Vec<Vec<Move>>,
+    /// One vector rather than one per kind of per-ply state, so that the
+    /// lengths cannot drift apart — [`MAX_PLY`] sizes them together.
+    stack: Vec<Stack>,
     /// Survives between searches on purpose — a position's value does not stop
     /// being true because the clock moved. `usinewgame` is what clears it.
     tt: Table,
@@ -358,7 +384,7 @@ impl<C: Clock> NegamaxSearcher<C> {
         Self {
             root_moves: Vec::with_capacity(MAX_LEGAL_MOVES),
             buf: MoveBuf::new(),
-            pv: (0..=MAX_PLY).map(|_| Vec::with_capacity(MAX_PLY)).collect(),
+            stack: (0..=MAX_PLY).map(|_| Stack::default()).collect(),
             tt: Table::new(mb),
             path: Vec::with_capacity(MAX_PLY),
             nodes: 0,
@@ -490,7 +516,7 @@ impl<C: Clock> NegamaxSearcher<C> {
             // sibling left there. Without this the parent raises alpha and
             // `update_pv` grafts that stale tail on, publishing a variation
             // that runs past the end of the game.
-            self.pv[ply].clear();
+            self.stack[ply].pv.clear();
             // `rep` is from the side to move at the child, like every other
             // score crossing this seam.
             return -rep.score();
@@ -528,7 +554,7 @@ impl<C: Clock> NegamaxSearcher<C> {
         // Above every early return: one node per entry, including a node that
         // turns straight round. `bench` freezes these counts.
         self.nodes += 1;
-        self.pv[ply].clear();
+        self.stack[ply].pv.clear();
         self.seldepth = self.seldepth.max(ply);
 
         // `child` dispatches everything else to `qsearch`, so arriving here at
@@ -578,7 +604,14 @@ impl<C: Clock> NegamaxSearcher<C> {
         // was just given.** Ordering the whole range instead would hand that
         // front to whichever capture wins most, which is the cheaper answer to
         // a question the table has already answered better.
-        self.buf.order_captures(order_from, board);
+        let quiets_from = self.buf.order_captures(order_from, board);
+        // After the captures: a killer is a quiet move, and a capture that
+        // wins material is the better guess before anything a sibling
+        // refuted. ⚠️ **Ordering them from `base` instead is not the same
+        // patch and is not obviously worse** — it takes the drop-heavy fixture
+        // from 253 847 nodes to 142 586 — so it is a separate question with a
+        // separate SPRT, not a mistake this line is guarding against.
+        self.buf.order_killers(quiets_from, self.stack[ply].killers);
 
         let mut best = -Score::INFINITE;
         // Only a move that raised alpha, because only such a move was proved
@@ -604,6 +637,9 @@ impl<C: Clock> NegamaxSearcher<C> {
                     best_move = Some(mv);
                     self.update_pv(ply, mv);
                     if window.alpha >= window.beta {
+                        // `board` is back to this node's own position, which
+                        // is the one that decides whether `mv` took anything.
+                        self.remember_killer(ply, board, mv);
                         break;
                     }
                 }
@@ -667,7 +703,7 @@ impl<C: Clock> NegamaxSearcher<C> {
     ) -> Score {
         // Same convention and same position as `negamax`: one node per entry.
         self.nodes += 1;
-        self.pv[ply].clear();
+        self.stack[ply].pv.clear();
         self.seldepth = self.seldepth.max(ply);
 
         if self.stopped {
@@ -769,16 +805,31 @@ impl<C: Clock> NegamaxSearcher<C> {
         best
     }
 
+    /// Records `mv` as a killer at `ply`, unless it takes something.
+    ///
+    /// Newest first, and a repeat of the newest is not re-recorded: it would
+    /// push the only other killer out and leave the ply with one.
+    fn remember_killer(&mut self, ply: usize, board: &Position, mv: Move) {
+        if ordering::capture_key(board, mv).is_some() {
+            return;
+        }
+        let killers = &mut self.stack[ply].killers;
+        if killers[0] != Some(mv) {
+            killers[1] = killers[0];
+            killers[0] = Some(mv);
+        }
+    }
+
     /// Records `mv` as the best move at `ply`, followed by the line below it.
     ///
     /// `split_at_mut` is the answer to needing `pv[ply]` and `pv[ply + 1]` at
     /// once. The copy runs only when alpha is raised, not per node.
     fn update_pv(&mut self, ply: usize, mv: Move) {
-        let (head, tail) = self.pv.split_at_mut(ply + 1);
-        let line = &mut head[ply];
+        let (head, tail) = self.stack.split_at_mut(ply + 1);
+        let line = &mut head[ply].pv;
         line.clear();
         line.push(mv);
-        line.extend_from_slice(&tail[0]);
+        line.extend_from_slice(&tail[0].pv);
     }
 
     /// Holds an answer back for as long as `go infinite` says to.
@@ -824,8 +875,9 @@ impl<C: Clock> Searcher for NegamaxSearcher<C> {
         // `search::worker` unwinds past every one of those, and the worker
         // keeps this searcher for the next `go`.
         self.buf.clear();
-        for line in &mut self.pv {
-            line.clear();
+        for entry in &mut self.stack {
+            entry.pv.clear();
+            entry.killers = [None; 2];
         }
 
         // The game's own history is the front of the search's path — 千日手
@@ -887,7 +939,7 @@ impl<C: Clock> Searcher for NegamaxSearcher<C> {
             // weaker than the move — over a prefix of the root list it is a
             // lower bound, not the iteration's value — and USI has no way to
             // say so.
-            best = self.pv[0][0];
+            best = self.stack[0].pv[0];
             out.info(
                 &SearchInfo {
                     depth,
@@ -896,7 +948,7 @@ impl<C: Clock> Searcher for NegamaxSearcher<C> {
                     nodes: self.nodes,
                     hashfull: self.tt.hashfull(),
                     elapsed: self.clock.now().saturating_sub(started),
-                    pv: &self.pv[0],
+                    pv: &self.stack[0].pv,
                 }
                 .to_string(),
             );
@@ -1683,9 +1735,10 @@ mod tests {
     ///
     /// The ceiling is measured and loose on purpose: it catches an unbounded
     /// recursion, not a number every future patch must update. ⚠️ It searches
-    /// the same position and depth as `the_transposition_move_is_searched_first`
-    /// under a far tighter ceiling, so a runaway quiescence reddens both and
-    /// that one names the wrong cause.
+    /// the same position and depth as
+    /// [`a_killer_is_searched_before_the_quiet_moves_around_it`] under a far
+    /// tighter ceiling, so a runaway quiescence reddens both and that one
+    /// names the wrong cause.
     #[test]
     fn quiescence_is_bounded_on_the_drop_heavy_fixture() {
         let (_, lines) = run(
@@ -2148,29 +2201,54 @@ mod tests {
     /// The transposition move is searched first, as a node-count tripwire.
     ///
     /// A ceiling with room on both sides, like
-    /// [`quiescence_is_bounded_on_the_drop_heavy_fixture`]. **The fixture is
-    /// load-bearing** — the transposition move is worth almost nothing at the
-    /// initial position and enough here to bound.
+    /// [`quiescence_is_bounded_on_the_drop_heavy_fixture`]. **The fixture and
+    /// the depth are both load-bearing**, and less comfortably than they look:
+    /// once MVV-LVA and killers order the interior nodes, taking the stored
+    /// move's front away *shrinks* the tree on most positions rather than
+    /// growing it, and a ceiling cannot catch a mutation that makes the number
+    /// smaller. This is one of the two fixtures measured where it still costs,
+    /// and it costs more at seven plies than at six.
     ///
-    /// Sabotage, either way of removing the ordering: drop the `buf.swap` and
-    /// leave `order_from` where it is, or delete the whole `hit.mv` block so
-    /// that `order_from` stays at `base`.
+    /// Sabotage, either way of removing the ordering — drop the `buf.swap` and
+    /// leave `order_from` where it is, or delete the whole `hit.mv` block:
+    /// both take this fixture from 759 802 nodes to 1 018 032, and both go red
+    /// on the ceiling below.
     ///
     /// ⚠️ **It does not catch the transposition move being *demoted* rather
     /// than removed** — ordering from `base` instead of `order_from`, which is
-    /// what the ⚠️ at the call site forbids. That mutation costs too little
-    /// here to separate from a ceiling any future patch can live under, and
-    /// what moves for it is `bench`.
+    /// what the ⚠️ at the call site forbids.
     #[test]
     fn the_transposition_move_is_searched_first() {
+        let (_, lines) = run("startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c", depth(7));
+        let last = lines.last().expect("an iteration finished");
+        assert!(
+            field(last, "nodes") < 900_000,
+            "the transposition move is not being tried first: {last}"
+        );
+    }
+
+    /// A killer is tried before the quiet moves around it, as a node-count
+    /// tripwire on the drop-heavy fixture.
+    ///
+    /// **The fixture is load-bearing**: killers pay where a node has many
+    /// quiet moves and one of them refutes most of its siblings, which is what
+    /// a drop-heavy middlegame is and what the initial position is not — at
+    /// `startpos` the whole feature moves `bench`'s count by nothing at all.
+    ///
+    /// Sabotage, either way of removing the feature — make `remember_killer`
+    /// return before it stores, or delete the `order_killers` call and leave
+    /// the table filling up unread: both take this fixture from 253 847 nodes
+    /// to 455 932, and both go red on the ceiling below.
+    #[test]
+    fn a_killer_is_searched_before_the_quiet_moves_around_it() {
         let (_, lines) = run(
             "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
             depth(4),
         );
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 500_000,
-            "the transposition move is not being tried first: {last}"
+            field(last, "nodes") < 350_000,
+            "the killers are not being tried early: {last}"
         );
     }
 

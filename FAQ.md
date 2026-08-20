@@ -85,10 +85,16 @@ constant with an SPRT.
 ### Why did TT move ordering land with the table rather than at E1?
 
 A transposition table whose move nobody tries first is half a table. Measured
-afterwards: searching the stored move first is worth between 1.00× and **14.02×**
-across five fixtures and four depths, super-linearly in depth. MVV-LVA, killers
-and history stayed at E1 — those are interior-node heuristics and each wants its
-own SPRT.
+at E0, before anything else ordered an interior node: searching the stored move
+first was worth between 1.00× and **14.02×** across five fixtures and four
+depths, super-linearly in depth.
+
+⚠️ **That range is E0's and does not hold today.** With MVV-LVA and killers
+ordering the interior nodes, taking the stored move's front away *shrinks* the
+tree on five of seven fixture-and-depth pairs and grows it on two. Node count
+is not strength, so this is not an argument for dropping the ordering — but it
+is why the tripwire that guards it had to change fixture, and it is the sort of
+question E1 answers with an SPRT rather than with a count.
 
 ### Why is a capture's ordering key a pair rather than one scaled number?
 
@@ -254,10 +260,9 @@ up and it went.
 
 ⚠️ **A named caller that does not turn up is a result too.** `MAX_PLY`'s doc
 predicted per-ply state would gain a static evaluation; quiescence computes its
-stand-pat as a local and nothing reads it again. The `Stack` struct is deferred
-to E1 — killers or futility, whichever lands first — and its trigger is written
-as **the first *second* field** rather than as a step number, because a step
-number is what went stale.
+stand-pat as a local and nothing reads it again. The `Stack` struct the same
+doc predicted did turn up, when E1's killers gave the search a second per-ply
+field to keep beside the line.
 
 ## Time control
 
