@@ -147,22 +147,24 @@ impl MoveBuf {
 
     /// Moves every capture at or after `from` ahead of every non-capture and
     /// puts those captures in [`ordering::capture_key`] order, best first.
-    /// Returns how many captures there were.
     ///
     /// `from` is where ordering may begin, **not** where the ply began: a
     /// caller that has already placed a move at the front of its range passes
     /// the index after it, and that move is left where it is.
     ///
+    /// ⚠️ **It reorders to the end of the whole buffer, not to the end of a
+    /// ply**, so the caller must own everything from `from` up — which today
+    /// means calling it on the ply just generated, before descending. A caller
+    /// that reorders a parent's range while a child's list is live permutes
+    /// the child's too, and the child walks raw indices: moves rotated behind
+    /// its cursor would be searched twice and moves rotated past it skipped.
+    /// The `debug_assert`s in [`NegamaxSearcher`](crate::NegamaxSearcher)
+    /// compare lengths across a child and cannot see a permutation.
+    ///
     /// Two moves this ordering cannot separate keep the order shunsai
     /// generated them in — the partition rotates rather than swaps, and the
-    /// sort is stable. ⚠️ Neither is tidiness: `bench` freezes node counts,
-    /// and a count is a property of the list the node walks. Under an
-    /// unstable sort that list would depend on the standard library's
-    /// implementation of one.
-    ///
-    /// The borrow taken here ends before it returns, which is what makes it
-    /// unlike [`Self::get`]: nothing recurses in the middle of it.
-    pub(crate) fn order_captures(&mut self, from: usize, position: &Position) -> usize {
+    /// sort is stable.
+    pub(crate) fn order_captures(&mut self, from: usize, position: &Position) {
         let moves = &mut self.moves[from..];
         let mut captures = 0;
         for i in 0..moves.len() {
@@ -174,7 +176,6 @@ impl MoveBuf {
         moves[..captures].sort_by(|a, b| {
             ordering::capture_key(position, *b).cmp(&ordering::capture_key(position, *a))
         });
-        captures
     }
 
     /// Drops everything generated at or after `base`, ending a ply.
@@ -380,14 +381,21 @@ mod tests {
         range.map(|i| buf.get(i)).collect()
     }
 
-    /// Set equality. Generation *order* is an unspecified implementation
+    /// Multiset equality. Generation *order* is an unspecified implementation
     /// detail, so nothing here may compare two sequences that came out of
     /// different calls.
+    ///
+    /// ⚠️ **Multiset, not set**: containment plus a length check passes a
+    /// permutation that duplicates one move and drops another, which is
+    /// exactly what an off-by-one in a rotate would produce — and a dropped
+    /// move is a move the node never searches.
     fn same_moves(left: &[Move], right: &[Move]) {
-        assert_eq!(left.len(), right.len(), "different numbers of moves");
-        for mv in left {
-            assert!(right.contains(mv), "{mv:?} is missing from the other side");
-        }
+        let key = |mv: &Move| format!("{mv:?}");
+        let mut left: Vec<String> = left.iter().map(key).collect();
+        let mut right: Vec<String> = right.iter().map(key).collect();
+        left.sort();
+        right.sort();
+        assert_eq!(left, right);
     }
 
     #[test]
@@ -561,8 +569,7 @@ mod tests {
     /// asserts each rather than assuming it: captures the ordering can rank
     /// against each other, moves that take nothing for the captures to be
     /// ranked ahead of, and a generated capture order that is **not already
-    /// best-first** — on a board where it is, a missing sort goes unnoticed,
-    /// which is what the drop-heavy middlegame turned out to be.
+    /// best-first** — on a board where it is, a missing sort goes unnoticed.
     fn ordering_fixture() -> Position {
         let board = position("sfen 4k4/9/9/1p1r1b1s1/2S1S1S2/9/9/9/4K4 b - 1");
         let mut buf = MoveBuf::new();
@@ -582,7 +589,7 @@ mod tests {
             "the fixture holds fewer than two moves that take nothing"
         );
         assert!(
-            keys.windows(2).any(|pair| pair[0] < pair[1]),
+            !keys.is_sorted_by(|a, b| a >= b),
             "the fixture generates its captures best-first already: {keys:?}"
         );
         board
@@ -601,9 +608,11 @@ mod tests {
         let base = buf.generate(&board);
         let generated = slice(&buf, base..buf.len());
 
-        let captures = buf.order_captures(base, &board);
+        buf.order_captures(base, &board);
         let ordered = slice(&buf, base..buf.len());
         same_moves(&ordered, &generated);
+
+        let captures = ordered.partition_point(|mv| ordering::capture_key(&board, *mv).is_some());
         for (i, mv) in ordered.iter().enumerate() {
             assert_eq!(
                 ordering::capture_key(&board, *mv).is_some(),
@@ -617,19 +626,17 @@ mod tests {
     ///
     /// Sabotage: drop the `sort_by` and keep the partition;
     /// `negamax`'s `the_transposition_move_is_searched_first` goes red with
-    /// it. ⚠️ On the drop-heavy middlegame that mutation leaves *this* test
-    /// green — its three captures are generated best-first already — which is
-    /// why the fixture asserts that they are not.
+    /// it.
     #[test]
     fn the_captures_come_out_best_first() {
         let board = ordering_fixture();
         let mut buf = MoveBuf::new();
         let base = buf.generate(&board);
-        let captures = buf.order_captures(base, &board);
-        let keys: Vec<_> = (base..base + captures)
-            .map(|i| ordering::capture_key(&board, buf.get(i)).expect("a capture"))
+        buf.order_captures(base, &board);
+        let keys: Vec<_> = (base..buf.len())
+            .filter_map(|i| ordering::capture_key(&board, buf.get(i)))
             .collect();
-        assert!(keys.windows(2).all(|pair| pair[0] >= pair[1]), "{keys:?}");
+        assert!(keys.is_sorted_by(|a, b| a >= b), "{keys:?}");
     }
 
     /// Ordering from `base + 1` leaves `base` alone — what keeps an interior
@@ -661,11 +668,9 @@ mod tests {
     /// Sabotage: partition by `swap` rather than by `rotate_right` and this
     /// goes red.
     ///
-    /// ⚠️ **It does not cover the other half of the same rule.** Replacing the
-    /// `sort_by` with `sort_unstable_by` left every test in the workspace
-    /// green, `bench`'s counts included: the capture runs are short enough
-    /// that the standard library sorts them stably anyway. The rule stands on
-    /// `order_captures`'s doc, not on this test.
+    /// ⚠️ **The sort's half of the same rule has no test.** `sort_unstable_by`
+    /// in place of `sort_by` left the workspace green, `bench`'s counts
+    /// included.
     #[test]
     fn moves_of_equal_rank_keep_their_generated_order() {
         let board = ordering_fixture();

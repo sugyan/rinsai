@@ -37,9 +37,10 @@ use crate::tt::{Bound, DEFAULT_HASH_MB, Hit, Table};
 
 /// How deep a `go` that named no budget at all searches.
 ///
-/// Four rather than six because there is no interior move ordering yet, so the
-/// tree is close to a full minimax and each further pair of plies costs an
-/// order of magnitude.
+/// ⚠️ **Not a measured value, and the reason it was four is gone** — it was
+/// that nothing ordered the interior nodes. What it answers is "no budget of
+/// any kind was named" and nothing else; moving it wants the instrument every
+/// other search parameter gets.
 const DEFAULT_DEPTH: Depth = 4;
 
 /// How many more of its own moves the engine assumes the game will last, when
@@ -639,8 +640,9 @@ impl<C: Clock> NegamaxSearcher<C> {
     /// Without this a fixed-depth material search believes whatever the last
     /// ply happened to leave on the board — the horizon effect.
     ///
-    /// **It searches captures, and nothing else** — deliberately unpruned.
-    /// ⚠️ It is therefore blind to と金作り, a large material event.
+    /// **Out of check it searches captures and nothing else, deliberately
+    /// unpruned**; in check it searches every evasion, captures first. ⚠️ It
+    /// is therefore blind to と金作り, a large material event.
     ///
     /// ⚠️ **Two imprecisions kept, and neither is confined to one branch.**
     ///
@@ -1107,6 +1109,13 @@ mod tests {
     /// line is replayed into a game the test builds itself and the final
     /// position must have no legal move. Naming a move instead would be
     /// asserting shunsai's unspecified generation order.
+    fn assert_mate_in(args: &str, plies: i64) {
+        let (_, lines) = run(args, depth(u32::try_from(plies).expect("a short mate")));
+        let last = lines.last().expect("the search reported something");
+        assert_eq!(field(last, "mate"), plies, "{last}");
+        assert_mate_is_real(args, last, plies);
+    }
+
     /// Two plies on from the drop-heavy middlegame, reached by rinsai's own
     /// search: **root move 0's subtree outlasts a poll interval here**, and
     /// the three tests below cannot fail without that. What says so when it
@@ -1134,20 +1143,15 @@ mod tests {
     /// The property [`RELIEF_FIXTURE`] is chosen for.
     ///
     /// Sabotage: give root move 0 `budget` rather than `first_move` and all
-    /// three tests fail here, before reaching an assertion of their own.
+    /// three tests fail on this path. ⚠️ The panic is [`relieved_nodes`]'s
+    /// `expect`, not the assertion below: under that mutation the search
+    /// publishes no line at all, so this helper's own message never prints.
     fn assert_the_relief_spans_a_poll() {
         let relieved = relieved_nodes();
         assert!(
             relieved > i64::try_from(POLL_INTERVAL_NODES).expect("fits"),
             "root move 0 is too cheap to poll inside: {relieved}"
         );
-    }
-
-    fn assert_mate_in(args: &str, plies: i64) {
-        let (_, lines) = run(args, depth(u32::try_from(plies).expect("a short mate")));
-        let last = lines.last().expect("the search reported something");
-        assert_eq!(field(last, "mate"), plies, "{last}");
-        assert_mate_is_real(args, last, plies);
     }
 
     /// The proving half: `line`'s principal variation is `plies` long, playable
@@ -1675,11 +1679,13 @@ mod tests {
         );
     }
 
-    /// The explosion tripwire. Quiescence with no ordering, no SEE and no delta
-    /// pruning is the widest it will ever be.
+    /// The explosion tripwire.
     ///
-    /// The ceiling is measured and loose on purpose: it catches
-    /// an unbounded recursion, not a number every future patch must update.
+    /// The ceiling is measured and loose on purpose: it catches an unbounded
+    /// recursion, not a number every future patch must update. ⚠️ It searches
+    /// the same position and depth as `the_transposition_move_is_searched_first`
+    /// under a far tighter ceiling, so a runaway quiescence reddens both and
+    /// that one names the wrong cause.
     #[test]
     fn quiescence_is_bounded_on_the_drop_heavy_fixture() {
         let (_, lines) = run(
@@ -2143,10 +2149,18 @@ mod tests {
     ///
     /// A ceiling with room on both sides, like
     /// [`quiescence_is_bounded_on_the_drop_heavy_fixture`]. **The fixture is
-    /// load-bearing** — the ordering is worth about a percent at the initial
-    /// position and about half the tree here.
+    /// load-bearing** — the transposition move is worth almost nothing at the
+    /// initial position and enough here to bound.
     ///
-    /// Sabotage: drop the `buf.swap`, leaving `order_from` where it is.
+    /// Sabotage, either way of removing the ordering: drop the `buf.swap` and
+    /// leave `order_from` where it is, or delete the whole `hit.mv` block so
+    /// that `order_from` stays at `base`.
+    ///
+    /// ⚠️ **It does not catch the transposition move being *demoted* rather
+    /// than removed** — ordering from `base` instead of `order_from`, which is
+    /// what the ⚠️ at the call site forbids. That mutation costs too little
+    /// here to separate from a ceiling any future patch can live under, and
+    /// what moves for it is `bench`.
     #[test]
     fn the_transposition_move_is_searched_first() {
         let (_, lines) = run(
@@ -2155,7 +2169,7 @@ mod tests {
         );
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 560_000,
+            field(last, "nodes") < 500_000,
             "the transposition move is not being tried first: {last}"
         );
     }

@@ -87,14 +87,21 @@ own SPRT.
 
 ### Why is a capture's ordering key a pair rather than one scaled number?
 
-Because the multiplier the conventional single number needs is not one anybody
-can defend here. Folding "take with the cheapest piece" into the same integer
-as "win the most material" needs a scale above the dearest attacker divided by
-the smallest gap two capture gains can have, and both halves of that ratio are
-properties of the evaluation table — which E3 replaces wholesale. A pair states
-the priority instead of encoding it, and
-`the_attacker_never_outranks_the_material` checks it over every (victim,
-attacker, promote) triple rather than over the ones somebody thought of.
+Because the pair makes the priority a property of the *type* rather than of a
+constant. Folding "take with the cheapest piece" into the same integer as "win
+the most material" needs a scale above the dearest attacker divided by the
+smallest gap two capture gains can have. That ratio is computable from today's
+table and a scale can be chosen — but both halves of it are properties of the
+table, which E3 replaces wholesale, and a scale that quietly stops being large
+enough reverses orderings with nothing to say so. `(i32, i32)` compares its
+first element first, so there is no scale to get wrong and nothing to re-derive
+when the table changes.
+
+⚠️ **There was a test here claiming to check that, and it could not fail** —
+`if left.0 > right.0 { assert!(left > right) }` over tuples is a restatement of
+lexicographic `Ord`, true for any values at all. It is deleted rather than
+repaired: the guarantee is the type's, and a test of it is a test of the
+standard library.
 
 ### Why doesn't quiescence probe the transposition table?
 

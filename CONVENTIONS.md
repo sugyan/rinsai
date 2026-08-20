@@ -255,8 +255,10 @@ committed bench position set, which is where the licensing rule bites hardest.
   in the first one separates the balance filter's two possible rules**, at any
   cap tried. Its one game was chosen for a position that does.
 - **The mate-in-1..5 ladder, both repetition fixtures and the move-ordering
-  fixture are our own construction**, built for these tests and verified by
-  searching them. ⚠️ A composed 詰将棋 is not covered by the argument above:
+  fixtures are our own construction**, built for these tests — the first two
+  families verified by searching them, the ordering boards by the properties
+  their own fixture asserts. ⚠️ A composed 詰将棋 is not covered by the
+  argument above:
   the argument is that a *position* is a fact about a board rather than an
   expression, and a problem set is exactly the case where that stops being
   true. So the suite constructs its own, the way the licensing rule requires
