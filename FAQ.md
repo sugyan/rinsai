@@ -5,8 +5,9 @@ someone actually asks; if an answer stops being true, fix the answer — `git lo
 holds the old one, the pull requests hold what happened, and `gh issue list`
 holds what is next.
 
-**A measurement is written once, here or beside the rule it justifies, never
-both.**
+**A measurement is written once** — here, beside the rule it justifies, or in
+[STRENGTH.md](./STRENGTH.md) when producing it again would mean playing games.
+Never in two of them.
 
 ## Route and repository
 

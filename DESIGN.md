@@ -49,6 +49,7 @@ rinsai/
 ├── DESIGN.md              # this file: the plan
 ├── FAQ.md                 # why it is this way and not that way
 ├── CONVENTIONS.md         # what is frozen, by subject
+├── STRENGTH.md            # what the games said: SPRT verdicts, the ladder
 ├── README.md              # what it is, and the name
 ├── NETS.md                # evaluation-file registry                    (E3)
 ├── Cargo.toml             # [workspace]
@@ -87,9 +88,9 @@ An entry marked with a phase arrives then; everything else exists today.
 
 | Artifact | Where it lives | What is committed instead |
 |---|---|---|
-| Evaluation networks | **GitHub Releases**, named by content hash | `NETS.md`: hash → training run → SPRT result → URL |
+| Evaluation networks | **GitHub Releases**, named by content hash | `NETS.md`: hash → training run → URL, and a pointer to the `STRENGTH.md` entry rather than a second copy of its numbers |
 | Self-play data | **Object storage** | the shard manifest: generator rev, seed, position count, opening set, label depth, checksum |
-| Game records, SPRT logs | local + object storage | positions the engine misplayed, as test fixtures |
+| Game records, SPRT logs | local + object storage | `STRENGTH.md`: the verdict and the conditions it was reached under, plus positions the engine misplayed, as test fixtures |
 
 A `halfkp_256x2-32-32` network is almost entirely its feature transformer (125,388 × 256 × int16, 61 MiB), and E3–E4 produce dozens across generations; self-play data runs to tens of GB per generation. Neither belongs in git. The registry and the manifests do: they are the provenance chain that the pre-release scan and a WCSC appeal document both need. **The ledger is the artifact that has to be version-controlled — the weights are not.**
 
