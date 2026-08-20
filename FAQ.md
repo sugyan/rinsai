@@ -66,16 +66,21 @@ effect reintroduced two plies down.
 
 ### Why is `QS_MAX_CHECK_PLIES` 2?
 
-Measured, on the drop-heavy fixture at depth 4: 0 checks costs 30.8 M nodes
-**and is wrong** — it evaluates while in check and misses a mate one ply away.
-1 costs 22.1 M. **2 costs 7.0 M.** 4 costs 7.7 M.
+It is the cheapest cap that is also correct, and ⚠️ **the cost is not monotone
+in the cap**: measured on the drop-heavy fixture at depth 4, one checked ply
+costs about three times what two do, and four buys nothing over two. Resolving
+a check returns a score the search above can cut on, while refusing to resolve
+it returns a number that defeats pruning for the rest of the tree. "Search
+less, spend less" is not safe anywhere near a check.
 
-⚠️ **Two checked plies cost a third of what one costs**, so the cost is not
-monotone in the cap: resolving a check returns a score the search above can cut
-on, while refusing to resolve it returns a number that defeats pruning for the
-rest of the tree. "Search less, spend less" is not safe anywhere near a check.
-Two is the measured minimum that is also correct; E1's futility item owns
-revisiting it with an SPRT.
+⚠️ Zero is not on that scale at all — it is *wrong*, evaluating while in check
+and missing a mate one ply away.
+
+The node counts behind that ordering are not written down, because every
+ordering and pruning patch moves them and a stale table is worse than none:
+change the constant, run `bench` and read the drop-heavy position's count to
+re-derive the sweep in a minute. E1's futility item owns revisiting the
+constant with an SPRT.
 
 ### Why did TT move ordering land with the table rather than at E1?
 
