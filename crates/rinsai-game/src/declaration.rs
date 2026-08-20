@@ -1,4 +1,9 @@
-//! 入玉宣言 (the 27-point rule): whether a declaration would be a win.
+//! 入玉宣言: whether a declaration would be a win, under CSA's 宣言法 — the
+//! 27-point rule `bestmove win` and `%KACHI` mean.
+//!
+//! ⚠️ Not the 24-point rule professional games are adjudicated by. That one is
+//! agreed to rather than declared, counts every piece a side holds rather than
+//! the zone, and can end in a draw; nothing here answers it.
 //!
 //! Counted here from the board and the hand, because `shogi_legality_lite` has
 //! no declaration surface to ask.
