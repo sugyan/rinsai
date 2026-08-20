@@ -7,10 +7,9 @@ games.** That is the one kind of measurement a checkout cannot reproduce — it
 needs two binaries and hours of machine time — so it is the one kind that has
 to be written down rather than re-run.
 
-Everything a `cargo` command reproduces stays out. `bench`'s node counts are
-frozen in its own `EXPECTED`, because a baseline has to be executable to be a
-regression test; a sweep somebody can repeat in a minute is recorded as how to
-repeat it. ⚠️ **Node count is not an instrument for strength**, so a tree that
+Everything a `cargo` command reproduces stays out — `bench`'s node counts are
+frozen in its own `EXPECTED`, and a sweep somebody can repeat in a minute is
+recorded as how to repeat it. ⚠️ **Node count is not an instrument for strength**, so a tree that
 got smaller is not an entry here.
 
 **A loss is an entry too**, and so is a run that turned out not to measure what
@@ -19,8 +18,10 @@ it claimed. Both are what stop the same ground being covered twice.
 **What an entry carries**, because a number without its conditions cannot be
 compared against another one: the two revs and their `bench` fingerprints, the
 control and the opening set, the bounds, and the counts the run stopped on.
-⚠️ **Never the wall clock** — a run on a machine that was not quiet times
-nothing, and only a fixed-node result is machine-independent.
+⚠️ **Never how long the run took.** A machine that was not quiet times
+nothing, and only a fixed-node result is machine-independent. A *time control*
+is different: it is one of the conditions, and a gate played under one records
+it like any other.
 
 ---
 
@@ -39,14 +40,14 @@ pent [0, 0, 0, 2, 7] | llr +2.643 | score 94.44% (elo +492.2 est)
 |---|---|
 | candidate | `1aab003`, review fixes in `4cc159b`, merged as `060a197` |
 | baseline | `ddab7d1` |
-| `bench` | 474 941 both — the candidate's own count is unchanged by the fixes |
+| `bench` | candidate 474 941, before and after the review fixes — ⚠️ the baseline's was not recorded, and is re-derived by building `ddab7d1` |
 | control | `--nodes 1000000 --gain`, α = β = 0.05 |
 | openings | `openings-v3.sfen`, seed 1, nine distinct openings for nine pairs |
 | abnormal | none: sixteen checkmates and two 千日手 |
 
-The bound was crossed at eight pairs, at +3.917; pair 8 was already in flight
-and landed afterwards, and the LLR is not monotone over the accumulated counts.
-The verdict is the decision that stopped the run, not a recomputation.
+The bound was crossed at +3.917 while the final pair was still in flight; it
+landed afterwards, and the LLR is not monotone over the accumulated counts. The
+verdict is the decision that stopped the run, not a recomputation.
 
 ⚠️ **What it says is that the true difference is at least 5 elo at α = 0.05. It
 does not say the difference is 492** — that is a point estimate from nine pairs,

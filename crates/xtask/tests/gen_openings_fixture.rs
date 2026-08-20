@@ -121,11 +121,10 @@ fn a_different_seed_selects_a_different_subset() {
     );
 }
 
-/// ⚠️ **The corpus above exercises none of the balance filter's own rule.**
-/// Its searches reach the node cap often enough, but on every one of its
-/// candidates the interrupted iteration's score and the last completed one
-/// agree — so reading either gives the same file, and the golden test is
-/// blind to which is read. Divergence is rare (six of `openings-v1`'s 256
+/// ⚠️ **The corpus above exercises none of the balance filter's own rule**,
+/// and not for the reason it looks like: at its 2 000 000-node cap none of its
+/// searches is interrupted at all, so every candidate's two readings are the
+/// same reading and the golden test cannot see which one is used. Divergence is rare (six of `openings-v1`'s 256
 /// lines at the frozen settings), so it has to be chosen rather than hoped
 /// for; this corpus is one floodgate game picked because its ply-12 position
 /// diverges, and the window is pinned to that ply so nothing else competes.
@@ -170,7 +169,7 @@ fn a_score_from_an_interrupted_iteration_does_not_decide_a_candidate() {
         .find(|l| l.starts_with("startpos"))
         .expect("the kept line carries its position");
     let reading = BalanceSearch::new(&cfg)
-        .score(&cfg, args)
+        .score(args)
         .expect("the position the pipeline just searched");
     let (last_depth, last_is_mate, last_cp) = reading
         .last
@@ -182,16 +181,9 @@ fn a_score_from_an_interrupted_iteration_does_not_decide_a_candidate() {
          again, or pick another position"
     );
     assert!(
-        !last_is_mate && last_cp.abs() > cfg.balance_cp_max,
-        "the interrupted iteration now scores {last_cp}, inside the balance window, so both \
-         rules keep this candidate and the assertion above decides nothing"
-    );
-    let (completed_is_mate, completed_cp) = reading
-        .completed
-        .expect("the run above kept the line, so an iteration finished");
-    assert!(
-        !completed_is_mate && completed_cp.abs() <= cfg.balance_cp_max,
-        "the finished iteration scores {completed_cp}, outside the balance window it was kept on"
+        last_is_mate || last_cp.abs() > cfg.balance_cp_max,
+        "the interrupted iteration now scores {last_cp}, which the filter would keep, so both \
+         readings agree and the assertion below decides nothing"
     );
 
     assert!(

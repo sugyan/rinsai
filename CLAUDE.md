@@ -70,9 +70,7 @@ Nothing is adopted on argument: `patch → bench → fixed-node paired games →
   infrastructure work is gated by its own deterministic suites (scenario,
   conformance, parity, `bench`) and may land batched.
 - **Record the rejected numbers too.** A measured loss is a result worth
-  keeping. Write a measurement **once**, beside the thing it justifies — and
-  when the thing it justifies is a patch rather than a line of code, that
-  beside is [STRENGTH.md](./STRENGTH.md), which carries the admission test.
+  keeping. Write a measurement **once**, beside the thing it justifies.
 - **Timing needs a quiet machine.** A fixed-node game between deterministic
   engines is decided by the opening and the budgets, so that queue may run
   beside other work. Timing measurements and real-time SPRTs may not.

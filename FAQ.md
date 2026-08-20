@@ -67,21 +67,24 @@ effect reintroduced two plies down.
 
 ### Why is `QS_MAX_CHECK_PLIES` 2?
 
-It is the cheapest cap that is also correct, and ⚠️ **the cost is not monotone
-in the cap**: measured on the drop-heavy fixture at depth 4, one checked ply
-costs about three times what two do, and four buys nothing over two. Resolving
-a check returns a score the search above can cut on, while refusing to resolve
-it returns a number that defeats pruning for the rest of the tree. "Search
-less, spend less" is not safe anywhere near a check.
+Because E0 measured it as the cheapest cap that is also correct — and ⚠️ **that
+measurement no longer holds.** Re-derived at HEAD on the drop-heavy fixture at
+depth 4, the cost is now *monotone* in the cap and one checked ply is cheaper
+than two, where at E0 it was three times dearer. The ordering inverted when the
+interior nodes and quiescence gained move ordering.
 
-⚠️ Zero is not on that scale at all — it is *wrong*, evaluating while in check
-and missing a mate one ply away.
+What survives is only this: **zero is wrong rather than cheap.** It evaluates
+while in check and misses a mate one ply away, and no cost makes that a
+trade. Every cap above it resolves checks; which one is best is now an open
+question, and one the numbers currently answer as "fewer than two".
 
-The node counts behind that ordering are not written down, because every
-ordering and pruning patch moves them and a stale table is worse than none:
-change the constant, run `bench` and read the drop-heavy position's count to
-re-derive the sweep in a minute. E1's futility item owns revisiting the
-constant with an SPRT.
+E1's futility item owns settling it, with an SPRT rather than a node count.
+
+⚠️ **Re-derive before quoting any ordering from this answer.** The counts are
+not written here because every ordering and pruning patch moves them — change
+the constant, run `bench`, read the drop-heavy position — and the previous
+version of this answer was falsified by a patch that landed two commits after
+it was written.
 
 ### Why did TT move ordering land with the table rather than at E1?
 
@@ -91,11 +94,11 @@ first was worth between 1.00× and **14.02×** across five fixtures and four
 depths, super-linearly in depth.
 
 ⚠️ **That range is E0's and does not hold today.** With MVV-LVA and killers
-ordering the interior nodes, taking the stored move's front away *shrinks* the
-tree on five of seven fixture-and-depth pairs and grows it on two. Node count
-is not strength, so this is not an argument for dropping the ordering — but it
-is why the tripwire that guards it had to change fixture, and it is the sort of
-question E1 answers with an SPRT rather than with a count.
+ordering the interior nodes, taking the stored move's front away no longer
+reliably grows the tree — on several of the positions `bench` carries it
+*shrinks* it. Node count is not strength, so this is not an argument for
+dropping the ordering; it is why the tripwire that guards it had to change
+fixture, and the sort of question E1 answers with an SPRT rather than a count.
 
 ### Why is a capture's ordering key a pair rather than one scaled number?
 
@@ -259,11 +262,11 @@ class of bug SPRT reads as "that patch was bad". Of the six surfaces it put on
 probation, five gained a named caller and stayed; `Score::NONE`'s never turned
 up and it went.
 
-⚠️ **A named caller that does not turn up is a result too.** `MAX_PLY`'s doc
+⚠️ **A named caller that does not turn up is a result too.** This file
 predicted per-ply state would gain a static evaluation; quiescence computes its
-stand-pat as a local and nothing reads it again. The `Stack` struct the same
-doc predicted did turn up, when E1's killers gave the search a second per-ply
-field to keep beside the line.
+stand-pat as a local and nothing reads it again. The `Stack` struct it also
+predicted did turn up, when E1's killers gave the search a second per-ply field
+to keep beside the line.
 
 ## Time control
 

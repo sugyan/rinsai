@@ -92,8 +92,10 @@ const MAX_DEPTH: Depth = MAX_PLY as Depth - 1;
 /// plies down. A check-evasion chain has no such argument: an evasion may give
 /// check back, need not be a capture, and its move list is *every* legal move
 /// including drops. Left uncounted those chains dominate the whole search.
-/// ⚠️ The measured minimum that is also correct, and the cost is **not**
-/// monotone in the cap.
+/// ⚠️ **Two was E0's cheapest-and-correct, and re-measuring says it is not any
+/// more** — once the interior nodes and quiescence gained ordering, the cost
+/// went monotone in the cap and one checked ply became cheaper than two.
+/// E1's futility item owns re-deciding it.
 ///
 /// ⚠️ Evaluating a position that is still in check is a known lie, bounded by
 /// how many times a line may be checked rather than by how long it is.
@@ -137,7 +139,7 @@ impl Neg for Window {
 ///
 /// ⚠️ **An exact score *strictly inside* the window may not be returned**, and
 /// the reason is the principal variation rather than the score: cutting returns
-/// after [`NegamaxSearcher::negamax`]'s `pv[ply].clear()` and before its move
+/// after [`NegamaxSearcher::negamax`]'s `stack[ply].pv.clear()` and before its move
 /// loop, so the parent raises alpha on an empty line. Every other arm leaves the
 /// parent failing high — its line then never surfaces — or untouched.
 fn cuts(hit: &Hit, window: &Window) -> bool {
@@ -268,10 +270,11 @@ impl<'a> Budget<'a> {
 /// What one ply of the search carries from one of its nodes to the next.
 ///
 /// ⚠️ **Cleared at the start of every search**, unlike the transposition
-/// table, which outlives a `go` on purpose. Dropping that clear reddens
-/// `usinewgame_empties_the_table`, which compares two searches of one position
-/// and would find the second ordering its quiet moves differently.
-#[derive(Debug, Default)]
+/// table, which outlives a `go` on purpose. ⚠️ **Dropping that clear reddens
+/// `usinewgame_empties_the_table` and `resizing_the_hash_empties_the_table`,
+/// and both blame the transposition table in their message** — neither names
+/// the per-ply state, so a regression here is reported as something else.
+#[derive(Debug)]
 struct Stack {
     /// The principal variation from this ply downwards.
     ///
@@ -284,13 +287,28 @@ struct Stack {
     /// The quiet moves that most recently cut a node off *at this ply*, newest
     /// first.
     ///
-    /// Quiet, because a capture is already ranked ahead of every quiet move
-    /// and putting one here would only displace a capture with a capture.
+    /// Quiet, because [`MoveBuf::order_killers`] is given the index where the
+    /// non-captures begin: a capture stored here would be looked for only
+    /// among the quiet moves, where it cannot be.
     ///
     /// ⚠️ **A killer is a whole [`Move`], and a drop is one of them.** Chess
     /// indexes this kind of table by `(from, to)`; a drop has no `from`, so
     /// that shape cannot represent half of shogi's quiet moves.
     killers: [Option<Move>; 2],
+}
+
+impl Stack {
+    /// ⚠️ **Hand-written rather than derived**, because `Default` would give
+    /// the line a capacity of zero and put the growth back on the alpha-raise
+    /// path — the allocation [`MoveBuf::new`] and the searcher's `path` both
+    /// take up front for the same reason. Nothing measures it, so a derive
+    /// would lose it silently.
+    fn new() -> Self {
+        Self {
+            pv: Vec::with_capacity(MAX_PLY),
+            killers: [None; 2],
+        }
+    }
 }
 
 /// The searcher.
@@ -384,7 +402,7 @@ impl<C: Clock> NegamaxSearcher<C> {
         Self {
             root_moves: Vec::with_capacity(MAX_LEGAL_MOVES),
             buf: MoveBuf::new(),
-            stack: (0..=MAX_PLY).map(|_| Stack::default()).collect(),
+            stack: (0..=MAX_PLY).map(|_| Stack::new()).collect(),
             tt: Table::new(mb),
             path: Vec::with_capacity(MAX_PLY),
             nodes: 0,
@@ -406,9 +424,9 @@ impl<C: Clock> NegamaxSearcher<C> {
     ///
     /// Returns `None` when the iteration produced nothing usable — every root
     /// move was abandoned before it finished — in which case the previous
-    /// iteration's [`Self::pv`] and best move stand. `Some` therefore carries
-    /// the promise that `pv[0]` is fresh and non-empty, which is what lets the
-    /// caller read `pv[0][0]` without checking.
+    /// iteration's [`Self::stack`] line and best move stand. `Some` therefore
+    /// carries the promise that `stack[0].pv` is fresh and non-empty, which is
+    /// what lets the caller read `stack[0].pv[0]` without checking.
     ///
     /// ⚠️ **`window` must be open, and the assertion below is load-bearing
     /// rather than defensive.** What it returns `None` on is "no root move
@@ -606,11 +624,11 @@ impl<C: Clock> NegamaxSearcher<C> {
         // a question the table has already answered better.
         let quiets_from = self.buf.order_captures(order_from, board);
         // After the captures: a killer is a quiet move, and a capture that
-        // wins material is the better guess before anything a sibling
-        // refuted. ⚠️ **Ordering them from `base` instead is not the same
-        // patch and is not obviously worse** — it takes the drop-heavy fixture
-        // from 253 847 nodes to 142 586 — so it is a separate question with a
-        // separate SPRT, not a mistake this line is guarding against.
+        // wins material is the better guess before anything a sibling refuted.
+        // ⚠️ **`base` is not an alternative that can simply be tried here** —
+        // `order_killers` rotates its find to `from`, so from `base` a killer
+        // displaces the transposition move, which is the demotion the ⚠️ above
+        // forbids and which `the_transposition_move_is_searched_first` catches.
         self.buf.order_killers(quiets_from, self.stack[ply].killers);
 
         let mut best = -Score::INFINITE;
@@ -822,7 +840,7 @@ impl<C: Clock> NegamaxSearcher<C> {
 
     /// Records `mv` as the best move at `ply`, followed by the line below it.
     ///
-    /// `split_at_mut` is the answer to needing `pv[ply]` and `pv[ply + 1]` at
+    /// `split_at_mut` is the answer to needing `stack[ply]` and `stack[ply + 1]` at
     /// once. The copy runs only when alpha is raised, not per node.
     fn update_pv(&mut self, ply: usize, mv: Move) {
         let (head, tail) = self.stack.split_at_mut(ply + 1);
@@ -1364,7 +1382,7 @@ mod tests {
 
     /// A published line stops at the repeating move: there is no game after it.
     ///
-    /// Sabotage: drop `pv[ply].clear()` from `child`'s repetition arm and the
+    /// Sabotage: drop `stack[ply].pv.clear()` from `child`'s repetition arm and the
     /// line keeps whatever a sibling left below that ply, publishing a
     /// variation that runs past the end of the game.
     #[test]
@@ -1869,7 +1887,7 @@ mod tests {
     ///
     /// Sabotage: in **[`Self::qsearch`]**, score a mated node
     /// `Score::mated_in(0)` instead of `mated_in(ply)` and the announced
-    /// distance is wrong, or drop its `pv[ply].clear()` and a stale line from
+    /// distance is wrong, or drop its `stack[ply].pv.clear()` and a stale line from
     /// an earlier subtree hangs off the mate. Making *either* mutation in
     /// [`Self::negamax`] instead changes nothing here or anywhere.
     #[test]
@@ -1890,12 +1908,12 @@ mod tests {
     /// because no dialogue there gets past depth 1.
     ///
     /// Sabotage: append the child line before the move in `update_pv`, or drop
-    /// **[`Self::qsearch`]'s** `pv[ply].clear()`. Not [`Self::negamax`]'s —
+    /// **[`Self::qsearch`]'s** `stack[ply].pv.clear()`. Not [`Self::negamax`]'s —
     /// that copy has no observable effect.
     ///
     /// **The replay is the part with teeth; the head comparison at the end
-    /// is nearly free.** `best` is `self.pv[0][0]` and the printed line is
-    /// `&self.pv[0]`, read one statement apart, so a reversed `update_pv` keeps
+    /// is nearly free.** `best` is `self.stack[0].pv[0]` and the printed line is
+    /// `&self.stack[0].pv`, read one statement apart, so a reversed `update_pv` keeps
     /// them equal. Kept because it still fails the day `search` answers with
     /// something other than the head of the line it published.
     #[test]
@@ -2209,14 +2227,11 @@ mod tests {
     /// smaller. This is one of the two fixtures measured where it still costs,
     /// and it costs more at seven plies than at six.
     ///
-    /// Sabotage, either way of removing the ordering — drop the `buf.swap` and
-    /// leave `order_from` where it is, or delete the whole `hit.mv` block:
-    /// both take this fixture from 759 802 nodes to 1 018 032, and both go red
-    /// on the ceiling below.
-    ///
-    /// ⚠️ **It does not catch the transposition move being *demoted* rather
-    /// than removed** — ordering from `base` instead of `order_from`, which is
-    /// what the ⚠️ at the call site forbids.
+    /// Sabotage, from a baseline of 759 802 nodes: deleting the whole `hit.mv`
+    /// block gives 1 018 032, and dropping only the `buf.swap` while leaving
+    /// `order_from` at `base + 1` gives 1 152 630. Both go red on the ceiling
+    /// below. Demoting the stored move rather than removing it — ordering
+    /// captures from `base` — gives 986 187 and goes red too.
     #[test]
     fn the_transposition_move_is_searched_first() {
         let (_, lines) = run("startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c", depth(7));
