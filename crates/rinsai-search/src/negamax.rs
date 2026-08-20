@@ -37,9 +37,10 @@ use crate::tt::{Bound, DEFAULT_HASH_MB, Hit, Table};
 
 /// How deep a `go` that named no budget at all searches.
 ///
-/// Four rather than six because there is no interior move ordering yet, so the
-/// tree is close to a full minimax and each further pair of plies costs an
-/// order of magnitude.
+/// ⚠️ **Not a measured value, and the reason it was four is gone** — it was
+/// that nothing ordered the interior nodes. What it answers is "no budget of
+/// any kind was named" and nothing else; moving it wants the instrument every
+/// other search parameter gets.
 const DEFAULT_DEPTH: Depth = 4;
 
 /// How many more of its own moves the engine assumes the game will last, when
@@ -566,11 +567,18 @@ impl<C: Clock> NegamaxSearcher<C> {
         // ⚠️ **Membership in the list this node generated is the legality
         // check**, and the only one: a key collision hands back a move from
         // another position, and shunsai's `do_move` validates nothing.
+        let mut order_from = base;
         if let Some(mv) = hit.and_then(|hit| hit.mv)
             && let Some(index) = (base..self.buf.len()).find(|&i| self.buf.get(i) == mv)
         {
             self.buf.swap(base, index);
+            order_from = base + 1;
         }
+        // ⚠️ **From `order_from`, so the transposition move keeps the front it
+        // was just given.** Ordering the whole range instead would hand that
+        // front to whichever capture wins most, which is the cheaper answer to
+        // a question the table has already answered better.
+        self.buf.order_captures(order_from, board);
 
         let mut best = -Score::INFINITE;
         // Only a move that raised alpha, because only such a move was proved
@@ -632,8 +640,9 @@ impl<C: Clock> NegamaxSearcher<C> {
     /// Without this a fixed-depth material search believes whatever the last
     /// ply happened to leave on the board — the horizon effect.
     ///
-    /// **It searches captures, and nothing else** — deliberately unordered and
-    /// unpruned. ⚠️ It is therefore blind to と金作り, a large material event.
+    /// **Out of check it searches captures and nothing else, deliberately
+    /// unpruned**; in check it searches every evasion, captures first. ⚠️ It
+    /// is therefore blind to と金作り, a large material event.
     ///
     /// ⚠️ **Two imprecisions kept, and neither is confined to one branch.**
     ///
@@ -713,6 +722,9 @@ impl<C: Clock> NegamaxSearcher<C> {
             best = stand_pat;
             base = self.buf.generate_captures(board);
         }
+        // Both branches: the evasion list holds captures too, and they are
+        // still the moves worth trying first.
+        self.buf.order_captures(base, board);
 
         // The board this node must be handed back in; see the twin in `negamax`.
         let key = board.key();
@@ -1102,6 +1114,44 @@ mod tests {
         let last = lines.last().expect("the search reported something");
         assert_eq!(field(last, "mate"), plies, "{last}");
         assert_mate_is_real(args, last, plies);
+    }
+
+    /// Two plies on from the drop-heavy middlegame, reached by rinsai's own
+    /// search: **root move 0's subtree outlasts a poll interval here**, and
+    /// the three tests below cannot fail without that. What says so when it
+    /// stops holding is [`assert_the_relief_spans_a_poll`].
+    const RELIEF_FIXTURE: &str = "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL \
+                                  w RGgsn5p 1 moves N*3b R*6g";
+
+    /// How far the relief carries a search under the tightest limit there is.
+    /// **Not root move 0's subtree exactly**: a poll fires only at an exact
+    /// multiple of [`POLL_INTERVAL_NODES`], so the root moves after it run on
+    /// until one of them lands on the next multiple, and this is that
+    /// rounded-up figure.
+    fn relieved_nodes() -> i64 {
+        let (_, lines) = run(
+            RELIEF_FIXTURE,
+            Limits {
+                depth: Some(64),
+                nodes: Some(1),
+                ..Limits::default()
+            },
+        );
+        field(lines.last().expect("an iteration finished"), "nodes")
+    }
+
+    /// The property [`RELIEF_FIXTURE`] is chosen for.
+    ///
+    /// Sabotage: give root move 0 `budget` rather than `first_move` and all
+    /// three tests fail on this path. ⚠️ The panic is [`relieved_nodes`]'s
+    /// `expect`, not the assertion below: under that mutation the search
+    /// publishes no line at all, so this helper's own message never prints.
+    fn assert_the_relief_spans_a_poll() {
+        let relieved = relieved_nodes();
+        assert!(
+            relieved > i64::try_from(POLL_INTERVAL_NODES).expect("fits"),
+            "root move 0 is too cheap to poll inside: {relieved}"
+        );
     }
 
     /// The proving half: `line`'s principal variation is `plies` long, playable
@@ -1629,11 +1679,13 @@ mod tests {
         );
     }
 
-    /// The explosion tripwire. Quiescence with no ordering, no SEE and no delta
-    /// pruning is the widest it will ever be.
+    /// The explosion tripwire.
     ///
-    /// The ceiling is measured and loose on purpose: it catches
-    /// an unbounded recursion, not a number every future patch must update.
+    /// The ceiling is measured and loose on purpose: it catches an unbounded
+    /// recursion, not a number every future patch must update. ⚠️ It searches
+    /// the same position and depth as `the_transposition_move_is_searched_first`
+    /// under a far tighter ceiling, so a runaway quiescence reddens both and
+    /// that one names the wrong cause.
     #[test]
     fn quiescence_is_bounded_on_the_drop_heavy_fixture() {
         let (_, lines) = run(
@@ -1650,22 +1702,17 @@ mod tests {
     /// The first root move is never abandoned, so the answer is always a move
     /// the search actually looked at.
     ///
-    /// **The fixture is load-bearing**: root move 0's subtree has to outlast
-    /// a poll interval, or the poll never fires inside it and this test cannot
-    /// fail. `movetime 0` is the sharpest form of the question — the deadline
-    /// has already passed when the search starts.
+    /// `movetime 0` is the sharpest form of the question — the deadline has
+    /// already passed when the search starts.
     ///
-    /// Sabotage, verified on this fixture and on no other: pass `budget` rather
-    /// than `first_move` to root move 0 and it fails on both counts at once —
-    /// no `info` line at all, and the answer becomes whatever shunsai happened
-    /// to generate first.
+    /// Sabotage: give root move 0 `budget` rather than `first_move`. With the
+    /// precondition below taken away so that this test's own assertions are
+    /// reached, it fails on there being no `info` line at all.
     #[test]
     fn the_first_root_move_is_never_abandoned() {
-        // Two plies on from the drop-heavy fixture, found by searching its
-        // descendants for the most expensive depth-1 iteration.
-        let args = "sfen l6nl/6+Pgk/2np1S3/p1p1p2Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn4p 3";
+        assert_the_relief_spans_a_poll();
         let (best, lines) = run(
-            args,
+            RELIEF_FIXTURE,
             Limits {
                 movetime: Some(Duration::ZERO),
                 ..Limits::default()
@@ -1688,11 +1735,18 @@ mod tests {
     /// search would still answer, but only after finishing a root move nobody
     /// is waiting for. The bound is exact because the poll fires at exact
     /// multiples.
+    ///
+    /// Sabotage: replace [`Self::qsearch`]'s poll condition with `false` and
+    /// the count runs away from the interval.
+    ///
+    /// ⚠️ **Withdrawing the relief from root move 0 is caught by the
+    /// precondition below and not by the assertion here**, which stays green
+    /// under that mutation.
     #[test]
     fn stop_gets_through_the_first_root_move() {
-        let args = "sfen l6nl/6+Pgk/2np1S3/p1p1p2Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn4p 3";
+        assert_the_relief_spans_a_poll();
         let mut searcher = searcher();
-        let job = job(game(args), depth(64));
+        let job = job(game(RELIEF_FIXTURE), depth(64));
         job.signals.stop();
 
         let best = searcher.search(&job, &SilentSink);
@@ -1713,40 +1767,17 @@ mod tests {
     /// unlimited first iteration instead.
     ///
     /// Sabotage, both directions: give root move 0 `budget` rather than
-    /// `first_move`, or give `first_move` to every root move.
-    ///
-    /// ⚠️ **It is not the test that catches the poll being dropped from
-    /// `qsearch`.** That mutation goes red on
-    /// `a_deep_search_still_answers_a_node_limit`, whose bound is far tighter.
+    /// `first_move`, which fails the precondition below along with the two
+    /// tests above; or give `first_move` to every root move, which fails
+    /// `floor < whole` here and nowhere else.
     #[test]
     fn a_node_limit_is_honoured_inside_a_quiescence_subtree() {
-        // The same fixture as `the_first_root_move_is_never_abandoned`, and
-        // for the same reason.
-        let args = "sfen l6nl/6+Pgk/2np1S3/p1p1p2Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn4p 3";
-        // How far the relief carries the search when the limit is as tight as
-        // it can be. Not root move 0's subtree exactly: a poll fires only at
-        // an exact multiple of `POLL_INTERVAL_NODES`, so the root moves after
-        // it run on until one of them lands on the next multiple, and this is
-        // that rounded-up figure.
-        let (_, relieved) = run(
-            args,
-            Limits {
-                depth: Some(64),
-                nodes: Some(1),
-                ..Limits::default()
-            },
-        );
-        let floor = field(relieved.last().expect("an iteration finished"), "nodes");
+        assert_the_relief_spans_a_poll();
+        let floor = relieved_nodes();
         let poll = i64::try_from(POLL_INTERVAL_NODES).expect("fits");
-        // The property the fixture is chosen for: the relief has to cover more
-        // than one poll interval, or nothing about it is observable here.
-        assert!(
-            floor > poll,
-            "root move 0 is too cheap to poll inside: {floor}"
-        );
 
         // What the whole first iteration costs, unlimited.
-        let (_, unlimited) = run(args, depth(1));
+        let (_, unlimited) = run(RELIEF_FIXTURE, depth(1));
         let whole = field(unlimited.last().expect("an iteration finished"), "nodes");
         assert!(
             floor < whole,
@@ -1756,7 +1787,7 @@ mod tests {
         // Above the relief, so the limit is what stops this one.
         let limit = floor + poll;
         let (_, lines) = run(
-            args,
+            RELIEF_FIXTURE,
             Limits {
                 depth: Some(64),
                 nodes: Some(u64::try_from(limit).expect("positive")),
@@ -2118,16 +2149,27 @@ mod tests {
     ///
     /// A ceiling with room on both sides, like
     /// [`quiescence_is_bounded_on_the_drop_heavy_fixture`]. **The fixture is
-    /// load-bearing** — the ordering is worth nothing at the initial position,
-    /// and a great deal here.
+    /// load-bearing** — the transposition move is worth almost nothing at the
+    /// initial position and enough here to bound.
     ///
-    /// Sabotage: drop the `buf.swap`.
+    /// Sabotage, either way of removing the ordering: drop the `buf.swap` and
+    /// leave `order_from` where it is, or delete the whole `hit.mv` block so
+    /// that `order_from` stays at `base`.
+    ///
+    /// ⚠️ **It does not catch the transposition move being *demoted* rather
+    /// than removed** — ordering from `base` instead of `order_from`, which is
+    /// what the ⚠️ at the call site forbids. That mutation costs too little
+    /// here to separate from a ceiling any future patch can live under, and
+    /// what moves for it is `bench`.
     #[test]
     fn the_transposition_move_is_searched_first() {
-        let (_, lines) = run("startpos moves 2g2f 8c8d 2f2e 8d8e", depth(5));
+        let (_, lines) = run(
+            "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
+            depth(4),
+        );
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 3_000_000,
+            field(last, "nodes") < 500_000,
             "the transposition move is not being tried first: {last}"
         );
     }
@@ -2417,28 +2459,30 @@ mod tests {
     #[test]
     fn a_clock_free_budget_never_reads_the_clock() {
         // One read at entry, one per `info` line. Neither comes from a poll,
-        // and both are what the `info` line's `time` is built from.
-        let per_iteration = |limits, iterations| {
+        // and both are what the `info` line's `time` is built from. ⚠️ The
+        // count comes from the sink rather than from the depth asked for: how
+        // many iterations a *node* budget buys is a property of the tree, and
+        // pinning it here would put this test at the mercy of every ordering
+        // patch. That one line per iteration is published is
+        // `one_info_line_per_iteration`'s claim, not this one's.
+        let per_iteration = |limits| {
             let mut searcher = ticking(Duration::from_micros(20));
-            searcher.search(&job(game("startpos"), limits), &SilentSink);
+            let sink = Lines::default();
+            searcher.search(&job(game("startpos"), limits), &sink);
+            let published = u64::try_from(sink.take().len()).expect("fits");
+            assert!(published > 0, "{limits:?} published nothing to count");
             assert_eq!(
                 searcher.clock.reads(),
-                1 + iterations,
+                1 + published,
                 "{limits:?} read the clock from a poll"
             );
         };
-        per_iteration(depth(4), 4);
-        per_iteration(
-            Limits::default(),
-            u64::try_from(DEFAULT_DEPTH).expect("positive"),
-        );
-        per_iteration(
-            Limits {
-                nodes: Some(50_000),
-                ..Limits::default()
-            },
-            4,
-        );
+        per_iteration(depth(4));
+        per_iteration(Limits::default());
+        per_iteration(Limits {
+            nodes: Some(50_000),
+            ..Limits::default()
+        });
     }
 
     /// The delivery margin an operator set reaches the budget the search runs

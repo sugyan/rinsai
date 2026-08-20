@@ -28,6 +28,7 @@ mod game;
 mod info;
 mod moves;
 mod negamax;
+mod ordering;
 mod repetition;
 mod score;
 mod search;

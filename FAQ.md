@@ -85,6 +85,24 @@ across five fixtures and four depths, super-linearly in depth. MVV-LVA, killers
 and history stayed at E1 — those are interior-node heuristics and each wants its
 own SPRT.
 
+### Why is a capture's ordering key a pair rather than one scaled number?
+
+Because the pair makes the priority a property of the *type* rather than of a
+constant. Folding "take with the cheapest piece" into the same integer as "win
+the most material" needs a scale above the dearest attacker divided by the
+smallest gap two capture gains can have. That ratio is computable from today's
+table and a scale can be chosen — but both halves of it are properties of the
+table, which E3 replaces wholesale, and a scale that quietly stops being large
+enough reverses orderings with nothing to say so. `(i32, i32)` compares its
+first element first, so there is no scale to get wrong and nothing to re-derive
+when the table changes.
+
+⚠️ **There was a test here claiming to check that, and it could not fail** —
+`if left.0 > right.0 { assert!(left > right) }` over tuples is a restatement of
+lexicographic `Ord`, true for any values at all. It is deleted rather than
+repaired: the guarantee is the type's, and a test of it is a test of the
+standard library.
+
 ### Why doesn't quiescence probe the transposition table?
 
 It should, and E1 owns it. The conventional expectation — quiescence is 91–99%

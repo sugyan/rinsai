@@ -56,6 +56,23 @@ const HAND: [i32; PieceKind::NUM] = [
     0, 0, 0, 0, 0, 0, 0,
 ];
 
+/// What `kind` is worth standing on the board.
+///
+/// Caller: [`crate::ordering`], which ranks a capture by what it wins and by
+/// what wins it.
+pub(crate) fn board_value(kind: PieceKind) -> i32 {
+    BOARD[kind.array_index()]
+}
+
+/// What capturing a `kind` wins: its value on the board, plus its value in the
+/// captor's hand — **a promoted piece unpromotes when it is taken**, so a と金
+/// is won at a gold's board value and a pawn's hand value.
+///
+/// Caller: [`crate::ordering`].
+pub(crate) fn capture_gain(kind: PieceKind) -> i32 {
+    BOARD[kind.array_index()] + HAND[kind.unpromote().unwrap_or(kind).array_index()]
+}
+
 /// The material balance in centipawns, **from the side to move**.
 ///
 /// Positive is good for whoever is to move; a parent negates its child. ⚠️ No
@@ -273,8 +290,11 @@ mod tests {
     }
 
     /// Capturing gains the piece's board value **and** its unpromoted value in
-    /// hand — the one non-obvious consequence of the model, and the reason
-    /// と金 is worth more than a gold to take.
+    /// hand — the one non-obvious consequence of the model, and what
+    /// [`capture_gain`] exists to state once.
+    ///
+    /// Sabotage: return the difference rather than the sum from
+    /// [`capture_gain`].
     #[test]
     fn a_capture_is_worth_the_board_value_plus_the_hand_value() {
         // A black rook on 5f, a white silver directly above it on 5e.
@@ -292,9 +312,30 @@ mod tests {
         // `evaluate` is from the side to move, and that has changed hands, so
         // the gain to the capturing side is the sum rather than the difference.
         let gain = (-evaluate(&board)).get() - before.get();
-        assert_eq!(
-            gain,
-            BOARD[PieceKind::Silver.array_index()] + HAND[PieceKind::Silver.array_index()]
+        assert_eq!(gain, capture_gain(PieceKind::Silver));
+    }
+
+    /// The same, for a promoted victim: it goes to the hand unpromoted, so
+    /// taking a と金 wins less than taking the gold it moves like.
+    #[test]
+    fn a_promoted_piece_is_captured_into_the_hand_unpromoted() {
+        // A black rook on 5f, a white と金 directly above it on 5e.
+        let mut board = position("sfen 4k4/9/9/9/4+p4/4R4/9/9/4K4 b - 1");
+        let before = evaluate(&board);
+
+        let mv = Move::Normal {
+            from: Square::new(5, 6).expect("5f"),
+            to: Square::new(5, 5).expect("5e"),
+            promote: false,
+        };
+        assert!(is_legal(&board, mv), "the fixture's capture is legal");
+        board.do_move(mv);
+
+        let gain = (-evaluate(&board)).get() - before.get();
+        assert_eq!(gain, capture_gain(PieceKind::ProPawn));
+        assert!(
+            capture_gain(PieceKind::ProPawn) < capture_gain(PieceKind::Gold),
+            "a と金 stopped being cheaper to take than a gold"
         );
     }
 
