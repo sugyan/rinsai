@@ -104,9 +104,13 @@ audit reports this gate, 300 s where a later measurement quotes the same run by
 its flags (`--time-ms 300000 --byoyomi-ms 200`, 4 844 clocked moves). One of the
 two is wrong and the run itself is gone. Re-derive it before quoting it.
 
-What the same run showed, and is an open defect rather than a strength claim:
-the first move of a game overshoots the byoyomi by a median of 14.3 ms against
-0.134 ms for every other move, and is the worst move of its game in 27 of the 50.
+The same run also measured what a clocked game costs at its start, and that is
+kept here rather than only in the defect it opened, because re-deriving it means
+playing the fifty games again: the first move of a game overshoots the byoyomi
+by a median of 14.3 ms against 0.134 ms for every other move, and is the worst
+move of its game in 27 of the 50. ⚠️ **Whichever fix is chosen, this
+distribution is the instrument** — the first move has to collapse onto the
+median of the rest.
 
 ### Rejected — the audit's first attempt
 
