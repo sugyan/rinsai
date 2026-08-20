@@ -112,7 +112,7 @@ Numbered **E0–E6** so as not to collide with shunsai's M0–M7. Rating targets
 - **shunsai API additions: none, deliberately.** E0 asked shunsai for nothing new — the layering's first contact with a real consumer.
 - Infrastructure: repository skeleton, USI conformance dialogue tests, a `bench` command, CI, and the frozen opening sets — balanced positions extracted in-house from high-rated floodgate games.
 - Verification: fixed-depth node counts as a regression test, a mate-in-1..5 suite, repetition and perpetual-check scenario tests.
-- **The retroactive audit E0's batching bought has run and passed**: a non-regression SPRT of the finished E0 against the step-3b engine. The numbers are on issue #18.
+- **The retroactive audit E0's batching bought has run and passed**: a non-regression SPRT of the finished E0 against the step-3b engine. The numbers are in [STRENGTH.md](./STRENGTH.md).
 
 ### E1 — classical search, one feature at a time (size L, 1 feature = 1 SPRT)
 

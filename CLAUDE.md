@@ -89,8 +89,10 @@ found zero defects in its code.
 - A comment says **what the item is and what a caller must guarantee**, or
   **what breaks silently** (mark it ⚠️). Nothing else.
 - **Do not write a number, a history, a plan, or a description of code
-  elsewhere.** A number goes in a constant or an assertion; history goes in the
-  pull request; a plan goes in an issue; other code gets a pointer or nothing.
+  elsewhere.** A number goes in a constant or an assertion, or — when nothing
+  executable can hold it, which is true of a result that took games to produce —
+  in [STRENGTH.md](./STRENGTH.md); history goes in the pull request; a plan goes
+  in an issue; other code gets a pointer or nothing.
 - **⚠️ Never reference a repository document from an artifact** — source,
   manifest, generated file or CI. It does not resolve in `cargo doc` and it
   ships with a published crate. State the rule where it is needed, or not at all.
