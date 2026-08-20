@@ -52,6 +52,21 @@ differential tests before the harness played a game. Over refereed games, which
 end at the fourth occurrence, the two windows provably coincide; on a *fifth*
 they deliberately differ, because `rinsai-game` cannot represent one.
 
+### Why does `can_declare` answer a question instead of `declare` refusing?
+
+Because only the caller knows what its own rules do about a false claim, and the
+answers differ: the harness scores one as a foul, the usual tournament rule,
+while a UI shows a refusal and plays on. A `declare` that checked would flatten
+that into "nothing happened". It would also make one of the six adjudicators
+partial, and the property those six buy is that a declared ending and a derived
+one cannot be spelled the same way.
+
+The 27-point rule is therefore implemented twice on purpose, as the repetition
+rule already is: the referee counts it here from `shogi_core` accessors, and
+E2's engine-side one — the search deciding whether to claim — is written against
+shunsai. A referee that asks the claimant's own code whether the claimant was
+right is not refereeing.
+
 ## Search
 
 ### Why is quiescence capped by *checked* plies rather than by plies?

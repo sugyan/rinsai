@@ -88,10 +88,8 @@ pub enum EndReason {
     /// 詰み — the rules library folds stalemate in, which is shogi's rule.
     Checkmate,
     Resign,
-    /// `bestmove win`, trusted as sent — the referee has no 27-point rule to
-    /// check it against. ⚠️ An engine that declares
-    /// wrongly is scored a full win, so this arm is worth revisiting the
-    /// first time a run's log shows one.
+    /// `bestmove win`, checked against the 27-point rule before it is scored.
+    /// A claim that does not hold is [`Self::IllegalMove`].
     Declaration,
     IllegalMove,
     /// The engine said nothing before the harness's hang detector fired — a
@@ -292,7 +290,19 @@ pub fn play_game(
                 break (Winner::opponent_of(mover), EndReason::Resign, None);
             }
             Ok(BestmoveAnswer::Win) => {
-                break (Winner::of(mover), EndReason::Declaration, None);
+                // A claim the rules refuse is a foul, which is the usual
+                // tournament answer: an engine gets no free win for asking.
+                break match game.can_declare() {
+                    Ok(()) => (Winner::of(mover), EndReason::Declaration, None),
+                    Err(e) => (
+                        Winner::opponent_of(mover),
+                        EndReason::IllegalMove,
+                        Some(format!(
+                            "`win` in sfen {}: {e}",
+                            game.position().to_sfen_owned()
+                        )),
+                    ),
+                };
             }
             // ⚠️ Only silence becomes a flag fall, and only under a clock.
             // An engine that died or talked nonsense **failed**, however long
@@ -347,6 +357,8 @@ pub fn play_game(
 
 #[cfg(test)]
 mod tests {
+    use rinsai_game::DeclarationError;
+
     use super::*;
 
     /// Answers from a script; records every position argument it was asked
@@ -464,14 +476,42 @@ mod tests {
         assert_eq!(white.asked, 0);
     }
 
+    /// Black entered on the 1-file and stands over both of the rule's bars —
+    /// the fixture is what lets this end in a win rather than in the foul
+    /// below.
     #[test]
     fn a_declared_win_is_scored_for_the_declaring_side() {
         let mut black = Scripted::one(Ok(BestmoveAnswer::Win));
         let mut white = Scripted::moves(&[]);
-        let record =
-            play_game(&mut black, &mut white, "startpos", MAX_GAME_PLIES, nodes()).expect("plays");
+        let record = play_game(
+            &mut black,
+            &mut white,
+            "sfen +R+R+B+BGGGGK/SSSS5/9/9/9/9/9/9/k8 b - 1",
+            MAX_GAME_PLIES,
+            nodes(),
+        )
+        .expect("plays");
         assert_eq!(record.winner, Winner::Black);
         assert_eq!(record.reason, EndReason::Declaration);
+    }
+
+    /// From the opening position, where no declaration can hold.
+    ///
+    /// Sabotage: score the claim without asking `can_declare` and this fails
+    /// on `Winner::Black`, which is the score the harness gave before.
+    #[test]
+    fn a_declaration_the_rule_refuses_is_a_foul() {
+        let mut black = Scripted::one(Ok(BestmoveAnswer::Win));
+        let mut white = Scripted::moves(&[]);
+        let record =
+            play_game(&mut black, &mut white, "startpos", MAX_GAME_PLIES, nodes()).expect("plays");
+        assert_eq!(record.winner, Winner::White);
+        assert_eq!(record.reason, EndReason::IllegalMove);
+        let detail = record.detail.expect("the refusal is reported");
+        assert!(
+            detail.contains(&DeclarationError::KingOutsideZone.to_string()),
+            "{detail}"
+        );
     }
 
     /// The referee sees the mate itself: the mated seat must never be asked
@@ -591,7 +631,7 @@ mod tests {
     ///
     /// Sabotage: hoist `game.to_usi_position()` out of `play_game`'s loop and
     /// pass the same string every move — `["startpos", "startpos"]` here, and
-    /// all 42 of `rinsai-game`'s tests still green, which is the sentence above
+    /// `rinsai-game`'s own suite still green, which is the sentence above
     /// demonstrated rather than asserted.
     #[test]
     fn each_seat_is_asked_about_the_game_so_far_in_usi() {

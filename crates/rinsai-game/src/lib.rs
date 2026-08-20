@@ -12,11 +12,13 @@
 //! earlier occurrences predate its root: the rule reads the history this
 //! `Game` recorded, and nothing else.
 
+mod declaration;
 mod game;
 mod moves;
 mod repetition;
 mod types;
 
+pub use declaration::{DeclarationError, can_declare};
 pub use game::Game;
 pub use moves::{in_check, move_from_usi};
 pub use repetition::{PositionKey, position_key};
