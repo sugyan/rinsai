@@ -164,7 +164,10 @@ impl MoveBuf {
     /// Two moves this ordering cannot separate keep the order shunsai
     /// generated them in — the partition rotates rather than swaps, and the
     /// sort is stable.
-    pub(crate) fn order_captures(&mut self, from: usize, position: &Position) {
+    ///
+    /// Returns where the non-captures begin, which is where
+    /// [`Self::order_killers`] takes over.
+    pub(crate) fn order_captures(&mut self, from: usize, position: &Position) -> usize {
         let moves = &mut self.moves[from..];
         let mut captures = 0;
         for i in 0..moves.len() {
@@ -176,6 +179,39 @@ impl MoveBuf {
         moves[..captures].sort_by(|a, b| {
             ordering::capture_key(position, *b).cmp(&ordering::capture_key(position, *a))
         });
+        from + captures
+    }
+
+    /// Moves each of `killers` present at or after `from` to the front of that
+    /// range, in the order given.
+    ///
+    /// `from` is [`Self::order_captures`]'s return value: a killer is a quiet
+    /// move, so it belongs behind every capture and ahead of every other
+    /// quiet.
+    ///
+    /// ⚠️ **A killer is played only if it is found here, and that lookup is
+    /// the whole legality check.** The table is indexed by ply, so its entries
+    /// were cut off in a *sibling's* position; one that is not legal in this
+    /// one simply is not in the list, and nothing happens.
+    ///
+    /// ⚠️ **That holds only while `from` is inside the ply the caller just
+    /// generated**, because the scan runs to the end of the whole buffer, not
+    /// to the end of a ply — [`Self::order_captures`] carries what a caller
+    /// that breaks this costs. Given a `from` below the ply's base, the rotate
+    /// lifts a *parent's* move into this node's front and the node plays it.
+    /// `from` past the end is a slice panic.
+    ///
+    /// The quiet moves that stay behind keep the order shunsai generated them
+    /// in, which is why this rotates rather than swaps.
+    pub(crate) fn order_killers(&mut self, from: usize, killers: [Option<Move>; 2]) {
+        let moves = &mut self.moves[from..];
+        let mut front = 0;
+        for killer in killers.into_iter().flatten() {
+            if let Some(offset) = moves[front..].iter().position(|&mv| mv == killer) {
+                moves[front..=front + offset].rotate_right(1);
+                front += 1;
+            }
+        }
     }
 
     /// Drops everything generated at or after `base`, ending a ply.
@@ -641,6 +677,9 @@ mod tests {
 
     /// Ordering from `base + 1` leaves `base` alone — what keeps an interior
     /// node's transposition move in front of the captures it has just ranked.
+    ///
+    /// Sabotage: return `captures` instead of `from + captures` and this goes
+    /// red, alone in the module.
     #[test]
     fn ordering_past_the_front_leaves_the_front_where_it_is() {
         let board = ordering_fixture();
@@ -654,7 +693,14 @@ mod tests {
         buf.swap(base, quiet);
         let front = buf.get(base);
 
-        buf.order_captures(base + 1, &board);
+        // ⚠️ The only test that reads the return value at a non-zero `from`.
+        // The killer tests all start a fresh buffer, where `from + captures`
+        // and `captures` are the same number and a dropped `from` is invisible.
+        let quiets_from = buf.order_captures(base + 1, &board);
+        let captures = (base + 1..buf.len())
+            .take_while(|&i| ordering::capture_key(&board, buf.get(i)).is_some())
+            .count();
+        assert_eq!(quiets_from, base + 1 + captures);
         assert_eq!(buf.get(base), front);
         assert!(
             ordering::capture_key(&board, buf.get(base + 1)).is_some(),
@@ -696,6 +742,114 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Two quiet moves from the board above, and the run of quiet moves they
+    /// were taken from.
+    ///
+    /// **What makes the tests below able to fail is that neither killer is
+    /// already at the front of that run**: a killer the ordering would have
+    /// put first anyway is indistinguishable from one that was never looked
+    /// for. Taking the back two guarantees it, and ⚠️ **the length check is
+    /// what guarantees the guarantee** — at three quiet moves the back two
+    /// *are* the front two, and nothing below would notice.
+    fn killer_fixture() -> (Position, [Option<Move>; 2], Vec<Move>) {
+        let board = ordering_fixture();
+        let mut buf = MoveBuf::new();
+        let base = buf.generate(&board);
+        let quiets_from = buf.order_captures(base, &board);
+        let quiets = slice(&buf, quiets_from..buf.len());
+        assert!(
+            quiets.len() >= 4,
+            "the fixture holds {} moves that take nothing; below four the back \
+             two are the front two and the killer tests stop being able to fail",
+            quiets.len()
+        );
+        let killers = [
+            Some(quiets[quiets.len() - 1]),
+            Some(quiets[quiets.len() - 2]),
+        ];
+        (board, killers, quiets)
+    }
+
+    /// Where a killer goes: behind every capture, ahead of every other quiet
+    /// move, and in the order the table holds them.
+    ///
+    /// Sabotage: find the killer and leave it where it is. The three killer
+    /// tests here go red, and so does `negamax`'s
+    /// `a_killer_is_searched_before_the_quiet_moves_around_it`.
+    #[test]
+    fn killers_come_out_behind_the_captures_and_ahead_of_the_other_quiets() {
+        let (board, killers, _) = killer_fixture();
+        let mut buf = MoveBuf::new();
+        let base = buf.generate(&board);
+        let generated = slice(&buf, base..buf.len());
+
+        let quiets_from = buf.order_captures(base, &board);
+        buf.order_killers(quiets_from, killers);
+        same_moves(&slice(&buf, base..buf.len()), &generated);
+
+        assert!(
+            ordering::capture_key(&board, buf.get(quiets_from)).is_none(),
+            "the killers landed among the captures rather than behind them"
+        );
+        assert_eq!(buf.get(quiets_from), killers[0].expect("picked above"));
+        assert_eq!(buf.get(quiets_from + 1), killers[1].expect("picked above"));
+    }
+
+    /// A killer cut a *sibling* position off, so this one need not be able to
+    /// play it. Finding it in the list is the whole legality check, and a
+    /// killer that is not there changes nothing — including for the killer
+    /// beside it, which still lands at the front.
+    ///
+    /// Sabotage: advance the front whether or not the killer was found. This
+    /// goes red, and so do eight tests in `negamax`.
+    #[test]
+    fn a_killer_this_node_cannot_play_moves_nothing() {
+        let (board, killers, _) = killer_fixture();
+        // Black holds no pieces on this board, so no drop of any kind is in
+        // the list — a move that is legal in other positions and not here.
+        let absent = Move::Drop {
+            piece: Piece::new(PieceKind::Pawn, Color::Black),
+            to: Square::SQ_5F,
+        };
+        let mut buf = MoveBuf::new();
+        let base = buf.generate(&board);
+        assert!(
+            !slice(&buf, base..buf.len()).contains(&absent),
+            "the fixture can play {absent:?} after all"
+        );
+
+        let quiets_from = buf.order_captures(base, &board);
+        let before = slice(&buf, base..buf.len());
+        buf.order_killers(quiets_from, [Some(absent), None]);
+        assert_eq!(slice(&buf, base..buf.len()), before);
+
+        buf.order_killers(quiets_from, [Some(absent), killers[0]]);
+        assert_eq!(buf.get(quiets_from), killers[0].expect("picked above"));
+    }
+
+    /// The quiet moves a killer passes keep the order shunsai generated them
+    /// in — the same rule the capture partition follows, and for the same
+    /// reason.
+    ///
+    /// Sabotage: `swap` instead of `rotate_right`. This goes red and the other
+    /// two killer tests do not.
+    #[test]
+    fn the_quiet_moves_a_killer_passes_keep_their_generated_order() {
+        let (board, killers, quiets) = killer_fixture();
+        let mut buf = MoveBuf::new();
+        let base = buf.generate(&board);
+        let quiets_from = buf.order_captures(base, &board);
+        buf.order_killers(quiets_from, killers);
+
+        let rest: Vec<Move> = slice(&buf, quiets_from + 2..buf.len());
+        let expected: Vec<Move> = quiets
+            .iter()
+            .copied()
+            .filter(|mv| !killers.contains(&Some(*mv)))
+            .collect();
+        assert_eq!(rest, expected);
     }
 
     /// One allocation, sized for the deepest search, taken before the search

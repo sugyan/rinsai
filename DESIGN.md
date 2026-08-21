@@ -49,6 +49,7 @@ rinsai/
 ├── DESIGN.md              # this file: the plan
 ├── FAQ.md                 # why it is this way and not that way
 ├── CONVENTIONS.md         # what is frozen, by subject
+├── STRENGTH.md            # what the games said: SPRT verdicts, the ladder
 ├── README.md              # what it is, and the name
 ├── NETS.md                # evaluation-file registry                    (E3)
 ├── Cargo.toml             # [workspace]
@@ -87,9 +88,9 @@ An entry marked with a phase arrives then; everything else exists today.
 
 | Artifact | Where it lives | What is committed instead |
 |---|---|---|
-| Evaluation networks | **GitHub Releases**, named by content hash | `NETS.md`: hash → training run → SPRT result → URL |
+| Evaluation networks | **GitHub Releases**, named by content hash | `NETS.md`: hash → training run → URL, and a pointer to the `STRENGTH.md` entry rather than a second copy of its numbers |
 | Self-play data | **Object storage** | the shard manifest: generator rev, seed, position count, opening set, label depth, checksum |
-| Game records, SPRT logs | local + object storage | positions the engine misplayed, as test fixtures |
+| Game records, SPRT logs | local + object storage | `STRENGTH.md`: the verdict and the conditions it was reached under, plus positions the engine misplayed, as test fixtures |
 
 A `halfkp_256x2-32-32` network is almost entirely its feature transformer (125,388 × 256 × int16, 61 MiB), and E3–E4 produce dozens across generations; self-play data runs to tens of GB per generation. Neither belongs in git. The registry and the manifests do: they are the provenance chain that the pre-release scan and a WCSC appeal document both need. **The ledger is the artifact that has to be version-controlled — the weights are not.**
 
@@ -111,7 +112,7 @@ Numbered **E0–E6** so as not to collide with shunsai's M0–M7. Rating targets
 - **shunsai API additions: none, deliberately.** E0 asked shunsai for nothing new — the layering's first contact with a real consumer.
 - Infrastructure: repository skeleton, USI conformance dialogue tests, a `bench` command, CI, and the frozen opening sets — balanced positions extracted in-house from high-rated floodgate games.
 - Verification: fixed-depth node counts as a regression test, a mate-in-1..5 suite, repetition and perpetual-check scenario tests.
-- **The retroactive audit E0's batching bought has run and passed**: a non-regression SPRT of the finished E0 against the step-3b engine. The numbers are on issue #18.
+- **The retroactive audit E0's batching bought has run and passed**: a non-regression SPRT of the finished E0 against the step-3b engine. The numbers are in [STRENGTH.md](./STRENGTH.md).
 
 ### E1 — classical search, one feature at a time (size L, 1 feature = 1 SPRT)
 

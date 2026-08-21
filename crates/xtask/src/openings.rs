@@ -1,9 +1,10 @@
 //! `gen-openings` — from cached floodgate records to a frozen opening set.
 //!
-//! The pipeline is a pure function of its inputs, the frozen constants and
-//! the seed, so the emitted file is byte-reproducible; the header it writes
-//! interpolates those constants and the run's own counters, so the file's
-//! provenance cannot drift from the code that produced it.
+//! The pipeline is a pure function of its inputs, the frozen constants, the
+//! seed **and the engine it judges with** — so the emitted file is
+//! byte-reproducible from one checkout and not across two. The header it
+//! writes interpolates those constants and the run's own counters, so the
+//! file's provenance cannot drift from the code that produced it.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -27,6 +28,12 @@ use crate::rng;
 /// around it, which is what took v1 to v2. [`generate`]'s other two arguments
 /// move the output as well, so they are not a lesser kind of input: the days
 /// choose the corpus, and the rev is interpolated into the header.
+///
+/// ⚠️ **The engine's own search is an input too, and it is the one no
+/// argument here names.** The balance filter judges with it, so a patch that
+/// makes it cheaper moves how far [`PipelineConfig::balance_node_cap`]
+/// reaches and with it the depth a candidate's verdict comes from. That is
+/// what makes a set reproducible only from the rev its header records.
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
     /// Both players' floodgate rates must reach this.
@@ -42,9 +49,8 @@ pub struct PipelineConfig {
     pub target: usize,
     /// Depth of the balance search.
     pub balance_depth: u32,
-    /// Node cap on the balance search. The engine's quiescence is unordered
-    /// and unpruned, so an open position can cost orders more than the depth
-    /// suggests.
+    /// Node cap on the balance search. The engine's quiescence is unpruned, so
+    /// an open position can cost orders more than the depth suggests.
     ///
     /// ⚠️ **A cap tight enough to stop the first iteration decides *whether* a
     /// candidate is judged, not only how deeply**, because a search that
@@ -70,8 +76,8 @@ pub struct PipelineConfig {
 }
 
 impl PipelineConfig {
-    /// The constants `positions/openings-v2.sfen` is generated with. The seed
-    /// spells `RINSAI-1`.
+    /// The constants `positions/openings-v2.sfen` was generated with, at the
+    /// rev its header names. The seed spells `RINSAI-1`.
     #[must_use]
     pub fn frozen_v2() -> Self {
         Self {
@@ -90,8 +96,9 @@ impl PipelineConfig {
         }
     }
 
-    /// The constants `positions/openings-v3.sfen` is generated with: v2's
-    /// filters unchanged, drawn deeper. The seed spells `RINSAI-3`.
+    /// The constants `positions/openings-v3.sfen` was generated with, at the
+    /// rev its header names: v2's filters unchanged, drawn deeper. The seed
+    /// spells `RINSAI-3`.
     ///
     /// ⚠️ **The target bounds every fixed-node SPRT opened from the set**, and
     /// that is what it is for: `runner::check_budget_fits_openings` will not
@@ -173,8 +180,10 @@ struct Candidate {
     moves_usi: String,
 }
 
-/// The whole pipeline, cache to file contents. Pure given its arguments —
-/// the balance search is deterministic at fixed depth and fixed table size.
+/// The whole pipeline, cache to file contents. Deterministic — the balance
+/// search is, at fixed depth and fixed table size — but ⚠️ **not a function of
+/// its arguments alone**: [`PipelineConfig`] carries which other input decides
+/// the output and why that makes a set reproducible only from one rev.
 pub fn generate(
     days: &[DayInput],
     cfg: &PipelineConfig,
@@ -233,14 +242,12 @@ pub fn generate(
     // Pick and balance in one lazily-evaluated pass: candidates are visited
     // in the seeded shuffle's order, the per-game cap is checked before any
     // search is spent, and the walk stops at the target — so the number of
-    // balance searches scales with the target, not with the corpus. One
-    // searcher, cleared per candidate so no candidate is scored against what
-    // an earlier one left in the table.
+    // balance searches scales with the target, not with the corpus.
     let mut order: Vec<usize> = (0..candidates.len()).collect();
     let mut state = cfg.seed;
     rng::shuffle(&mut order, &mut state);
 
-    let mut searcher = NegamaxSearcher::with_hash_mb(cfg.balance_hash_mb);
+    let mut balance = BalanceSearch::new(cfg);
     let mut per_game: HashMap<usize, usize> = HashMap::new();
     let mut picked: Vec<(usize, i32, i32)> = Vec::new();
     for i in order {
@@ -254,39 +261,11 @@ pub fn generate(
             continue;
         }
         counters.evaluated += 1;
-        searcher.new_game();
         let args = format!("startpos moves {}", candidate.moves_usi);
-        // The moves were legal for the referee's rules library; the engine's
-        // movegen refusing one would be a legality disagreement worth a loud
-        // stop, not a skipped line.
-        let game = rinsai_search::Game::from_usi_position(&args).map_err(|e| {
-            format!(
-                "{} ply {}: shunsai refused a replay legality_lite accepted: {e:?}",
-                candidate.file, candidate.ply
-            )
-        })?;
-        let job = SearchJob {
-            id: counters.evaluated as u64,
-            game,
-            limits: Limits {
-                depth: Some(cfg.balance_depth),
-                nodes: Some(cfg.balance_node_cap),
-                ..Limits::default()
-            },
-            signals: Arc::new(SearchSignals::new()),
-        };
-        let sink = ScoreSink::default();
-        // ⚠️ The score is taken from the deepest iteration that searched every
-        // root move, not from the last line published — see `ScoreSink`.
-        let completed = match searcher.search(&job, &sink) {
-            BestMove::Play {
-                completed_depth, ..
-            } => completed_depth,
-            // No legal move at all: a candidate the window should never have
-            // produced, since it snapshots positions the game continued from.
-            BestMove::Resign => 0,
-        };
-        let Some((is_mate, cp)) = sink.at(completed) else {
+        let reading = balance
+            .score(&args)
+            .map_err(|e| format!("{} ply {}: {e}", candidate.file, candidate.ply))?;
+        let Some((is_mate, cp)) = reading.completed else {
             return Err(format!(
                 "{} ply {}: the balance search completed no iteration",
                 candidate.file, candidate.ply
@@ -294,7 +273,7 @@ pub fn generate(
         };
         if !is_mate && cp.abs() <= cfg.balance_cp_max {
             *taken += 1;
-            picked.push((i, cp, completed));
+            picked.push((i, cp, reading.completed_depth));
         } else {
             counters.rejected_balance += 1;
         }
@@ -414,6 +393,99 @@ impl ScoreSink {
             .find(|&&(d, _, _)| d == depth)
             .map(|&(_, is_mate, value)| (is_mate, value))
     }
+
+    /// `(depth, is_mate, value)` from the last line published, whichever
+    /// iteration it belongs to. `None` when no line carried both fields.
+    fn last(&self) -> Option<(i32, bool, i32)> {
+        self.0
+            .lock()
+            .expect("no panics hold this lock")
+            .last()
+            .copied()
+    }
+}
+
+/// What one candidate's balance search reported, under both of the readings
+/// its caller could take it on.
+///
+/// ⚠️ **`completed` is the one the filter judges on and `last` is the one it
+/// must not** — the two differ exactly when the node cap interrupts an
+/// iteration deeper than the last one that finished. `last` has one caller,
+/// `a_score_from_an_interrupted_iteration_does_not_decide_a_candidate`, which
+/// reads it to check that the two still disagree on the fixture chosen to make
+/// them.
+#[derive(Debug)]
+pub struct Balance {
+    /// The deepest iteration that searched every root move; `0` when none did.
+    pub completed_depth: i32,
+    /// `(is_mate, value)` at `completed_depth`. `None` when no iteration
+    /// finished, which the caller turns into an error rather than a guess.
+    pub completed: Option<(bool, i32)>,
+    /// `(depth, is_mate, value)` of the last line published. `None` when the
+    /// search published none.
+    pub last: Option<(i32, bool, i32)>,
+}
+
+/// The searcher the balance filter judges candidates with.
+///
+/// One searcher serves a whole run and is cleared per candidate, so no
+/// candidate is scored against what an earlier one left in the table.
+#[derive(Debug)]
+pub struct BalanceSearch {
+    searcher: NegamaxSearcher,
+    limits: Limits,
+}
+
+impl BalanceSearch {
+    /// ⚠️ **The whole config is read here and nowhere else**, so the table
+    /// size, the depth and the node cap cannot come from two different sets —
+    /// each of the three moves which candidates pass, and a set is judged by
+    /// one configuration or it is not reproducible at all.
+    #[must_use]
+    pub fn new(cfg: &PipelineConfig) -> Self {
+        Self {
+            searcher: NegamaxSearcher::with_hash_mb(cfg.balance_hash_mb),
+            limits: Limits {
+                depth: Some(cfg.balance_depth),
+                nodes: Some(cfg.balance_node_cap),
+                ..Limits::default()
+            },
+        }
+    }
+
+    /// Searches one candidate and reports both readings. `position_args` is a
+    /// USI `position` argument, the shape the emitted file's own lines carry.
+    ///
+    /// The error names what went wrong and not where: the caller knows which
+    /// record and ply the position came from, and prefixes it.
+    pub fn score(&mut self, position_args: &str) -> Result<Balance, String> {
+        self.searcher.new_game();
+        // The moves were legal for the referee's rules library; the engine's
+        // movegen refusing one would be a legality disagreement worth a loud
+        // stop, not a skipped line.
+        let game = rinsai_search::Game::from_usi_position(position_args)
+            .map_err(|e| format!("shunsai refused a replay legality_lite accepted: {e:?}"))?;
+        let job = SearchJob {
+            id: 0,
+            game,
+            limits: self.limits,
+            signals: Arc::new(SearchSignals::new()),
+        };
+        let sink = ScoreSink::default();
+        let completed_depth = match self.searcher.search(&job, &sink) {
+            BestMove::Play {
+                completed_depth, ..
+            } => completed_depth,
+            // No legal move at all: a candidate the window should never have
+            // produced, since it snapshots positions the game continued from.
+            BestMove::Resign => 0,
+        };
+        Ok(Balance {
+            completed_depth,
+            completed: sink.at(completed_depth),
+            last: sink.last(),
+        })
+    }
 }
 
 impl InfoSink for ScoreSink {
@@ -472,8 +544,9 @@ fn emit(
 # Generated by `cargo run --release -p xtask -- gen-openings` at
 # rev {rev},
 # splitmix64 seed {seed:#018x}.
-# Every other input is fixed in the generator, so `--rev` reproduces this file
-# byte for byte from the same cached records.
+# Every other input is fixed in the generator, so this file is reproduced byte
+# for byte from the same cached records *at the rev named above* — the engine
+# that judged its candidates is an input too, and a later one judges differently.
 #
 # The floodgate game behind each line is named on the comment above it, with
 # `eval=` rinsai's own score from the side to move and `d=` the deepest

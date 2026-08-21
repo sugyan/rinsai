@@ -6,7 +6,7 @@
 //! leaves `git diff` empty — is run by hand, from the rev its header
 //! records. This test is the half CI holds.
 
-use xtask::openings::{DayInput, PipelineConfig, generate};
+use xtask::openings::{BalanceSearch, DayInput, PipelineConfig, generate};
 
 fn fixture_days() -> Vec<DayInput> {
     days_under(concat!(
@@ -121,19 +121,19 @@ fn a_different_seed_selects_a_different_subset() {
     );
 }
 
-/// ⚠️ **The corpus above exercises none of the balance filter's own rule.**
-/// Its searches reach the node cap often enough, but on every one of its
-/// candidates the interrupted iteration's score and the last completed one
-/// agree — so reading either gives the same file, and the golden test is
-/// blind to which is read. Divergence is rare (six of `openings-v1`'s 256
+/// ⚠️ **The corpus above exercises none of the balance filter's own rule**,
+/// and not for the reason it looks like: at its 2 000 000-node cap none of its
+/// searches is interrupted at all, so every candidate's two readings are the
+/// same reading and the golden test cannot see which one is used. Divergence is rare (six of `openings-v1`'s 256
 /// lines at the frozen settings), so it has to be chosen rather than hoped
 /// for; this corpus is one floodgate game picked because its ply-12 position
 /// diverges, and the window is pinned to that ply so nothing else competes.
 ///
-/// At depth 3 under a 5 000-node cap the position scores **0 on the depth-2
-/// iteration it completes** and **−1380 on the depth-3 iteration the cap
-/// interrupts** — one inside ±100 cp and one far outside, so the two rules
-/// disagree about whether to keep it at all.
+/// ⚠️ **What makes this test able to fail is the cap interrupting an
+/// iteration deeper than the last one that finished**, and every patch that
+/// makes the search cheaper closes that gap. So the property is asserted
+/// rather than described: the day it stops holding, the message says which
+/// half went and what to do about it.
 ///
 /// Sabotage: score the candidate from the last line published instead of from
 /// `completed_depth`, and `generate` fails with "only 0 of the 1 unique
@@ -144,7 +144,7 @@ fn a_score_from_an_interrupted_iteration_does_not_decide_a_candidate() {
         window: 12..=12,
         target: 1,
         balance_depth: 3,
-        balance_node_cap: 5_000,
+        balance_node_cap: 2_000,
         ..PipelineConfig::frozen_v2()
     };
     let days = days_under(concat!(
@@ -160,6 +160,32 @@ fn a_score_from_an_interrupted_iteration_does_not_decide_a_candidate() {
         .filter(|l| l.starts_with("# 2026-"))
         .collect();
     assert_eq!(picked.len(), 1, "{generated}");
+
+    // Checked before the assertion it underwrites, so that an eroded fixture
+    // reports itself rather than surfacing as a puzzling verdict below: the
+    // candidate the run above kept, scored again through the same code.
+    let args = generated
+        .lines()
+        .find(|l| l.starts_with("startpos"))
+        .expect("the kept line carries its position");
+    let reading = BalanceSearch::new(&cfg)
+        .score(args)
+        .expect("the position the pipeline just searched");
+    let (last_depth, last_is_mate, last_cp) = reading
+        .last
+        .expect("a search that published nothing cannot be read either way");
+    assert!(
+        last_depth > reading.completed_depth,
+        "depth {last_depth} both finished and published, so the two readings are one reading \
+         and this fixture separates nothing — lower balance_node_cap until the cap interrupts \
+         again, or pick another position"
+    );
+    assert!(
+        last_is_mate || last_cp.abs() > cfg.balance_cp_max,
+        "the interrupted iteration now scores {last_cp}, which the filter would keep, so both \
+         readings agree and the assertion below decides nothing"
+    );
+
     assert!(
         picked[0].ends_with("ply=12 eval=+0 d=2"),
         "the line was kept, but not on the score this test is about: {}",

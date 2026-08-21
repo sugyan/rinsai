@@ -5,8 +5,9 @@ someone actually asks; if an answer stops being true, fix the answer — `git lo
 holds the old one, the pull requests hold what happened, and `gh issue list`
 holds what is next.
 
-**A measurement is written once, here or beside the rule it justifies, never
-both.**
+**A measurement is written once** — here, beside the rule it justifies, or in
+[STRENGTH.md](./STRENGTH.md) when producing it again would mean playing games.
+Never in two of them.
 
 ## Route and repository
 
@@ -77,24 +78,38 @@ effect reintroduced two plies down.
 
 ### Why is `QS_MAX_CHECK_PLIES` 2?
 
-Measured, on the drop-heavy fixture at depth 4: 0 checks costs 30.8 M nodes
-**and is wrong** — it evaluates while in check and misses a mate one ply away.
-1 costs 22.1 M. **2 costs 7.0 M.** 4 costs 7.7 M.
+Because E0 measured it as the cheapest cap that is also correct — and ⚠️ **that
+measurement no longer holds.** Re-derived at HEAD on the drop-heavy fixture at
+depth 4, the cost is now *monotone* in the cap and one checked ply is cheaper
+than two, where at E0 it was three times dearer. The ordering inverted when the
+interior nodes and quiescence gained move ordering.
 
-⚠️ **Two checked plies cost a third of what one costs**, so the cost is not
-monotone in the cap: resolving a check returns a score the search above can cut
-on, while refusing to resolve it returns a number that defeats pruning for the
-rest of the tree. "Search less, spend less" is not safe anywhere near a check.
-Two is the measured minimum that is also correct; E1's futility item owns
-revisiting it with an SPRT.
+What survives is only this: **zero is wrong rather than cheap.** It evaluates
+while in check and misses a mate one ply away, and no cost makes that a
+trade. Every cap above it resolves checks; which one is best is now an open
+question, and one the numbers currently answer as "fewer than two".
+
+E1's futility item owns settling it, with an SPRT rather than a node count.
+
+⚠️ **Re-derive before quoting any ordering from this answer.** The counts are
+not written here because every ordering and pruning patch moves them — change
+the constant, run `bench`, read the drop-heavy position — and the previous
+version of this answer was falsified by a patch that landed two commits after
+it was written.
 
 ### Why did TT move ordering land with the table rather than at E1?
 
 A transposition table whose move nobody tries first is half a table. Measured
-afterwards: searching the stored move first is worth between 1.00× and **14.02×**
-across five fixtures and four depths, super-linearly in depth. MVV-LVA, killers
-and history stayed at E1 — those are interior-node heuristics and each wants its
-own SPRT.
+at E0, before anything else ordered an interior node: searching the stored move
+first was worth between 1.00× and **14.02×** across five fixtures and four
+depths, super-linearly in depth.
+
+⚠️ **That range is E0's and does not hold today.** With MVV-LVA and killers
+ordering the interior nodes, taking the stored move's front away no longer
+reliably grows the tree — on several of the positions `bench` carries it
+*shrinks* it. Node count is not strength, so this is not an argument for
+dropping the ordering; it is why the tripwire that guards it had to change
+fixture, and the sort of question E1 answers with an SPRT rather than a count.
 
 ### Why is a capture's ordering key a pair rather than one scaled number?
 
@@ -258,12 +273,11 @@ class of bug SPRT reads as "that patch was bad". Of the six surfaces it put on
 probation, five gained a named caller and stayed; `Score::NONE`'s never turned
 up and it went.
 
-⚠️ **A named caller that does not turn up is a result too.** `MAX_PLY`'s doc
+⚠️ **A named caller that does not turn up is a result too.** This file
 predicted per-ply state would gain a static evaluation; quiescence computes its
-stand-pat as a local and nothing reads it again. The `Stack` struct is deferred
-to E1 — killers or futility, whichever lands first — and its trigger is written
-as **the first *second* field** rather than as a step number, because a step
-number is what went stale.
+stand-pat as a local and nothing reads it again. The `Stack` struct it also
+predicted did turn up, when E1's killers gave the search a second per-ply field
+to keep beside the line.
 
 ## Time control
 
