@@ -27,6 +27,56 @@ it like any other.
 
 ## E1 — classical search, one feature at a time
 
+### Step 2 — killers, and the `Stack` the second per-ply field earns — **pass**
+
+H1 accepted at elo0 = 0 / elo1 = 5.
+
+```
+pairs 763 | games 1526 | candidate W-D-L 622-413-491
+pent [73, 23, 507, 20, 140] | llr +3.021 | score 54.29% (elo +29.9 est)
+```
+
+| | |
+|---|---|
+| candidate | built from `981ad27` |
+| baseline | `060a197` |
+| `bench` | candidate 276 470, baseline 474 941 — both read off the binaries that played |
+| control | `--nodes 1000000 --gain`, α = β = 0.05, concurrency 3 |
+| openings | `openings-v3.sfen`, seed 1, 763 distinct openings for 763 pairs |
+| endings | 1113 checkmates, 397 千日手, 16 at the 512-ply move limit |
+
+The counts above were recomputed from `run.jsonl` rather than read off the
+harness's summary.
+
+⚠️ **Sixteen games ended at the move limit rather than at a result.** The
+harness does not count those as abnormal — its tally is for a seat that broke
+the protocol, hung or died, and there were none of those — but step 1's
+eighteen-game run reached the limit no times, and a limit game is a pair the
+openings did not decide.
+
+⚠️ **What it says is that the true difference is at least 5 elo at α = 0.05.**
+The +29.9 is a point estimate; unlike step 1's +492 from nine pairs, 763 pairs
+pin it reasonably well, but the estimate is still not the claim.
+
+**The two E1 verdicts are the same word and not the same size.** Step 1 crossed
+the bound in nine pairs; this took 763, for a gain two orders smaller. The patch
+that cut `bench` to 0.56× is worth about a thirtieth of the one that cut it to
+0.11×, which is what "node count is not an instrument for strength" costs when
+it is ignored.
+
+⚠️ **The early trend predicted the wrong verdict.** The LLR read +0.175 at 19
+pairs, +0.001 at 67 and **−0.012 at 93** before climbing to the upper bound.
+Anyone watching a run in progress should read it as undecided, not as trending.
+
+The binary that played is one commit behind the branch head. The difference in
+the engine is a single line — `Stack::default()` giving the per-ply line a
+capacity of zero, restored to `Vec::with_capacity` — plus test and doc changes.
+Rather than argue it changes nothing, twenty pairs were replayed at the same
+seed with a build of `c6d6c68`: all forty games match the recorded run on
+opening, colour, result, end reason, ply count **and every move played**. ⚠️
+That is evidence of identical behaviour on this workload, not a second
+independent measurement of the gain.
+
 ### Step 1 — MVV-LVA for captures, promotion-aware — **pass**
 
 H1 accepted at elo0 = 0 / elo1 = 5.
