@@ -12,7 +12,7 @@
 
 use std::time::Duration;
 
-use rinsai_game::{Game, Outcome, illegal};
+use rinsai_game::{Game, Outcome, can_declare, illegal};
 use shogi_core::{Color, ToUsi};
 
 use crate::usi::{BestmoveAnswer, ClockSpec, EngineError, GoSpec, TimedAnswer, UsiEngine};
@@ -292,7 +292,7 @@ pub fn play_game(
             Ok(BestmoveAnswer::Win) => {
                 // A claim the rules refuse is a foul, which is the usual
                 // tournament answer: an engine gets no free win for asking.
-                break match game.can_declare() {
+                break match can_declare(game.position(), mover) {
                     Ok(()) => (Winner::of(mover), EndReason::Declaration, None),
                     Err(e) => (
                         Winner::opponent_of(mover),
@@ -479,6 +479,10 @@ mod tests {
     /// Black entered on the 1-file and stands over both of the rule's bars —
     /// the fixture is what lets this end in a win rather than in the foul
     /// below.
+    ///
+    /// The root is already declarable, which is why
+    /// `a_declaration_is_checked_against_the_position_the_game_reached` exists
+    /// beside it: this one cannot tell the two positions apart.
     #[test]
     fn a_declared_win_is_scored_for_the_declaring_side() {
         let mut black = Scripted::one(Ok(BestmoveAnswer::Win));
@@ -498,7 +502,7 @@ mod tests {
     /// From the opening position, where no declaration can hold.
     ///
     /// Sabotage: score the claim without asking `can_declare` and this fails
-    /// on `Winner::Black`, which is the score the harness gave before.
+    /// on `Winner::Black`.
     #[test]
     fn a_declaration_the_rule_refuses_is_a_foul() {
         let mut black = Scripted::one(Ok(BestmoveAnswer::Win));
@@ -512,6 +516,32 @@ mod tests {
             detail.contains(&DeclarationError::KingOutsideZone.to_string()),
             "{detail}"
         );
+    }
+
+    /// The rule is checked against the position the game reached, not the one
+    /// it started from. At the root Black holds nine pieces in the zone; the
+    /// silver Black drops is the tenth, and only then does the claim hold.
+    ///
+    /// Sabotage: ask `game.initial_position()` instead of `game.position()` and
+    /// this fails on `Winner::White` — the claim is scored against a root the
+    /// game left two plies ago.
+    #[test]
+    fn a_declaration_is_checked_against_the_position_the_game_reached() {
+        let mut black = Scripted::new(vec![
+            Ok(BestmoveAnswer::Move("S*2b".to_owned())),
+            Ok(BestmoveAnswer::Win),
+        ]);
+        let mut white = Scripted::moves(&["1i2i"]);
+        let record = play_game(
+            &mut black,
+            &mut white,
+            "sfen +R+R+B+BGGGGK/S8/9/9/9/9/9/9/8k b 3S 1",
+            MAX_GAME_PLIES,
+            nodes(),
+        )
+        .expect("plays");
+        assert_eq!(record.winner, Winner::Black);
+        assert_eq!(record.reason, EndReason::Declaration);
     }
 
     /// The referee sees the mate itself: the mated seat must never be asked

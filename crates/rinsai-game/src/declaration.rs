@@ -32,8 +32,7 @@ pub enum DeclarationError {
     /// The declaring side is not the side to move. A declaration is made in
     /// place of a move.
     NotToMove,
-    /// The declaring king is outside the opponent's camp — or absent, which
-    /// only a hand-built position can be.
+    /// The declaring king is outside the opponent's camp.
     KingOutsideZone,
     /// The declaring king is attacked. 詰めろ and 必至 do not count.
     InCheck,
@@ -64,9 +63,10 @@ impl std::error::Error for DeclarationError {}
 
 /// Whether `color` may declare 入玉宣言 in this position.
 ///
-/// The refusal is the **first** condition the position breaks, in the rule's
-/// own order, so a [`TooFewPoints`](DeclarationError::TooFewPoints) answer says
-/// every other condition held.
+/// One broken condition is named, not all of them, and the order is this
+/// function's rather than the rule's. What that buys is the last check:
+/// [`TooFewPoints`](DeclarationError::TooFewPoints) is reached only once
+/// everything else has held.
 ///
 /// Unlike [`in_check`](crate::in_check), the side to move is part of the
 /// question: a declaration replaces a move, so a side that cannot move cannot
@@ -119,8 +119,8 @@ pub fn can_declare(position: &PartialPosition, color: Color) -> Result<(), Decla
     Ok(())
 }
 
-/// The points the declaring side needs. A board holds 54, so Black's extra
-/// point is what keeps both sides from clearing the bar at once.
+/// The points the declaring side needs. Black's extra point is what keeps both
+/// sides from clearing the bar at once.
 const fn required_points(color: Color) -> u32 {
     match color {
         Color::Black => 28,
@@ -132,8 +132,6 @@ fn in_zone(square: Square, color: Color) -> bool {
     square.relative_rank(color) <= ZONE_RANKS
 }
 
-/// A king is worth nothing here: the rule counts every other piece and excludes
-/// it.
 fn piece_points(kind: PieceKind) -> u32 {
     // `unpromote` is the promoted-piece test as well as the map, so 龍 and 馬
     // reach the same arm as 飛 and 角 without a table of their own.
@@ -155,8 +153,7 @@ mod tests {
     }
 
     /// Black entered on the 1-file with twelve pieces behind the king and
-    /// exactly the 28 points Black needs. Every fixture below is this board
-    /// with one condition broken.
+    /// exactly the 28 points Black needs.
     const DECLARABLE_BLACK: &str = "sfen +R+R+B+BGGGGK/SSSS5/9/9/9/9/9/9/k8 b - 1";
 
     /// The mirror, one point lower: White needs 27, and eleven pieces carrying
@@ -199,12 +196,23 @@ mod tests {
     }
 
     /// The zone is read per side. Sabotage: `square.rank() <= ZONE_RANKS` in
-    /// `in_zone`, and this fails on its White line having passed its Black one.
+    /// `in_zone`, and this fails on White's census having passed Black's.
     #[test]
     fn each_side_declares_from_its_own_end_of_the_board() {
+        // The two bars differ by a point, so each fixture sits on its own one:
+        // a fixture that drifted upwards would stop telling 28 from 27.
+        assert_eq!(
+            zone_census(&position(DECLARABLE_BLACK), Color::Black),
+            (12, 28)
+        );
         assert_eq!(
             can_declare(&position(DECLARABLE_BLACK), Color::Black),
             Ok(())
+        );
+
+        assert_eq!(
+            zone_census(&position(DECLARABLE_WHITE), Color::White),
+            (11, 27)
         );
         assert_eq!(
             can_declare(&position(DECLARABLE_WHITE), Color::White),
@@ -224,10 +232,12 @@ mod tests {
         );
     }
 
-    /// The opening position, where the one thing wrong is the king.
+    /// The opening position breaks three of the conditions and the order
+    /// decides which is named; the second board breaks only the king's.
     #[test]
     fn a_king_that_has_not_entered_cannot_declare() {
         let start = PartialPosition::startpos();
+        assert_eq!(zone_census(&start, Color::Black), (0, 0));
         assert_eq!(
             can_declare(&start, Color::Black),
             Err(DeclarationError::KingOutsideZone)
@@ -280,8 +290,6 @@ mod tests {
     /// Black at 27 is refused where White at 27 is not.
     ///
     /// Sabotage: `Color::Black => 27` and this fails.
-    /// `a_white_declaration_one_point_short_is_refused` is the other half —
-    /// `Color::White => 28` fails that one and leaves this green.
     #[test]
     fn a_black_declaration_one_point_short_is_refused() {
         let short = position("sfen +R+R+B+BGGG1K/SSSS5/9/9/9/9/9/9/k8 b - 1");
@@ -296,6 +304,10 @@ mod tests {
     }
 
     /// And the mirror of it, one point below White's own bar.
+    ///
+    /// Sabotage: `Color::White => 28` and this fails, while
+    /// `a_black_declaration_one_point_short_is_refused` stays green — the two
+    /// bars are pinned apart rather than together.
     #[test]
     fn a_white_declaration_one_point_short_is_refused() {
         let short = position("sfen K8/9/9/9/9/9/9/ss7/+r+r+b+bggggk w - 1");
@@ -309,11 +321,23 @@ mod tests {
         );
     }
 
-    /// Twelve pieces either way; only what they are differs. The fixture is
-    /// chosen so the majors carry more than half the total: at one point each
-    /// the declarable board falls to 12, well under the bar.
+    /// Three boards of twelve pieces; only what they are differs. The
+    /// promoted-major board and the plain-major board have to agree, which is
+    /// what the name claims and what neither of them alone can show — and the
+    /// third says the claim is about the majors rather than about twelve
+    /// pieces.
+    ///
+    /// Sabotage: score only the promoted pair five, leaving 飛 and 角 at one,
+    /// and this fails.
     #[test]
     fn a_dragon_and_a_horse_are_worth_what_a_rook_and_a_bishop_are() {
+        let plain = position("sfen RRBBGGGGK/SSSS5/9/9/9/9/9/9/k8 b - 1");
+        assert_eq!(zone_census(&plain, Color::Black), (12, 28));
+        assert_eq!(
+            zone_census(&position(DECLARABLE_BLACK), Color::Black),
+            (12, 28)
+        );
+
         let generals = position("sfen GGGG4K/SSSS5/NNLL5/9/9/9/9/9/k8 b - 1");
         assert_eq!(zone_census(&generals, Color::Black), (12, 12));
         assert_eq!(
@@ -323,18 +347,15 @@ mod tests {
                 required: 28,
             })
         );
-        assert_eq!(
-            zone_census(&position(DECLARABLE_BLACK), Color::Black),
-            (12, 28)
-        );
     }
 
     /// Pieces behind the zone are not the declaring side's to count.
     ///
-    /// ⚠️ Every other fixture here keeps the declaring side wholly inside the
-    /// zone, where dropping the mask changes nothing. These two are the ones
-    /// that can fail: each is over both bars when the whole board is counted
-    /// and under one when only the zone is.
+    /// ⚠️ Every other fixture here either keeps the declaring side wholly
+    /// inside the zone or is refused before the counting loop is reached, so
+    /// dropping the mask cannot change its answer. These two are the ones that
+    /// can fail: each is over both bars when the whole board is counted and
+    /// under one when only the zone is.
     ///
     /// Sabotage: drop the `in_zone` guard from the counting loop and this is
     /// the only test in the workspace that goes red.
@@ -360,7 +381,7 @@ mod tests {
         );
     }
 
-    /// The board is three points short and the hand is a bishop, so this passes
+    /// The board is five points short and the hand is a bishop, so this passes
     /// only if a piece in hand is counted and counted as a major.
     ///
     /// Sabotage: stop summing the hand and this fails.
@@ -382,8 +403,8 @@ mod tests {
         );
     }
 
-    /// Each position breaks two conditions, and the answer is the earlier one.
-    /// A caller reads a refusal as "this one, and everything before it held".
+    /// Both boards break more than one condition — the censuses below say how
+    /// many — and the answer is whichever this function reaches first.
     #[test]
     fn the_refusal_is_the_first_condition_the_rule_reaches() {
         // Checked, and with nothing at all in the zone.
@@ -426,8 +447,9 @@ mod tests {
                 DeclarationError::TooFewPieces { .. } => "敵陣の駒が玉を除いて9枚しかありません",
                 DeclarationError::TooFewPoints { .. } => "持点が27点で、28点に足りません",
             };
-            assert_eq!(refusal.to_string(), sentence, "{refusal:?}");
-            assert!(seen.insert(sentence), "{refusal:?} repeats {sentence:?}");
+            let shown = refusal.to_string();
+            assert_eq!(shown, sentence, "{refusal:?}");
+            assert!(seen.insert(shown.clone()), "{refusal:?} repeats {shown:?}");
         }
     }
 }

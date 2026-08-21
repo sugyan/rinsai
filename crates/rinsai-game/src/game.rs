@@ -7,7 +7,6 @@ use shogi_legality_lite as legality;
 
 use shogi_usi_parser::FromUsi;
 
-use crate::declaration::{self, DeclarationError};
 use crate::moves;
 use crate::repetition::RepetitionIndex;
 use crate::types::{MoveError, Outcome, Ply, PromotionChoice, UsiMoveError, UsiPositionError};
@@ -171,11 +170,6 @@ impl Game {
         moves::in_check(self.position(), self.side_to_move())
     }
 
-    /// Whether the side to move may declare 入玉宣言 here.
-    pub fn can_declare(&self) -> Result<(), DeclarationError> {
-        declaration::can_declare(self.position(), self.side_to_move())
-    }
-
     /// Squares holding a king that is currently attacked.
     #[must_use]
     pub fn check_squares(&self) -> Bitboard {
@@ -320,7 +314,9 @@ impl Game {
     /// 入玉宣言 — `winner` declared, and the declaration is **trusted as sent**.
     ///
     /// ⚠️ A wrong declaration is recorded as a full win. A caller that cannot
-    /// afford that asks [`can_declare`](Self::can_declare) first.
+    /// afford that asks [`can_declare`](crate::can_declare) about `winner`
+    /// first — the same colour, since that function answers about the colour it
+    /// is given.
     pub fn declare(&mut self, winner: Color) {
         self.adjudicate(Outcome::Declaration { winner });
     }

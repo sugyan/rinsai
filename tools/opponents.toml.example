@@ -41,6 +41,11 @@ path = "/Users/you/dev/sugyan/shogi/benchmarks/YaneuraOu/source/YaneuraOu-by-gcc
 # A node-limited search is only deterministic single-threaded.
 Threads = "1"
 USI_Hash = "256"
+# ⚠️ The referee checks 入玉宣言 by the 27-point rule and scores a claim it
+# refuses as a foul against the sender. An opponent playing a different
+# entering-king rule therefore loses the games it won under its own, which
+# biases every entering-king position in a run and reads as an engine fault
+# rather than a roster one. Set this engine's own rule here to match.
 # NodesLimit is deliberately NOT set: under `--nodes` the harness sends
 # `go nodes N`, which YaneuraOu documents as overriding the option. ⚠️ Under
 # `--time-ms`/`--byoyomi-ms` the `go` carries a clock instead, and NodesLimit

@@ -302,18 +302,6 @@ impl UsiEngine {
         let _ = self.stdin.flush();
     }
 
-    /// The last lines the engine wrote to stderr.
-    ///
-    /// Takes `&mut self` because it first gives a dying engine a moment to
-    /// finish writing: `Died` is raised the instant *stdout* closes, and the
-    /// stderr reader is a separate thread on a separate pipe, so reading the
-    /// tail straight away most often returns nothing — in exactly the case
-    /// the tail exists for, an engine that panicked and printed why.
-    ///
-    /// ⚠️ The settle window is paid **in full** against an engine that is
-    /// still running, since the poll it shortens is a poll for the child's
-    /// death. Call it for an ending the engine failed at, never for one it
-    /// merely lost.
     /// What the reader thread has already buffered, with no settle window.
     ///
     /// For an engine that is still running: the tail is drained line by line
@@ -328,6 +316,18 @@ impl UsiEngine {
             .collect()
     }
 
+    /// The last lines the engine wrote to stderr.
+    ///
+    /// Takes `&mut self` because it first gives a dying engine a moment to
+    /// finish writing: `Died` is raised the instant *stdout* closes, and the
+    /// stderr reader is a separate thread on a separate pipe, so reading the
+    /// tail straight away most often returns nothing — in exactly the case
+    /// the tail exists for, an engine that panicked and printed why.
+    ///
+    /// ⚠️ The settle window is paid **in full** against an engine that is
+    /// still running, since the poll it shortens is a poll for the child's
+    /// death. Call it for an ending the engine failed at, never for one it
+    /// merely lost.
     pub fn stderr_tail(&mut self) -> Vec<String> {
         for _ in 0..STDERR_SETTLE_POLLS {
             match self.child.try_wait() {

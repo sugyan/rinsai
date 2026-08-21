@@ -57,15 +57,11 @@ they deliberately differ, because `rinsai-game` cannot represent one.
 Because only the caller knows what its own rules do about a false claim, and the
 answers differ: the harness scores one as a foul, the usual tournament rule,
 while a UI shows a refusal and plays on. A `declare` that checked would flatten
-that into "nothing happened". It would also make one of the six adjudicators
-partial, and the property those six buy is that a declared ending and a derived
-one cannot be spelled the same way.
+that into "nothing happened", and make one of the six adjudicators partial.
 
-The 27-point rule is therefore implemented twice on purpose, as the repetition
-rule already is: the referee counts it here from `shogi_core` accessors, and
-E2's engine-side one — the search deciding whether to claim — is written against
-shunsai. A referee that asks the claimant's own code whether the claimant was
-right is not refereeing.
+The engine will not share it either — a referee that asks the claimant's own
+code whether the claimant was right is not refereeing — which is the split the
+repetition rule already carries, differential test and all.
 
 ## Search
 
