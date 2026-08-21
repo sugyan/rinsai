@@ -642,9 +642,7 @@ impl<C: Clock> NegamaxSearcher<C> {
         // `order_killers` rotates its find to `from`, so from `base` a killer
         // displaces the transposition move, which is the demotion the ⚠️ above
         // forbids and which `the_transposition_move_is_searched_first` catches.
-        // ⚠️ **Before the killers, not after**, or the sort puts them back
-        // among the quiet moves. `order_history` carries the mechanism and
-        // `a_killer_is_searched_before_the_quiet_moves_around_it` the cost.
+        // ⚠️ **Before the killers, not after** — `order_history` says why.
         self.buf.order_history(quiets_from, board, &self.history);
         self.buf.order_killers(quiets_from, self.stack[ply].killers);
 

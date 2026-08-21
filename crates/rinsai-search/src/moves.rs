@@ -1,5 +1,6 @@
 //! Move helpers that shunsai deliberately does not provide.
 
+use core::mem::size_of;
 use core::ops::ControlFlow;
 
 use shogi_core::Move;
@@ -7,6 +8,23 @@ use shunsai::{MoveSet, Position};
 
 use crate::ordering::{self, HistoryTable};
 use crate::score::MAX_PLY;
+
+/// What the standard library's stable sort does on the stack before it
+/// reaches for the heap.
+///
+/// ⚠️ **Not ours to choose** — it is a property of that implementation, and
+/// all this repository controls is staying under it.
+/// [`MoveBuf::scratch`] carries what goes wrong above it.
+const STACK_SORT_BUDGET: usize = 4096;
+
+/// Two facts [`MoveBuf::order_history`] rests on, both decidable without
+/// running anything, so neither is left to a test: narrowing a history value
+/// into [`MoveBuf::scratch`] loses nothing, and a whole ply of pairs sorts
+/// without reaching for the heap.
+const _: () = {
+    assert!(HistoryTable::CEILING <= i16::MAX as i32);
+    assert!(size_of::<(i16, Move)>() * MAX_LEGAL_MOVES <= STACK_SORT_BUDGET);
+};
 
 /// The most legal moves any shogi position has.
 ///
@@ -33,16 +51,22 @@ pub const MAX_LEGAL_MOVES: usize = 593;
 #[derive(Debug)]
 pub(crate) struct MoveBuf {
     moves: Vec<Move>,
-    /// One `(value, move)` pair per move of the ply [`Self::order_history`] is
-    /// ranking, and nothing between calls. One ply's worth is all it can ever
-    /// hold: ordering runs on the ply just generated, before anything
-    /// descends.
-    scratch: Vec<(i32, Move)>,
+    /// One `(value, move)` pair per move of the ply [`Self::order_history`]
+    /// is ranking. One ply's worth is all it can ever hold: ordering runs on
+    /// the ply just generated, before anything descends.
+    ///
+    /// ⚠️ **`i16` rather than `i32`, and the width is load-bearing.** The
+    /// standard library's stable sort works in a stack buffer of
+    /// [`STACK_SORT_BUDGET`] bytes and reaches for the heap above it, so a
+    /// whole ply of pairs has to fit under that line — which a 4-byte value
+    /// does not. What breaks otherwise is a `malloc` per interior node,
+    /// silently, against what [`Self::new`] promises.
+    scratch: Vec<(i16, Move)>,
 }
 
 impl MoveBuf {
-    /// Reserves the whole search's worth up front — one allocation for the
-    /// life of the searcher, and none on any node.
+    /// Reserves both buffers up front — two allocations for the life of the
+    /// searcher, and none on any node.
     pub(crate) fn new() -> Self {
         Self {
             moves: Vec::with_capacity(MAX_LEGAL_MOVES * MAX_PLY),
@@ -195,23 +219,18 @@ impl MoveBuf {
     /// often a *quiet* move has cut a node off, and a capture is ranked by
     /// what it wins.
     ///
-    /// ⚠️ **It runs before [`Self::order_killers`], not after.** That one
-    /// rotates its finds to the front and leaves everything else in place, so
-    /// a killer keeps its front over whatever history ranked first; sorting
-    /// afterwards puts them back among the quiet moves. ⚠️ **What catches
-    /// that is a node count in the search**,
-    /// `negamax::tests::a_killer_is_searched_before_the_quiet_moves_around_it`
-    /// — not `a_killer_is_tried_before_the_best_history_move` below, which
-    /// makes the two calls itself and stays green whichever order the search
-    /// uses.
+    /// ⚠️ **It runs before [`Self::order_killers`], not after**, or that
+    /// one's rotate is undone by this one's sort. ⚠️ **Nothing here catches
+    /// the wrong order** — the only test that does is a node count in the
+    /// search, `negamax::tests::a_killer_is_searched_before_the_quiet_moves_around_it`.
     ///
     /// ⚠️ **It reorders to the end of the whole buffer, not to the end of a
     /// ply** — the same contract [`Self::order_captures`] carries, and the
     /// same cost for breaking it.
     ///
-    /// Each move's value is computed **once**, into a scratch reserved when
-    /// the buffer was: ranking inside the comparator instead would recompute
-    /// two of them per comparison.
+    /// Each move's value is computed **once**, into [`Self::scratch`]:
+    /// ranking inside the comparator instead would recompute two of them per
+    /// comparison.
     ///
     /// Two moves history cannot separate keep the order shunsai generated
     /// them in — the sort is stable, and an unranked move is most of any
@@ -231,7 +250,12 @@ impl MoveBuf {
         );
 
         scratch.clear();
-        scratch.extend(moves.iter().map(|&mv| (history.value(position, mv), mv)));
+        // Narrowing is lossless; the assertion above the buffer says why.
+        scratch.extend(
+            moves
+                .iter()
+                .map(|&mv| (history.value(position, mv) as i16, mv)),
+        );
         scratch.sort_by(|(left, _), (right, _)| right.cmp(left));
         for (slot, &(_, mv)) in moves.iter_mut().zip(scratch.iter()) {
             *slot = mv;
@@ -275,11 +299,12 @@ impl MoveBuf {
         self.moves.truncate(base);
     }
 
-    /// Empties the buffer. Not `truncate(0)` in intent: a *new* search calls
-    /// this, because a panic caught by `search::worker` unwinds past every
-    /// `truncate` and the worker keeps the searcher alive.
+    /// Empties both buffers. Not `truncate(0)` in intent: a *new* search
+    /// calls this, because a panic caught by `search::worker` unwinds past
+    /// every `truncate` and the worker keeps the searcher alive.
     pub(crate) fn clear(&mut self) {
         self.moves.clear();
+        self.scratch.clear();
     }
 }
 
@@ -909,14 +934,22 @@ mod tests {
         assert_eq!(rest, expected);
     }
 
-    /// One allocation, sized for the deepest search, taken before the search
-    /// starts. Measured in elements: `Move`'s size is not a guarantee Rust
-    /// makes, so a byte figure here would be pinning something nobody promised.
+    /// Both buffers, sized before the search starts. Measured in elements:
+    /// `Move`'s size is not a guarantee Rust makes, so a byte figure here
+    /// would be pinning something nobody promised.
+    ///
+    /// ⚠️ **The scratch half matters as much as the moves half** — losing it
+    /// puts a growth back on `order_history`'s path at every interior node,
+    /// which is what [`MoveBuf::default`]'s own ⚠️ is about.
     #[test]
-    fn the_buffer_reserves_a_whole_search_up_front() {
+    fn the_buffers_reserve_a_whole_search_up_front() {
         let buf = MoveBuf::new();
         assert!(buf.moves.capacity() >= MAX_LEGAL_MOVES * MAX_PLY);
-        assert_eq!(MoveBuf::default().moves.capacity(), buf.moves.capacity());
+        assert!(buf.scratch.capacity() >= MAX_LEGAL_MOVES);
+
+        let default = MoveBuf::default();
+        assert_eq!(default.moves.capacity(), buf.moves.capacity());
+        assert_eq!(default.scratch.capacity(), buf.scratch.capacity());
     }
 
     /// Sabotage: drop the colour comparison in the drop arm and this passes a
@@ -945,56 +978,68 @@ mod tests {
 
     /// A table holding `moves`, best first: the earlier the entry, the deeper
     /// the cutoff it is recorded as.
-    ///
-    /// ⚠️ **Two moves can share a history entry** — the index is (side, kind,
-    /// destination), so two silvers reaching one square are one number — and
-    /// then nothing here could rank them. The assertion is what says so
-    /// rather than leaving a test to fail obscurely.
     fn history_of(board: &Position, moves: &[Move]) -> HistoryTable {
         let mut history = HistoryTable::new();
-        for (rank, mv) in moves.iter().enumerate() {
-            let depth = i32::try_from(moves.len() - rank).expect("a small depth");
+        for (mv, depth) in moves.iter().rev().zip(1..) {
             history.record(board, *mv, depth);
         }
-        let values: Vec<i32> = moves.iter().map(|mv| history.value(board, *mv)).collect();
-        assert!(
-            values.is_sorted_by(|a, b| a > b),
-            "two of these moves share a history entry: {values:?}"
-        );
         history
     }
 
-    /// [`ordering_fixture`]'s board, a table ranking the **back three** of its
-    /// quiet run, and those three moves best first.
+    /// The quiet moves of `quiets` holding a history entry no other one of
+    /// them shares.
     ///
-    /// **Taking them from the back is what makes the tests below able to
-    /// fail**: a move history would have left at the front anyway is
-    /// indistinguishable from one that was never ranked. Two assertions keep
-    /// that true — the run has to be longer than the tail taken from it, and
-    /// **no other quiet move may share an entry with a ranked one**, or it
-    /// would surface at the front carrying a value nothing recorded against
-    /// it.
+    /// ⚠️ **Not every quiet move does.** The index is (side, kind,
+    /// destination), so two silvers reaching one square are one number, and a
+    /// fixture ranking either could not read its own ranking back. Found by
+    /// asking the table, because re-deriving its index would test the test.
+    fn quiets_with_an_entry_of_their_own(board: &Position, quiets: &[Move]) -> Vec<Move> {
+        quiets
+            .iter()
+            .copied()
+            .filter(|mv| {
+                let mut probe = HistoryTable::new();
+                probe.record(board, *mv, 1);
+                quiets
+                    .iter()
+                    .all(|other| other == mv || probe.value(board, *other) == 0)
+            })
+            .collect()
+    }
+
+    /// [`ordering_fixture`]'s board, a table ranking three of its quiet moves,
+    /// and those three best first.
+    ///
+    /// **Two properties are what make the tests below able to fail**, and
+    /// ⚠️ **neither is read off shunsai's generation order**, which is
+    /// unspecified and may change under a patch release: the three hold
+    /// entries of their own, so a ranking can be read back at all; and the
+    /// quiet run does not already open with one of them, so a ranking that
+    /// moved nothing would show.
     fn history_fixture() -> (Position, HistoryTable, Vec<Move>) {
         let board = ordering_fixture();
         let mut buf = MoveBuf::new();
         let base = buf.generate(&board);
         let quiets_from = buf.order_captures(base, &board);
         let quiets = slice(&buf, quiets_from..buf.len());
+
+        let own = quiets_with_an_entry_of_their_own(&board, &quiets);
         assert!(
-            quiets.len() >= 6,
-            "the fixture holds {} moves that take nothing; the back three have \
-             to be a proper tail for the tests below to be able to fail",
-            quiets.len()
+            own.len() >= 3,
+            "{} of the fixture's quiet moves hold an entry of their own",
+            own.len()
+        );
+        let ranked = own[own.len() - 3..].to_vec();
+        assert!(
+            !ranked.contains(&quiets[0]),
+            "the quiet run already opens with a ranked move"
         );
 
-        let ranked = quiets[quiets.len() - 3..].to_vec();
         let history = history_of(&board, &ranked);
-        for mv in &quiets {
-            assert_eq!(
-                history.value(&board, *mv) > 0,
-                ranked.contains(mv),
-                "{mv:?} shares a history entry with a ranked move"
-            );
+        let values: Vec<i32> = ranked.iter().map(|mv| history.value(&board, *mv)).collect();
+        assert!(values.is_sorted_by(|a, b| a > b), "{values:?}");
+        for mv in quiets.iter().filter(|mv| !ranked.contains(mv)) {
+            assert_eq!(history.value(&board, *mv), 0, "{mv:?} reads a ranking");
         }
         (board, history, ranked)
     }
@@ -1042,6 +1087,11 @@ mod tests {
     /// Moves history cannot separate keep the order shunsai generated them in.
     /// That is most of any list: nothing has been recorded about a quiet move
     /// until it cuts a node off.
+    ///
+    /// ⚠️ **This does not check that the sort is stable**, any more than
+    /// `moves_of_equal_rank_keep_their_generated_order` does: `sort_unstable_by`
+    /// in place of `sort_by` leaves this crate green, and only `bench`'s
+    /// frozen counts move.
     #[test]
     fn moves_of_equal_history_keep_their_generated_order() {
         let (board, history, ranked) = history_fixture();
@@ -1083,5 +1133,26 @@ mod tests {
         buf.order_killers(quiets_from, [Some(killer), None]);
         assert_eq!(buf.get(quiets_from), killer);
         assert_eq!(buf.get(quiets_from + 1), ranked[0]);
+    }
+
+    /// A searcher kept alive past a panic starts its next search with both
+    /// buffers empty, not just the move list.
+    ///
+    /// **The first assertion is what makes this able to fail** — with an
+    /// empty scratch there is nothing for `clear` to have missed.
+    ///
+    /// Sabotage: drop either line from `clear`.
+    #[test]
+    fn clearing_empties_both_buffers() {
+        let board = ordering_fixture();
+        let mut buf = MoveBuf::new();
+        let base = buf.generate(&board);
+        buf.order_history(base, &board, &HistoryTable::new());
+        assert!(!buf.scratch.is_empty(), "the ordering left no scratch");
+        assert!(buf.len() > base);
+
+        buf.clear();
+        assert_eq!(buf.len(), 0);
+        assert!(buf.scratch.is_empty());
     }
 }
