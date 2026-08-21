@@ -30,7 +30,7 @@ use crate::eval;
 use crate::game::HistoryEntry;
 use crate::info::SearchInfo;
 use crate::moves::{MAX_LEGAL_MOVES, MoveBuf};
-use crate::ordering;
+use crate::ordering::{self, HistoryTable};
 use crate::repetition;
 use crate::score::{Depth, MAX_PLY, Score};
 use crate::search::{BestMove, InfoSink, Limits, SearchJob, SearchSignals, Searcher};
@@ -328,6 +328,18 @@ pub struct NegamaxSearcher<C = RealClock> {
     /// One vector rather than one per kind of per-ply state, so that the
     /// lengths cannot drift apart — [`MAX_PLY`] sizes them together.
     stack: Vec<Stack>,
+    /// How readily each quiet move has cut a node off, over the **whole
+    /// tree**.
+    ///
+    /// ⚠️ **Not per ply, unlike [`Stack::killers`].** A killer is a guess
+    /// about the sibling nodes beside the one it cut off, so it is thrown away
+    /// one ply up; history is a guess about the move itself, and a cutoff at
+    /// any ply is evidence at every other.
+    ///
+    /// Cleared at the start of every search, beside the killers. ⚠️ A dropped
+    /// clear is misreported exactly as [`Stack`]'s own doc describes, and
+    /// moves `bench`'s frozen counts as well.
+    history: HistoryTable,
     /// Survives between searches on purpose — a position's value does not stop
     /// being true because the clock moved. `usinewgame` is what clears it.
     tt: Table,
@@ -403,6 +415,7 @@ impl<C: Clock> NegamaxSearcher<C> {
             root_moves: Vec::with_capacity(MAX_LEGAL_MOVES),
             buf: MoveBuf::new(),
             stack: (0..=MAX_PLY).map(|_| Stack::new()).collect(),
+            history: HistoryTable::new(),
             tt: Table::new(mb),
             path: Vec::with_capacity(MAX_PLY),
             nodes: 0,
@@ -629,6 +642,10 @@ impl<C: Clock> NegamaxSearcher<C> {
         // `order_killers` rotates its find to `from`, so from `base` a killer
         // displaces the transposition move, which is the demotion the ⚠️ above
         // forbids and which `the_transposition_move_is_searched_first` catches.
+        // ⚠️ **Before the killers, not after**, or the sort puts them back
+        // among the quiet moves. `order_history` carries the mechanism and
+        // `a_killer_is_searched_before_the_quiet_moves_around_it` the cost.
+        self.buf.order_history(quiets_from, board, &self.history);
         self.buf.order_killers(quiets_from, self.stack[ply].killers);
 
         let mut best = -Score::INFINITE;
@@ -657,7 +674,7 @@ impl<C: Clock> NegamaxSearcher<C> {
                     if window.alpha >= window.beta {
                         // `board` is back to this node's own position, which
                         // is the one that decides whether `mv` took anything.
-                        self.remember_killer(ply, board, mv);
+                        self.remember_cutoff(ply, depth, board, mv);
                         break;
                     }
                 }
@@ -823,14 +840,22 @@ impl<C: Clock> NegamaxSearcher<C> {
         best
     }
 
-    /// Records `mv` as a killer at `ply`, unless it takes something.
+    /// Records that `mv` cut this node off, unless it takes something — as a
+    /// killer at `ply`, and in the history table.
     ///
-    /// Newest first, and a repeat of the newest is not re-recorded: it would
-    /// push the only other killer out and leave the ply with one.
-    fn remember_killer(&mut self, ply: usize, board: &Position, mv: Move) {
+    /// **One function for the two, because the quiet test above them is one
+    /// [`ordering::capture_key`] call**, and both heuristics rank quiet moves
+    /// only: a capture is ordered by what it wins, and neither table would
+    /// ever be looked up for one.
+    ///
+    /// The killers go newest first, and a repeat of the newest is not
+    /// re-recorded: it would push the only other killer out and leave the ply
+    /// with one.
+    fn remember_cutoff(&mut self, ply: usize, depth: Depth, board: &Position, mv: Move) {
         if ordering::capture_key(board, mv).is_some() {
             return;
         }
+        self.history.record(board, mv, depth);
         let killers = &mut self.stack[ply].killers;
         if killers[0] != Some(mv) {
             killers[1] = killers[0];
@@ -897,6 +922,7 @@ impl<C: Clock> Searcher for NegamaxSearcher<C> {
             entry.pv.clear();
             entry.killers = [None; 2];
         }
+        self.history.clear();
 
         // The game's own history is the front of the search's path — 千日手
         // counts positions reached in the game, not positions visited in the
@@ -2227,11 +2253,11 @@ mod tests {
     /// smaller. This is one of the two fixtures measured where it still costs,
     /// and it costs more at seven plies than at six.
     ///
-    /// Sabotage, from a baseline of 759 802 nodes: deleting the whole `hit.mv`
-    /// block gives 1 018 032, and dropping only the `buf.swap` while leaving
-    /// `order_from` at `base + 1` gives 1 152 630. Both go red on the ceiling
+    /// Sabotage, from a baseline of 736 911 nodes: deleting the whole `hit.mv`
+    /// block gives 951 795, and dropping only the `buf.swap` while leaving
+    /// `order_from` at `base + 1` gives 1 113 238. Both go red on the ceiling
     /// below. Demoting the stored move rather than removing it — ordering
-    /// captures from `base` — gives 986 187 and goes red too.
+    /// captures from `base` — gives 945 875 and goes red too.
     #[test]
     fn the_transposition_move_is_searched_first() {
         let (_, lines) = run("startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c", depth(7));
@@ -2250,10 +2276,14 @@ mod tests {
     /// a drop-heavy middlegame is and what the initial position is not — at
     /// `startpos` the whole feature moves `bench`'s count by nothing at all.
     ///
-    /// Sabotage, either way of removing the feature — make `remember_killer`
-    /// return before it stores, or delete the `order_killers` call and leave
-    /// the table filling up unread: both take this fixture from 253 847 nodes
-    /// to 455 932, and both go red on the ceiling below.
+    /// Sabotage, either way of removing the feature — delete the
+    /// `order_killers` call and leave the table filling up unread, or drop
+    /// `remember_cutoff`'s killer half: both take this fixture from 249 620
+    /// nodes to 404 876, and both go red on the ceiling below. ⚠️ **Ordering
+    /// by history after the killers rather than before gives 406 015** and
+    /// goes red here too — the only test in this crate that catches that
+    /// order. Removing history instead, either its ordering call or
+    /// `remember_cutoff`'s history half, gives 253 847 and stays green.
     #[test]
     fn a_killer_is_searched_before_the_quiet_moves_around_it() {
         let (_, lines) = run(

@@ -5,7 +5,7 @@ use core::ops::ControlFlow;
 use shogi_core::Move;
 use shunsai::{MoveSet, Position};
 
-use crate::ordering;
+use crate::ordering::{self, HistoryTable};
 use crate::score::MAX_PLY;
 
 /// The most legal moves any shogi position has.
@@ -33,6 +33,11 @@ pub const MAX_LEGAL_MOVES: usize = 593;
 #[derive(Debug)]
 pub(crate) struct MoveBuf {
     moves: Vec<Move>,
+    /// One `(value, move)` pair per move of the ply [`Self::order_history`] is
+    /// ranking, and nothing between calls. One ply's worth is all it can ever
+    /// hold: ordering runs on the ply just generated, before anything
+    /// descends.
+    scratch: Vec<(i32, Move)>,
 }
 
 impl MoveBuf {
@@ -41,6 +46,7 @@ impl MoveBuf {
     pub(crate) fn new() -> Self {
         Self {
             moves: Vec::with_capacity(MAX_LEGAL_MOVES * MAX_PLY),
+            scratch: Vec::with_capacity(MAX_LEGAL_MOVES),
         }
     }
 
@@ -180,6 +186,56 @@ impl MoveBuf {
             ordering::capture_key(position, *b).cmp(&ordering::capture_key(position, *a))
         });
         from + captures
+    }
+
+    /// Puts the moves at or after `from` in [`HistoryTable`] order, best
+    /// first.
+    ///
+    /// `from` is [`Self::order_captures`]'s return value: history ranks how
+    /// often a *quiet* move has cut a node off, and a capture is ranked by
+    /// what it wins.
+    ///
+    /// ⚠️ **It runs before [`Self::order_killers`], not after.** That one
+    /// rotates its finds to the front and leaves everything else in place, so
+    /// a killer keeps its front over whatever history ranked first; sorting
+    /// afterwards puts them back among the quiet moves. ⚠️ **What catches
+    /// that is a node count in the search**,
+    /// `negamax::tests::a_killer_is_searched_before_the_quiet_moves_around_it`
+    /// — not `a_killer_is_tried_before_the_best_history_move` below, which
+    /// makes the two calls itself and stays green whichever order the search
+    /// uses.
+    ///
+    /// ⚠️ **It reorders to the end of the whole buffer, not to the end of a
+    /// ply** — the same contract [`Self::order_captures`] carries, and the
+    /// same cost for breaking it.
+    ///
+    /// Each move's value is computed **once**, into a scratch reserved when
+    /// the buffer was: ranking inside the comparator instead would recompute
+    /// two of them per comparison.
+    ///
+    /// Two moves history cannot separate keep the order shunsai generated
+    /// them in — the sort is stable, and an unranked move is most of any
+    /// list.
+    pub(crate) fn order_history(
+        &mut self,
+        from: usize,
+        position: &Position,
+        history: &HistoryTable,
+    ) {
+        let Self { moves, scratch } = self;
+        let moves = &mut moves[from..];
+        debug_assert!(
+            moves.len() <= MAX_LEGAL_MOVES,
+            "ordering {} moves reaches past the ply it was given",
+            moves.len()
+        );
+
+        scratch.clear();
+        scratch.extend(moves.iter().map(|&mv| (history.value(position, mv), mv)));
+        scratch.sort_by(|(left, _), (right, _)| right.cmp(left));
+        for (slot, &(_, mv)) in moves.iter_mut().zip(scratch.iter()) {
+            *slot = mv;
+        }
     }
 
     /// Moves each of `killers` present at or after `from` to the front of that
@@ -775,7 +831,7 @@ mod tests {
     /// Where a killer goes: behind every capture, ahead of every other quiet
     /// move, and in the order the table holds them.
     ///
-    /// Sabotage: find the killer and leave it where it is. The three killer
+    /// Sabotage: find the killer and leave it where it is. The four killer
     /// tests here go red, and so does `negamax`'s
     /// `a_killer_is_searched_before_the_quiet_moves_around_it`.
     #[test]
@@ -803,7 +859,7 @@ mod tests {
     /// beside it, which still lands at the front.
     ///
     /// Sabotage: advance the front whether or not the killer was found. This
-    /// goes red, and so do eight tests in `negamax`.
+    /// goes red, and so do seven tests in `negamax`.
     #[test]
     fn a_killer_this_node_cannot_play_moves_nothing() {
         let (board, killers, _) = killer_fixture();
@@ -833,8 +889,9 @@ mod tests {
     /// in — the same rule the capture partition follows, and for the same
     /// reason.
     ///
-    /// Sabotage: `swap` instead of `rotate_right`. This goes red and the other
-    /// two killer tests do not.
+    /// Sabotage: `swap` instead of `rotate_right`. This goes red, and so does
+    /// `a_killer_is_tried_before_the_best_history_move`; the other two killer
+    /// tests do not.
     #[test]
     fn the_quiet_moves_a_killer_passes_keep_their_generated_order() {
         let (board, killers, quiets) = killer_fixture();
@@ -884,5 +941,147 @@ mod tests {
                 to
             }
         ));
+    }
+
+    /// A table holding `moves`, best first: the earlier the entry, the deeper
+    /// the cutoff it is recorded as.
+    ///
+    /// ⚠️ **Two moves can share a history entry** — the index is (side, kind,
+    /// destination), so two silvers reaching one square are one number — and
+    /// then nothing here could rank them. The assertion is what says so
+    /// rather than leaving a test to fail obscurely.
+    fn history_of(board: &Position, moves: &[Move]) -> HistoryTable {
+        let mut history = HistoryTable::new();
+        for (rank, mv) in moves.iter().enumerate() {
+            let depth = i32::try_from(moves.len() - rank).expect("a small depth");
+            history.record(board, *mv, depth);
+        }
+        let values: Vec<i32> = moves.iter().map(|mv| history.value(board, *mv)).collect();
+        assert!(
+            values.is_sorted_by(|a, b| a > b),
+            "two of these moves share a history entry: {values:?}"
+        );
+        history
+    }
+
+    /// [`ordering_fixture`]'s board, a table ranking the **back three** of its
+    /// quiet run, and those three moves best first.
+    ///
+    /// **Taking them from the back is what makes the tests below able to
+    /// fail**: a move history would have left at the front anyway is
+    /// indistinguishable from one that was never ranked. Two assertions keep
+    /// that true — the run has to be longer than the tail taken from it, and
+    /// **no other quiet move may share an entry with a ranked one**, or it
+    /// would surface at the front carrying a value nothing recorded against
+    /// it.
+    fn history_fixture() -> (Position, HistoryTable, Vec<Move>) {
+        let board = ordering_fixture();
+        let mut buf = MoveBuf::new();
+        let base = buf.generate(&board);
+        let quiets_from = buf.order_captures(base, &board);
+        let quiets = slice(&buf, quiets_from..buf.len());
+        assert!(
+            quiets.len() >= 6,
+            "the fixture holds {} moves that take nothing; the back three have \
+             to be a proper tail for the tests below to be able to fail",
+            quiets.len()
+        );
+
+        let ranked = quiets[quiets.len() - 3..].to_vec();
+        let history = history_of(&board, &ranked);
+        for mv in &quiets {
+            assert_eq!(
+                history.value(&board, *mv) > 0,
+                ranked.contains(mv),
+                "{mv:?} shares a history entry with a ranked move"
+            );
+        }
+        (board, history, ranked)
+    }
+
+    /// Where history puts a quiet move: the ranked ones at the front of the
+    /// quiet run, best first, and the same moves as before.
+    ///
+    /// Sabotage: return from `order_history` before the write-back.
+    #[test]
+    fn history_ordering_puts_the_ranked_quiets_first() {
+        let (board, history, ranked) = history_fixture();
+        let mut buf = MoveBuf::new();
+        let base = buf.generate(&board);
+        let generated = slice(&buf, base..buf.len());
+
+        let quiets_from = buf.order_captures(base, &board);
+        buf.order_history(quiets_from, &board, &history);
+        same_moves(&slice(&buf, base..buf.len()), &generated);
+
+        assert_eq!(slice(&buf, quiets_from..quiets_from + ranked.len()), ranked);
+    }
+
+    /// Ordering from `quiets_from` leaves every capture where MVV-LVA put it —
+    /// history ranks nothing about a capture, and a sort reaching back over
+    /// them would flatten that ranking to zeroes.
+    ///
+    /// Sabotage: slice from `0` rather than from `from` in `order_history`.
+    #[test]
+    fn history_ordering_leaves_the_captures_where_they_are() {
+        let (board, history, _) = history_fixture();
+        let mut buf = MoveBuf::new();
+        let base = buf.generate(&board);
+        let quiets_from = buf.order_captures(base, &board);
+        let captures = slice(&buf, base..quiets_from);
+        assert!(
+            captures.len() >= 2,
+            "the fixture holds fewer than two captures, so a disturbed prefix \
+             could not show"
+        );
+
+        buf.order_history(quiets_from, &board, &history);
+        assert_eq!(slice(&buf, base..quiets_from), captures);
+    }
+
+    /// Moves history cannot separate keep the order shunsai generated them in.
+    /// That is most of any list: nothing has been recorded about a quiet move
+    /// until it cuts a node off.
+    #[test]
+    fn moves_of_equal_history_keep_their_generated_order() {
+        let (board, history, ranked) = history_fixture();
+        let mut buf = MoveBuf::new();
+        let base = buf.generate(&board);
+        let quiets_from = buf.order_captures(base, &board);
+        let before = slice(&buf, quiets_from..buf.len());
+
+        buf.order_history(quiets_from, &board, &history);
+        let unranked = slice(&buf, quiets_from + ranked.len()..buf.len());
+        let expected: Vec<Move> = before
+            .iter()
+            .copied()
+            .filter(|mv| !ranked.contains(mv))
+            .collect();
+        assert_eq!(unranked, expected);
+    }
+
+    /// How the two quiet heuristics compose: a killer is tried before the
+    /// move history ranked first, because [`MoveBuf::order_killers`] runs last
+    /// and rotates.
+    ///
+    /// **What makes this able to fail is that the killer is a move history
+    /// ranked nothing about** — asserted below, because a killer history would
+    /// have put at the front anyway says nothing about the order of the two
+    /// calls.
+    #[test]
+    fn a_killer_is_tried_before_the_best_history_move() {
+        let (board, history, ranked) = history_fixture();
+        let mut buf = MoveBuf::new();
+        let base = buf.generate(&board);
+        let quiets_from = buf.order_captures(base, &board);
+        let killer = slice(&buf, quiets_from..buf.len())
+            .into_iter()
+            .find(|mv| history.value(&board, *mv) == 0)
+            .expect("a quiet move nothing was recorded about");
+
+        buf.order_history(quiets_from, &board, &history);
+        buf.order_killers(quiets_from, [Some(killer), None]);
+        assert_eq!(buf.get(quiets_from), killer);
+        assert_eq!(buf.get(quiets_from + 1), ranked[0]);
     }
 }
