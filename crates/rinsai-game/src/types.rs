@@ -56,9 +56,11 @@ impl fmt::Display for Outcome {
             Self::FlagFall { loser } => write!(f, "{}の時間切れ", side(loser)),
             // The kind's own sentence rather than a noun beside it: a second
             // table over `IllegalMoveKind` is a second thing to keep in step
-            // with the first, for one word's worth of grammar.
+            // with the first, for one word's worth of grammar — and the colon
+            // rather than the 「（）」 the other endings use, for the same
+            // reason: what the table holds is a sentence.
             Self::IllegalMove { loser, kind } => {
-                write!(f, "{}の反則負け（{}）", side(loser), illegal(kind))
+                write!(f, "{}の反則負け：{}", side(loser), illegal(kind))
             }
             Self::Declaration { winner } => write!(f, "{}の勝ち（入玉宣言）", side(winner)),
             Self::MaxMoves => f.write_str("引き分け（最大手数）"),
@@ -242,7 +244,7 @@ mod tests {
                 Outcome::PerpetualCheck { .. } => "先手の負け（連続王手の千日手）",
                 Outcome::Resignation { .. } => "後手の投了",
                 Outcome::FlagFall { .. } => "後手の時間切れ",
-                Outcome::IllegalMove { .. } => "先手の反則負け（二歩です）",
+                Outcome::IllegalMove { .. } => "先手の反則負け：二歩です",
                 Outcome::Declaration { .. } => "後手の勝ち（入玉宣言）",
                 Outcome::MaxMoves => "引き分け（最大手数）",
                 Outcome::Abandoned { .. } => "後手の負け（対局放棄）",

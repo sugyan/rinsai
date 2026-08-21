@@ -313,9 +313,10 @@ impl Game {
 
     /// 入玉宣言 — `winner` declared, and the declaration is **trusted as sent**.
     ///
-    /// ⚠️ Nothing here implements the 27-point rule, so a wrong declaration is
-    /// recorded as a full win. A caller that cannot afford that has to check the
-    /// rule before calling, and this crate is not where that check lives yet.
+    /// ⚠️ A wrong declaration is recorded as a full win. A caller that cannot
+    /// afford that asks [`can_declare`](crate::can_declare) about `winner`
+    /// first — the same colour, since that function answers about the colour it
+    /// is given.
     pub fn declare(&mut self, winner: Color) {
         self.adjudicate(Outcome::Declaration { winner });
     }
