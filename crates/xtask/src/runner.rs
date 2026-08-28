@@ -721,7 +721,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--baseline-nodes" => baseline_nodes = Some(parse_u64(value()?)?),
             "--time-ms" => time = Some(Duration::from_millis(parse_u64(value()?)?)),
             "--byoyomi-ms" => byoyomi = Some(Duration::from_millis(parse_u64(value()?)?)),
-            "--gain" => elo = Some((0.0, 5.0)),
+            "--gain" => elo = Some((0.0, 10.0)),
             "--non-regression" => elo = Some((-5.0, 0.0)),
             "--elo0" => elo0 = Some(parse_f64(value()?)?),
             "--elo1" => elo1 = Some(parse_f64(value()?)?),
@@ -868,7 +868,7 @@ mod tests {
             v.extend(strings(extra));
             parse_args(&v)
         };
-        assert_eq!(with(&["--gain"]).expect("valid").elo, (0.0, 5.0));
+        assert_eq!(with(&["--gain"]).expect("valid").elo, (0.0, 10.0));
         assert_eq!(with(&["--non-regression"]).expect("valid").elo, (-5.0, 0.0));
         assert_eq!(
             with(&["--elo0", "-3", "--elo1", "3"]).expect("valid").elo,

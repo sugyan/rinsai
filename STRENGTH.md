@@ -27,6 +27,56 @@ it like any other.
 
 ## E1 — classical search, one feature at a time
 
+### The working-gate calibration — step 3 re-measured at (0, 10) / 300 000 nodes — **pass**
+
+H1 accepted at elo0 = 0 / elo1 = 10.
+
+```
+pairs 1857 | games 3714 | candidate W-D-L 1435-938-1341
+pent [158, 20, 1453, 22, 204] | llr +2.919 | score 51.27% (elo +8.8 est)
+```
+
+| | |
+|---|---|
+| candidate | `4b49de5` |
+| baseline | `a8ce924` |
+| `bench` | candidate 272 244, baseline 276 470 — both read off the binaries that played, before the run |
+| control | `--nodes 300000 --gain` (elo0 = 0 / elo1 = 10), α = β = 0.05, concurrency 3 |
+| openings | `openings-v3.sfen`, seed 1, 1857 distinct openings for 1857 pairs |
+| endings | 2776 checkmates, 913 千日手, 25 at the 512-ply move limit |
+
+The counts above were recomputed from `run.jsonl` rather than read off the
+harness's summary, and agree to the digit.
+
+**What this entry is.** The first run of the working gate CLAUDE.md now
+prescribes, played on the same two binaries as the step 3 entry below — the
+same feature, under the new control. It does not revisit that verdict; it
+answers whether the 300 000-node regime preserves what the 1 M regime
+measured, on the smallest effect E1 has landed. It does.
+
+⚠️ **What a pass says under the widened gate: the true difference is positive
+at α = 0.05, and the gate had 95% power at +10.** The +8.8 point estimate sits
+below elo1, which a pass permits — "at least elo1" was never the guarantee,
+only the simple-vs-simple idealisation of it.
+
+⚠️ **The final LLR sits below the bound the run stopped on.** The bound was
+crossed at +2.994 with three pairs in flight; two landed even and one a
+loss-draw, and the recomputation over all 1857 pairs reads +2.919. Step 3's
+entry warned that the recomputation need not agree with the stopping decision;
+this is the run where it did not. The verdict is the decision that stopped the
+run.
+
+⚠️ **The cheaper game is the whole saving — the effect did not get easier to
+see.** 78.2% of pairs were even against 76.7% at 1 M, 千日手 24.6% of games
+against 26.0%, and the pair count barely moved (1857 against 1937): with elo1
+at the effect's own size, the bounds bought little here and were not expected
+to — an effect at the gate's own bound is the grind case at any gate that
+resolves it. What fell was the cost of each pair.
+
+千日手 games are the short ones at this budget — median 41 plies against 131
+for a checkmate — so an adjudication rule aimed at repetition games would save
+nothing here; the 25 move-limit games are where the long tail lives.
+
 ### Step 3 — history for quiet moves, indexed by (side, kind, destination) — **pass**
 
 H1 accepted at elo0 = 0 / elo1 = 5.
