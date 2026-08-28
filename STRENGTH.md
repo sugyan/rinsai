@@ -27,6 +27,55 @@ it like any other.
 
 ## E1 — classical search, one feature at a time
 
+### Step 3 — history for quiet moves, indexed by (side, kind, destination) — **pass**
+
+H1 accepted at elo0 = 0 / elo1 = 5.
+
+```
+pairs 1937 | games 3874 | candidate W-D-L 1473-1041-1360
+pent [168, 27, 1485, 38, 219] | llr +2.954 | score 51.46% (elo +10.1 est)
+```
+
+| | |
+|---|---|
+| candidate | `4b49de5` |
+| baseline | `a8ce924` |
+| `bench` | candidate 272 244, baseline 276 470 — both read off the binaries that played |
+| control | `--nodes 1000000 --gain`, α = β = 0.05, concurrency 4 |
+| openings | `openings-v3.sfen`, seed 1, 1937 distinct openings for 1937 pairs |
+| endings | 2833 checkmates, 1006 千日手, 35 at the 512-ply move limit |
+
+The counts above were recomputed from `run.jsonl` rather than read off the
+harness's summary, and agree with it to the digit.
+
+⚠️ **The bound was crossed and then uncrossed before the run stopped.** Over
+the last six pairs to land the LLR read +2.933, +3.003, +2.926, +2.891 and
++2.954 — above the bound, below it twice, then above. The verdict is the
+decision that stopped the run, not a recomputation, and the same recomputation
+over all 1937 pairs happens to agree here. ⚠️ **It need not have.**
+
+⚠️ **A +5 gate on a +10 effect is the expensive case.** Step 2 crossed in 763
+pairs on a candidate whose point estimate was +29.9; this one needed 1937 for
++10.1, and 1485 of those pairs — 77% — were even. The pair count a gate needs
+grows as the effect approaches its bound, and E1's later items are the smaller
+ones.
+
+⚠️ **What it says is that the true difference is at least 5 elo at α = 0.05.**
+The +10.1 is a point estimate and is not the claim.
+
+A first attempt was interrupted at 1560 pairs, undecided at +1.157, when the
+machine running it restarted. It is not a separate result: every one of those
+1560 pairs appears in the run above with the same opening and the same two
+game results, none mismatching, so they are a prefix of these 1937 and nothing
+is recorded twice.
+
+⚠️ **The games replayed; the order they landed in did not.** Under
+`--concurrency` the pairs are a race, and the two runs completed the same pairs
+in different orders — so the running LLR the harness prints is order-dependent
+even though the games are not. Two runs of one seed can therefore stop at
+different pair counts, and the count is a condition of the verdict rather than
+a property of the patch.
+
 ### Step 2 — killers, and the `Stack` the second per-ply field earns — **pass**
 
 H1 accepted at elo0 = 0 / elo1 = 5.
