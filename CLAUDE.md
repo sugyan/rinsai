@@ -62,9 +62,13 @@ Nothing is adopted on argument: `patch → bench → fixed-node paired games →
 
 - **`bench`** (fixed positions × fixed depth) is the search analogue of perft. A
   patch that moves a node count unintentionally is a bug, not an improvement.
-- **SPRT**: gains at elo0=0 / elo1=5; non-regression gates at elo0=−5 / elo1=0;
-  α=β=0.05. **Paired openings with colours swapped are mandatory.** Feature
-  patches run at fixed nodes; speed and time-management patches run in real time.
+- **SPRT**: gains at elo0=0 / elo1=10, widened per patch when the expected
+  effect is clearly larger — elo1 sets power and speed, never the merge bar,
+  which is elo0's α. Non-regression gates at elo0=−5 / elo1=0; α=β=0.05.
+  **Paired openings with colours swapped are mandatory.** Feature patches run
+  at fixed nodes — 300 000 per move for working gates, and each phase exit
+  replays one 1 000 000-node non-regression gate against the phase's entry
+  rev. Speed and time-management patches run in real time.
 - **One feature = one SPRT.** Do not bundle. ⚠️ This governs **strength
   patches** — changes whose intended effect is Elo. Correctness and
   infrastructure work is gated by its own deterministic suites (scenario,
@@ -75,8 +79,12 @@ Nothing is adopted on argument: `patch → bench → fixed-node paired games →
   engines is decided by the opening and the budgets, so that queue may run
   beside other work. Timing measurements and real-time SPRTs may not.
 - **Never run engine matches above `--concurrency 3`** on the development
-  machine — each worker is two engine processes at full CPU. Say what will be
-  spawned before launching a fleet, and give every long-running process a bound.
+  machine while it is also being worked on. A worker's two engines alternate —
+  only the side to move is searching — so each worker occupies about one core,
+  and the cap is headroom for the session, not a per-worker cost; on a machine
+  dedicated to a fixed-node queue the ceiling is its core count. Say what will
+  be spawned before launching a fleet, and give every long-running process a
+  bound.
 
 ## 4. Prose
 

@@ -340,6 +340,39 @@ delivery margin of its own.
 
 ## The harness and measurement
 
+### Why is the working gain gate (0, 10) at 300 000 nodes, not (0, 5) at 1 M?
+
+Because the games priced the old gate: step 2 crossed in 763 pairs on a +29.9
+point estimate, step 3 needed 1937 for +10.1 with 77% of its pairs even, and
+E1's later items are the smaller ones. Two independent levers changed.
+
+**The bounds.** The statistic gains `(φ1−φ0)(2φ̂−φ0−φ1) / 2V` per pair —
+recompute that from any entry's own pentanomial and it prices all three
+finished gates: 744 predicted against 763 played, 692 against 697, 1932
+against 1937. The same arithmetic at elo1 = 10 prices step 3's shape at ~1440
+pairs, step 2's at ~410, and a no-effect patch at ~1500 **to rejection**,
+where (0, 5) sends it idling to the pair cap.
+
+- ⚠️ **elo1 does not touch the merge bar.** P(accept H1 | true elo ≤ 0) ≤ α at
+  any elo1. A pass claims the difference is **positive at α = 0.05, with 95%
+  power at elo1** — "at least elo1" was the simple-vs-simple idealisation, and
+  entries stop saying it.
+- **Why not wider still**: the drift peaks near elo1 ≈ the true effect and
+  collapses past it — on a +10 effect, (0, 15) is *slower* than (0, 5). +10 is
+  the observed effect class; a patch expected to be clearly larger widens its
+  own gate.
+
+**The budget.** A fixed-node move costs time linearly in its budget, so 300 000
+is a 3.3× cheaper game by definition, and at the measured branching factor
+(≈ 8 per ply, bench depth 4 → 6) it searches about half a ply shallower — the
+working gate plays nearly the regime the 1 M gate did. What it could still
+miss, an effect that only exists deeper, is what the phase-exit 1 M
+non-regression anchor is for.
+
+**Reopens if** effects stop clearing +10 routinely. The next lever then is not
+the bounds but the opening set's decisiveness — step 3 ran 77% even pairs and
+26% 千日手 — or the 1 M regime for the small patches themselves.
+
 ### Why isn't Ayane vendored as the match harness?
 
 Read at `yaneurao/Ayane@5fc6afd`, it lacks all three things the gates need.
