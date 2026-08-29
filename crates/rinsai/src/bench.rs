@@ -36,12 +36,12 @@ const BENCH_HASH_MB: usize = 16;
 /// table is the last step of answering "which patch moved it", not the first.
 /// The counts are at `BENCH_HASH_MB` and at no other table size.
 const EXPECTED: &[u64] = &[
-    3_525,   // startpos
-    6_497,   // startpos moves 7g7f 3c3d
-    4_194,   // startpos moves 2g2f 8c8d 2f2e 8d8e
-    8_292,   // startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c
-    249_462, // matsuri, the drop-heavy middlegame
-    175,     // two lone kings
+    2_769,   // startpos
+    5_474,   // startpos moves 7g7f 3c3d
+    3_332,   // startpos moves 2g2f 8c8d 2f2e 8d8e
+    7_211,   // startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c
+    213_031, // matsuri, the drop-heavy middlegame
+    166,     // two lone kings
     99,      // 頭金
 ];
 

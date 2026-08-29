@@ -31,6 +31,7 @@ use crate::game::HistoryEntry;
 use crate::info::SearchInfo;
 use crate::moves::{MAX_LEGAL_MOVES, MoveBuf};
 use crate::ordering::{self, HistoryTable};
+use crate::reduction;
 use crate::repetition;
 use crate::score::{Depth, MAX_PLY, Score};
 use crate::search::{BestMove, InfoSink, Limits, SearchJob, SearchSignals, Searcher};
@@ -646,6 +647,18 @@ impl<C: Clock> NegamaxSearcher<C> {
         self.buf.order_history(quiets_from, board, &self.history);
         self.buf.order_killers(quiets_from, self.stack[ply].killers);
 
+        // Whether *this* node's side to move is in check, for the reduction
+        // below. ⚠️ **Read off the path rather than from the board**: both
+        // callers of [`Self::child`] push this node's entry immediately before
+        // dispatching, and `child` is the only way in here, so the answer was
+        // already computed and paid for. `board.in_check()` would buy it twice.
+        let in_check = self.path.last().is_some_and(|entry| entry.in_check);
+        debug_assert_eq!(
+            in_check,
+            board.in_check(),
+            "the last entry on the repetition path is not this node's"
+        );
+
         let mut best = -Score::INFINITE;
         // Only a move that raised alpha, because only such a move was proved
         // better than something. A fail-low node offers none, and offering the
@@ -653,9 +666,28 @@ impl<C: Clock> NegamaxSearcher<C> {
         let mut best_move = None;
         for i in base..self.buf.len() {
             let mv = self.buf.get(i);
+            // ⚠️ **A promotion that takes nothing is quiet by `order_captures`
+            // and is not quiet for this purpose** — [`reduction`] carries why.
+            let quiet = i >= quiets_from && !mv.is_promoting();
             let undo = board.do_move(mv);
-            self.path.push(HistoryEntry::of(board));
-            let score = self.child(board, window, depth - 1, ply + 1, budget);
+            // The entry about to be pushed is the *child's*, so its `in_check`
+            // is whether `mv` gave check — the second thing the reduction needs,
+            // and the second one the push has already paid for.
+            let entry = HistoryEntry::of(board);
+            let gives_check = entry.in_check;
+            self.path.push(entry);
+            let taken = reduction::reduction(depth, i - base, quiet, gives_check, in_check);
+            let mut score = self.child(board, window, depth - 1 - taken, ply + 1, budget);
+            // ⚠️ **A reduced score may raise alpha only after a full-depth
+            // search agrees with it.** The saving is in the moves that stay
+            // below alpha; believing one that does not is how a reduction
+            // becomes a wrong answer instead of a cheaper one. Since `beta`
+            // is above `alpha`, this also means a reduced search can never cut
+            // the node off on its own — every cutoff below came from a search
+            // at this node's own depth, which is what `remember_cutoff` records.
+            if taken > 0 && !self.stopped && score > window.alpha {
+                score = self.child(board, window, depth - 1, ply + 1, budget);
+            }
             // Both of these come before every `break` below, without exception.
             self.path.pop();
             board.undo_move(mv, undo);
@@ -2251,17 +2283,23 @@ mod tests {
     /// smaller. This is one of the two fixtures measured where it still costs,
     /// and it costs more at seven plies than at six.
     ///
-    /// Sabotage, from a baseline of 736 911 nodes: deleting the whole `hit.mv`
-    /// block gives 951 795, and dropping only the `buf.swap` while leaving
-    /// `order_from` at `base + 1` gives 1 113 238. Both go red on the ceiling
+    /// Sabotage, from a baseline of 159 843 nodes: deleting the whole `hit.mv`
+    /// block gives 192 205, and dropping only the `buf.swap` while leaving
+    /// `order_from` at `base + 1` gives 291 018. Both go red on the ceiling
     /// below. Demoting the stored move rather than removing it — ordering
-    /// captures from `base` — gives 945 875 and goes red too.
+    /// captures from `base` — gives 187 814 and goes red too.
+    ///
+    /// ⚠️ **The ceiling was recalibrated when the late-move reduction landed,
+    /// and it had to be.** The reduction took the baseline from 736 911 nodes
+    /// to 159 843 and took all three sabotages down with it — at the old
+    /// ceiling of 900 000 every one of them passed. A tripwire calibrated
+    /// against one engine does not stay a tripwire across the next one.
     #[test]
     fn the_transposition_move_is_searched_first() {
         let (_, lines) = run("startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c", depth(7));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 900_000,
+            field(last, "nodes") < 175_000,
             "the transposition move is not being tried first: {last}"
         );
     }
@@ -2276,12 +2314,19 @@ mod tests {
     ///
     /// Sabotage, either way of removing the feature — delete the
     /// `order_killers` call and leave the table filling up unread, or drop
-    /// `remember_cutoff`'s killer half: both take this fixture from 249 620
-    /// nodes to 404 876, and both go red on the ceiling below. ⚠️ **Ordering
-    /// by history after the killers rather than before gives 406 015** and
+    /// `remember_cutoff`'s killer half: both take this fixture from 213 141
+    /// nodes to 341 504, and both go red on the ceiling below. ⚠️ **Ordering
+    /// by history after the killers rather than before gives 343 332** and
     /// goes red here too — the only test in this crate that catches that
     /// order. Removing history instead, either its ordering call or
-    /// `remember_cutoff`'s history half, gives 253 847 and stays green.
+    /// `remember_cutoff`'s history half, gives 219 760 and stays green.
+    ///
+    /// ⚠️ **The ceiling was recalibrated when the late-move reduction landed,
+    /// and it had to be.** The baseline fell from 249 620 to 213 141 and the
+    /// three sabotages above fell from ~405 000 to ~342 000, which the old
+    /// ceiling of 350 000 no longer caught. The new one still passes a search
+    /// with the reduction removed (249 620), which is the test below's job
+    /// rather than this one's.
     #[test]
     fn a_killer_is_searched_before_the_quiet_moves_around_it() {
         let (_, lines) = run(
@@ -2290,8 +2335,76 @@ mod tests {
         );
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 350_000,
+            field(last, "nodes") < 260_000,
             "the killers are not being tried early: {last}"
+        );
+    }
+
+    /// A quiet win two plies past what a reduced search sees.
+    const RESEARCH_FIXTURE: &str = "startpos moves 2g2f 4a3b 2f2e 8c8d 6i7h 8d8e 3i3h \
+         7a7b 9g9f 9c9d 5i6h 5a5b 2e2d 2c2d 2h2d P*2c 2d2f 7c7d";
+
+    /// The drop-heavy middlegame, as the input a reduction helps.
+    const REDUCTION_FIXTURE: &str =
+        "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
+
+    /// Late quiet moves are searched a ply shallower, as a node-count tripwire.
+    ///
+    /// **The fixture is load-bearing, and the first assertion is what says
+    /// so**: a reduction pays only where a node carries far more quiet moves
+    /// than the four it searches whole, which is what a drop-heavy middlegame
+    /// is. The day that stops holding of this position, this test stops being
+    /// able to fail and says so here rather than passing quietly.
+    ///
+    /// Sabotage: make `reduction` return 0 and this fixture goes from 213 141
+    /// nodes to 249 620, which is red on the ceiling below. ⚠️ **Deleting the
+    /// re-search instead gives 209 065 and stays green here** — a tree that got
+    /// smaller is what this test asks for, and a reduction believed without
+    /// verification gives exactly that. The test below is the one for it.
+    #[test]
+    fn late_quiet_moves_are_searched_a_ply_shallower() {
+        let board = game(REDUCTION_FIXTURE).search_board();
+        let quiet = board
+            .legal_moves()
+            .into_iter()
+            .filter(|&mv| ordering::capture_key(&board, mv).is_none() && !mv.is_promoting())
+            .count();
+        assert!(
+            quiet > 40,
+            "the fixture no longer has a long quiet range: {quiet} quiet moves"
+        );
+
+        let (_, lines) = run(REDUCTION_FIXTURE, depth(4));
+        let last = lines.last().expect("an iteration finished");
+        assert!(
+            field(last, "nodes") < 230_000,
+            "late quiet moves are not being reduced: {last}"
+        );
+    }
+
+    /// A position where the reduction guesses wrong, and the full-depth
+    /// re-search is the whole of what corrects it.
+    ///
+    /// ⚠️ **This is the only test in the workspace that fails when a reduced
+    /// score is believed without being searched again** — the mate ladder, the
+    /// repetition suite and every ordering tripwire stay green with the
+    /// re-search deleted. It was found by playing a build with the re-search
+    /// against one without it over the first 300 lines of `openings-v3` at
+    /// depth 6: eleven disagreed, and this is the widest of them.
+    ///
+    /// ⚠️ **The reduction is not what finds the win here** — an engine with no
+    /// reduction at all reports the same score, from 246 018 nodes against
+    /// 77 324. What the reduction does is find it three times cheaper, and
+    /// what the re-search does is keep it found.
+    ///
+    /// Sabotage: drop the re-search and this reports `cp 15` from 73 889 nodes.
+    #[test]
+    fn a_reduced_move_is_believed_only_after_a_full_depth_search() {
+        let (_, lines) = run(RESEARCH_FIXTURE, depth(6));
+        let last = lines.last().expect("an iteration finished");
+        assert!(
+            field(last, "cp") > 200,
+            "a reduced search was believed without being repeated: {last}"
         );
     }
 
