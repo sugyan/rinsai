@@ -27,6 +27,56 @@ it like any other.
 
 ## E1 — classical search, one feature at a time
 
+### Item 5 — late move reductions for quiet moves — **pass**
+
+H1 accepted at elo0 = 0 / elo1 = 10.
+
+```
+pairs 119 | games 238 | candidate W-D-L 119-66-53
+pent [5, 2, 72, 2, 38] | llr +3.074 | score 63.87% (elo +98.9 est)
+```
+
+| | |
+|---|---|
+| candidate | `923972c`, replayed by a rebase as `a80bcf5` |
+| baseline | `eb58a6f` |
+| `bench` | candidate 232 082, baseline 272 244 — both read off the binaries that played, before the run |
+| control | `--nodes 300000`, elo0 = 0 / elo1 = 10, α = β = 0.05, concurrency 4 |
+| openings | `openings-v3.sfen`, seed 1, 119 distinct openings for 119 pairs |
+| endings | 172 checkmates, 66 千日手, none at the 512-ply move limit |
+
+The counts above were recomputed from `run.jsonl` rather than read off the
+harness's summary, and agree to the digit. The two revs differ only in
+`crates/xtask`, which is the harness rather than a player: the rebase carried
+the branch over the working-gate change, and the engine crates are identical
+between them.
+
+⚠️ **The file predicted the opposite of this, twice.** Step 3's entry closes
+with "E1's later items are the smaller ones", and the gate argument repeats it.
+Item 5 is the largest effect E1 has measured after step 1, and it crossed in
+**119 pairs** against 763 for step 2, 1937 for step 3 and 1857 for the
+calibration. The ordering of the remaining items by size is not known, and
+saying it is has now been wrong once.
+
+**60.5% of pairs were even** — 72 of 119, against 77% at step 3 and 78.2% at
+the calibration. Nothing about the opening set changed; a large effect is what
+makes pairs decisive, which is the same quantity #65 proposes to buy from the
+openings instead.
+
+⚠️ **No game reached the move limit**, where step 3 had 35 in 3874 and the
+calibration 25 in 3714. 238 games is too few to read that as a property of the
+patch.
+
+The bound was crossed and stayed crossed: first at +2.963 as the 116th pair
+landed, then +3.039, +3.057, +3.074. ⚠️ Unlike step 3 and the calibration, the
+recomputation over all 119 pairs agrees with the decision that stopped the run
+— which is the outcome those entries warned is not guaranteed, not a change in
+what is guaranteed.
+
+⚠️ **What a pass says: the true difference is positive at α = 0.05, and the
+gate had 95% power at +10.** The +98.9 is a point estimate from 119 pairs; it
+pins the sign firmly and the size loosely.
+
 ### The working-gate calibration — step 3 re-measured at (0, 10) / 300 000 nodes — **pass**
 
 H1 accepted at elo0 = 0 / elo1 = 10.
