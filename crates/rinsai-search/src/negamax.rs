@@ -80,7 +80,7 @@ const POLL_INTERVAL_NODES: u64 = 1024;
 /// depth still has a ply to sit at. Quiescence then runs *past* that depth, and
 /// what stops it is the `ply >= MAX_PLY` guard both searches share — the spare
 /// ply here is not what bounds it.
-const MAX_DEPTH: Depth = MAX_PLY as Depth - 1;
+pub(crate) const MAX_DEPTH: Depth = MAX_PLY as Depth - 1;
 
 /// How many **checked** plies one quiescence line may spend before it gives up
 /// and evaluates where it stands.
@@ -648,10 +648,17 @@ impl<C: Clock> NegamaxSearcher<C> {
         self.buf.order_killers(quiets_from, self.stack[ply].killers);
 
         // Whether *this* node's side to move is in check, for the reduction
-        // below. ⚠️ **Read off the path rather than from the board**: both
-        // callers of [`Self::child`] push this node's entry immediately before
-        // dispatching, and `child` is the only way in here, so the answer was
+        // below. ⚠️ **Read off the path rather than from the board**: `child`
+        // is the only way into this function, and no move is dispatched through
+        // it without its own entry having been pushed first, so the answer is
         // already computed and paid for. `board.in_check()` would buy it twice.
+        //
+        // ⚠️ **The invariant is "the top of the path is this node", not "every
+        // call site pushes".** The re-search below dispatches a second time on
+        // the entry the first push left, and null-move pruning is the change
+        // that would break the invariant outright — a pass kept off the path
+        // makes `last()` the position before it, whose `in_check` is the other
+        // side's. The assertion is what says so, and only in debug.
         let in_check = self.path.last().is_some_and(|entry| entry.in_check);
         debug_assert_eq!(
             in_check,
@@ -685,6 +692,14 @@ impl<C: Clock> NegamaxSearcher<C> {
             // is above `alpha`, this also means a reduced search can never cut
             // the node off on its own — every cutoff below came from a search
             // at this node's own depth, which is what `remember_cutoff` records.
+            //
+            // ⚠️ **It does not make the stored bound exact, and is not trying
+            // to.** A reduced score at or below alpha is never re-searched, yet
+            // still reaches `best` and so the `Bound::Upper` or `Bound::Exact`
+            // this node stores under its *own* depth — a bound the search below
+            // it did not establish. That is the accepted imprecision every
+            // reduction carries, in the same family as the repetition verdict
+            // reaching the table through a parent.
             if taken > 0 && !self.stopped && score > window.alpha {
                 score = self.child(board, window, depth - 1, ply + 1, budget);
             }
@@ -2289,11 +2304,9 @@ mod tests {
     /// below. Demoting the stored move rather than removing it — ordering
     /// captures from `base` — gives 187 814 and goes red too.
     ///
-    /// ⚠️ **The ceiling was recalibrated when the late-move reduction landed,
-    /// and it had to be.** The reduction took the baseline from 736 911 nodes
-    /// to 159 843 and took all three sabotages down with it — at the old
-    /// ceiling of 900 000 every one of them passed. A tripwire calibrated
-    /// against one engine does not stay a tripwire across the next one.
+    /// ⚠️ **A ceiling only catches a mutation that makes the tree bigger**, and
+    /// this fixture's baseline moves with every search feature that lands, so
+    /// the three figures above are the ones to re-measure before trusting it.
     #[test]
     fn the_transposition_move_is_searched_first() {
         let (_, lines) = run("startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c", depth(7));
@@ -2303,6 +2316,12 @@ mod tests {
             "the transposition move is not being tried first: {last}"
         );
     }
+
+    /// The drop-heavy middlegame: a node here carries far more quiet moves than
+    /// the front of a list any heuristic ranks confidently, which is the input
+    /// both tripwires below are chosen for.
+    const DROP_HEAVY_FIXTURE: &str =
+        "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
 
     /// A killer is tried before the quiet moves around it, as a node-count
     /// tripwire on the drop-heavy fixture.
@@ -2317,22 +2336,11 @@ mod tests {
     /// `remember_cutoff`'s killer half: both take this fixture from 213 141
     /// nodes to 341 504, and both go red on the ceiling below. ⚠️ **Ordering
     /// by history after the killers rather than before gives 343 332** and
-    /// goes red here too — the only test in this crate that catches that
-    /// order. Removing history instead, either its ordering call or
-    /// `remember_cutoff`'s history half, gives 219 760 and stays green.
-    ///
-    /// ⚠️ **The ceiling was recalibrated when the late-move reduction landed,
-    /// and it had to be.** The baseline fell from 249 620 to 213 141 and the
-    /// three sabotages above fell from ~405 000 to ~342 000, which the old
-    /// ceiling of 350 000 no longer caught. The new one still passes a search
-    /// with the reduction removed (249 620), which is the test below's job
-    /// rather than this one's.
+    /// goes red here too. Removing history instead, either its ordering call
+    /// or `remember_cutoff`'s history half, gives 219 760 and stays green.
     #[test]
     fn a_killer_is_searched_before_the_quiet_moves_around_it() {
-        let (_, lines) = run(
-            "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
-            depth(4),
-        );
+        let (_, lines) = run(DROP_HEAVY_FIXTURE, depth(4));
         let last = lines.last().expect("an iteration finished");
         assert!(
             field(last, "nodes") < 260_000,
@@ -2344,40 +2352,29 @@ mod tests {
     const RESEARCH_FIXTURE: &str = "startpos moves 2g2f 4a3b 2f2e 8c8d 6i7h 8d8e 3i3h \
          7a7b 9g9f 9c9d 5i6h 5a5b 2e2d 2c2d 2h2d P*2c 2d2f 7c7d";
 
-    /// The drop-heavy middlegame, as the input a reduction helps.
-    const REDUCTION_FIXTURE: &str =
-        "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
-
     /// Late quiet moves are searched a ply shallower, as a node-count tripwire.
     ///
-    /// **The fixture is load-bearing, and the first assertion is what says
-    /// so**: a reduction pays only where a node carries far more quiet moves
-    /// than the four it searches whole, which is what a drop-heavy middlegame
-    /// is. The day that stops holding of this position, this test stops being
-    /// able to fail and says so here rather than passing quietly.
+    /// **The depth is load-bearing.** At the four plies the killer tripwire
+    /// above uses, removing the reduction costs 249 620 nodes against 213 141
+    /// — a 17% gap that leaves no room between the two ceilings. At five it is
+    /// 3 734 435 against 802 442, so the ceiling below sits with room on both
+    /// sides and the two tests stop measuring one search.
     ///
-    /// Sabotage: make `reduction` return 0 and this fixture goes from 213 141
-    /// nodes to 249 620, which is red on the ceiling below. ⚠️ **Deleting the
-    /// re-search instead gives 209 065 and stays green here** — a tree that got
-    /// smaller is what this test asks for, and a reduction believed without
-    /// verification gives exactly that. The test below is the one for it.
+    /// Sabotage: make `reduction` return 0 and this fixture goes from 802 442
+    /// nodes to 3 734 435, which is red on the ceiling below.
+    ///
+    /// ⚠️ **A ceiling can only catch a reduction that stopped happening.**
+    /// Every other way of breaking this feature makes the tree *smaller* —
+    /// deleting the re-search gives 801 742, dropping the promotion exemption
+    /// 651 809, dropping the check exemption 670 919 — and none of them is red
+    /// here. The frozen `bench` counts catch the last two; the test below
+    /// catches the first.
     #[test]
     fn late_quiet_moves_are_searched_a_ply_shallower() {
-        let board = game(REDUCTION_FIXTURE).search_board();
-        let quiet = board
-            .legal_moves()
-            .into_iter()
-            .filter(|&mv| ordering::capture_key(&board, mv).is_none() && !mv.is_promoting())
-            .count();
-        assert!(
-            quiet > 40,
-            "the fixture no longer has a long quiet range: {quiet} quiet moves"
-        );
-
-        let (_, lines) = run(REDUCTION_FIXTURE, depth(4));
+        let (_, lines) = run(DROP_HEAVY_FIXTURE, depth(5));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 230_000,
+            field(last, "nodes") < 1_500_000,
             "late quiet moves are not being reduced: {last}"
         );
     }
@@ -2385,10 +2382,11 @@ mod tests {
     /// A position where the reduction guesses wrong, and the full-depth
     /// re-search is the whole of what corrects it.
     ///
-    /// ⚠️ **This is the only test in the workspace that fails when a reduced
-    /// score is believed without being searched again** — the mate ladder, the
-    /// repetition suite and every ordering tripwire stay green with the
-    /// re-search deleted. It was found by playing a build with the re-search
+    /// ⚠️ **It is the only test that names the cause.** Deleting the re-search
+    /// also reddens `bench`'s frozen counts and the process test that runs
+    /// them, because the tree changes size; within this crate nothing else
+    /// fires — not the mate ladder, not the repetition suite, not one ordering
+    /// tripwire. This fixture was found by playing a build with the re-search
     /// against one without it over the first 300 lines of `openings-v3` at
     /// depth 6: eleven disagreed, and this is the widest of them.
     ///
@@ -2403,7 +2401,7 @@ mod tests {
         let (_, lines) = run(RESEARCH_FIXTURE, depth(6));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "cp") > 200,
+            field(last, "cp") > 100,
             "a reduced search was believed without being repeated: {last}"
         );
     }

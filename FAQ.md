@@ -205,6 +205,32 @@ and `bench` cannot exercise it either.
 Reporting it as `score mate N` would announce a mate whose principal variation
 does not deliver one — which `a_reported_mate_is_a_real_mate` exists to forbid.
 
+### Why may a node store a bound a reduced search established?
+
+Because the alternative is to give up either the reduction or the table, and
+the imprecision is bounded in the direction that matters.
+
+A late quiet move is searched a ply short. If it comes back **above** alpha it
+is searched again at full depth before it may raise alpha or cut the node off,
+so no cutoff and no alpha-raise ever rests on a reduced score. If it comes back
+**at or below** alpha it is believed, because that is the whole saving — and it
+still reaches the node's `best`, and so the `Upper` or `Exact` bound the node
+files under its own depth. That bound is therefore a claim the subtree below it
+did not establish.
+
+⚠️ **What it costs is a fail-low that is too pessimistic, never a fail-high that
+is too optimistic.** A reduced search sees less, so it under-estimates; a probe
+that later takes such an entry returns a score no higher than the truth. The
+move that reaches the node can be discarded on it.
+
+**Rejected: storing at the reduced depth.** The node's other children *were*
+searched at full depth, so filing the whole entry shallower throws away the
+larger, sound part of what it knows, and does it at every node that reduces
+anything — which is most of them.
+
+**Reopens if** a reduction schedule takes more than a ply, where the gap between
+what was searched and what is claimed stops being one.
+
 ### Why can a repetition verdict still come back out of the transposition table?
 
 The verdict node's own key is never probed or stored, but the parent takes the
