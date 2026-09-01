@@ -139,7 +139,10 @@ fn a_scripted_game_over_real_pipes() {
         let token = line
             .strip_prefix("bestmove ")
             .unwrap_or_else(|| panic!("ply {ply}: `{line}` is not a bestmove line"));
-        assert_ne!(token, "resign", "ply {ply}: the opening has legal moves");
+        assert!(
+            !matches!(token, "resign" | "win"),
+            "ply {ply}: the opening has legal moves and no declaration"
+        );
 
         game.push_usi_move(token)
             .unwrap_or_else(|e| panic!("ply {ply}: the engine answered `{token}`: {e}"));

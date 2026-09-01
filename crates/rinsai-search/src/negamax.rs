@@ -924,7 +924,7 @@ impl<C: Clock> NegamaxSearcher<C> {
     /// Holds an answer back for as long as `go infinite` says to.
     ///
     /// `infinite` is about when a search stops *searching* — the searcher's own
-    /// business, which is why `resign` comes through here too. `ponder` is
+    /// business, which is why `resign` and `win` come through here too. `ponder` is
     /// about when an answer may be *sent*, and the driver holds that rule on
     /// every searcher's behalf (see `search::worker`).
     fn finish(&self, job: &SearchJob, best: BestMove) -> BestMove {
@@ -979,17 +979,19 @@ impl<C: Clock> Searcher for NegamaxSearcher<C> {
         self.path.extend_from_slice(job.game.history());
         self.path.reserve(MAX_PLY);
 
+        self.root_moves.clear();
+
         // 入玉宣言 is taken in place of a move, so it is settled before one is
-        // looked for — including in a position that is declarable with no legal
-        // move, where the declaration is still the answer.
+        // looked for: a declarable position with no legal move is a win, not a
+        // resignation, and `a_declarable_position_wins_before_a_move_is_sought`
+        // is what holds the order.
         //
         // ⚠️ **Root only.** Scoring a declarable position inside the tree would
-        // change what the search explores, and every `bench` count with it.
+        // change what the search explores.
         if declaration::can_declare(&board) {
             return self.finish(job, BestMove::Win);
         }
 
-        self.root_moves.clear();
         let root_moves = &mut self.root_moves;
         let _ = board.generate_moves(|set| {
             root_moves.extend(set);
@@ -1587,6 +1589,32 @@ mod tests {
         );
     }
 
+    /// A declarable root answers `win` without publishing an iteration — the
+    /// property `resigns_when_there_is_no_legal_move` asserts for the other
+    /// answer that skips the deepening loop.
+    ///
+    /// ⚠️ **The fixture has no legal move either**, asserted below, and that is
+    /// what makes it able to fail: every declarable position in the workspace
+    /// otherwise has moves, so nothing distinguishes the two early returns'
+    /// order. Sabotage: deleting the declaration block, and moving it below the
+    /// `root_moves.is_empty()` arm, each turned this red — the second by
+    /// answering `resign`, which is a won game given away.
+    #[test]
+    fn a_declarable_position_wins_before_a_move_is_sought() {
+        const STUCK: &str = "sfen GGRBKBRGG/PPPPPPPPP/9/9/9/9/9/9/4k4 b - 1";
+        assert!(
+            !game(STUCK).search_board().has_legal_moves(),
+            "the fixture is only a witness while it has no legal move"
+        );
+
+        let (best, lines) = run(STUCK, depth(4));
+        assert_eq!(best, BestMove::Win);
+        assert!(
+            lines.is_empty(),
+            "reported progress on a search it never ran"
+        );
+    }
+
     /// The other way to have no move: actually checkmated. Black golds on 5b
     /// and 5c, White's king on 5a — 5b is protected, and every flight square is
     /// covered by the gold on 5b.
@@ -1879,9 +1907,7 @@ mod tests {
         assert!(!pv.is_empty(), "{first}");
         match best {
             BestMove::Play { mv, .. } => assert_eq!(mv.to_usi_owned(), pv[0]),
-            BestMove::Resign | BestMove::Win => {
-                panic!("a position with legal moves answered neither a move nor a declaration")
-            }
+            BestMove::Resign | BestMove::Win => panic!("expected a move, got {best}"),
         }
     }
 

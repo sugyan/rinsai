@@ -1,12 +1,7 @@
 //! 入玉宣言 under CSA's 宣言法 — the 27-point rule `bestmove win` means.
 //!
-//! ⚠️ **A refused claim loses the game**: a server scores it a foul, and so
-//! does this project's own referee. Nothing here may answer `true` for a
-//! position it has not counted.
-//!
 //! The referee owns the same rule on `shogi_core`'s accessors, in a crate that
-//! does not link shunsai. This one reads shunsai's, and the two are held to one
-//! answer by `the_two_implementations_agree` below.
+//! does not link shunsai. This one reads shunsai's.
 
 use shogi_core::{Color, Hand, PieceKind, Square};
 use shunsai::Position;
@@ -27,11 +22,6 @@ const OTHER_POINTS: u32 = 1;
 /// no other side has the question to ask. That is also what makes
 /// [`Position::in_check`], which answers for the side to move alone, the right
 /// reading here.
-///
-/// What is not here: the clock. A declaration also needs time left, and no
-/// position carries that.
-///
-/// Named caller: the searcher, at the root.
 pub(crate) fn can_declare(board: &Position) -> bool {
     let us = board.side_to_move();
     if !board
@@ -89,7 +79,6 @@ fn piece_points(kind: PieceKind) -> u32 {
     // reach the same arm as 飛 and 角 without a table of their own.
     match kind.unpromote().unwrap_or(kind) {
         PieceKind::Rook | PieceKind::Bishop => MAJOR_POINTS,
-        PieceKind::King => 0,
         _ => OTHER_POINTS,
     }
 }
@@ -100,15 +89,15 @@ mod tests {
     use shogi_usi_parser::FromUsi;
 
     use super::*;
+    use crate::game::Game;
 
     /// Every fixture, with the answer both implementations owe it.
     ///
-    /// ⚠️ **The table is hand-built around the boundaries, and it has to be.**
-    /// A table drawn from played games would answer `false` on the king alone
-    /// almost everywhere, and two implementations agreeing that a middlegame is
-    /// not a declaration is an agreement that cannot fail. The rows here sit on
-    /// the bars instead: the pairs one point, one piece and one rank apart are
-    /// what make a constant that moved change an answer.
+    /// ⚠️ **Rows are hand-built onto the bars.** A table drawn from played games
+    /// answers `false` on the king alone almost everywhere, and two
+    /// implementations agreeing that a middlegame is not a declaration is an
+    /// agreement that cannot fail. The pairs here sit one point, one piece and
+    /// one rank apart, and every guard has a row that crosses it.
     const FIXTURES: &[(&str, bool, &str)] = &[
         (
             "sfen +R+R+B+BGGGGK/SSSS5/9/9/9/9/9/9/k8 b - 1",
@@ -131,12 +120,12 @@ mod tests {
             "the same board at 26",
         ),
         (
-            "sfen +R+R+B+BGGGGK/8S/9/9/9/9/9/9/k8 b 3S 1",
+            "sfen +R+R+B+BGGGGK/S8/9/9/9/9/9/9/k8 b 3S 1",
             false,
             "nine pieces in the zone; the king may not make it ten",
         ),
         (
-            "sfen +R+R+B+BGGGGK/7SS/9/9/9/9/9/9/k8 b 2S 1",
+            "sfen +R+R+B+BGGGGK/S7S/9/9/9/9/9/9/k8 b 2S 1",
             true,
             "ten pieces, and the two silvers in hand carry it to 28",
         ),
@@ -151,24 +140,34 @@ mod tests {
             "twelve pieces and no major: twelve points",
         ),
         (
+            "sfen +P+P+P+P+P+P+P+PK/+P+P7/9/9/9/9/9/9/k8 b - 1",
+            false,
+            "ten と金 are ten points, not fifty — a promoted 歩 is not a major",
+        ),
+        (
             "sfen +R+R+BGGGGSK/SSS6/9/9/9/9/9/9/k8 b B 1",
             true,
             "23 on the board and a bishop in hand — a major in hand is five",
         ),
         (
-            "sfen +R+R+BGGGGSK/SSS6/9/9/9/9/9/9/k8 b G 1",
+            "sfen +R+R+BGGGGSK/SSS6/9/9/9/9/9/9/k8 b P 1",
             false,
-            "the same board holding a gold instead",
+            "the same board holding a pawn instead",
         ),
         (
-            "sfen +R+R+B+BGGGGK/8S/9/9/SSS6/9/9/9/k8 b - 1",
+            "sfen +R+R+B+BGGGGK/S8/9/9/SSS6/9/9/9/k8 b - 1",
             false,
             "twelve pieces, but three of them behind the zone",
         ),
         (
-            "sfen +R+R+B+BGGGGK/7SS/9/9/SS7/9/9/9/k8 b - 1",
+            "sfen +R+R+B+BGGGGK/S7S/9/9/SS7/9/9/9/k8 b - 1",
             false,
             "28 points only if the two behind the zone are counted",
+        ),
+        (
+            "sfen +R+R+B+BGGG1K/SSSS5/4g4/9/9/9/9/9/4k4 b - 1",
+            false,
+            "27, and the enemy gold standing in the zone is not Black's to count",
         ),
         (
             "sfen +R+R+B+BGGGG1/SSSS5/9/8K/9/9/9/9/k8 b - 1",
@@ -186,9 +185,29 @@ mod tests {
             "the king itself stands on the third rank",
         ),
         (
-            "sfen +R+R+B+BGGGGK/SSSS5/9/9/9/9/9/9/k7r b - 1",
+            "sfen K8/9/9/9/9/9/s8/sss6/+r+r+b+bggg1k w - 1",
+            true,
+            "White's eleventh piece on its own third rank, and 27 needs it",
+        ),
+        (
+            "sfen K8/9/9/9/9/9/8k/ssss5/+r+r+b+bgggg1 w - 1",
+            true,
+            "White's king on its own third rank",
+        ),
+        (
+            "sfen K8/9/9/9/9/8k/9/ssss5/+r+r+b+bgggg1 w - 1",
             false,
-            "the declarable board, with a rook down the king's file",
+            "the same, with White's king a rank short of its own zone",
+        ),
+        (
+            "sfen +R+R+B+BGGGGl/SSSS5/8K/9/9/9/9/9/k8 b - 1",
+            false,
+            "28 in the zone, and a lance bearing up the file the king entered on",
+        ),
+        (
+            "sfen +R+R+B+BGGGGK/SSSS4+p/9/9/9/9/9/9/k8 b - 1",
+            false,
+            "28 in the zone, and a と金 beside the king",
         ),
         (
             "sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
@@ -196,6 +215,17 @@ mod tests {
             "a game that has not started",
         ),
     ];
+
+    /// ⚠️ **Through [`Game::from_partial`], not [`Position::new`].** That is
+    /// where `check_piece_counts` lives, and without it a board holding more of
+    /// a kind than a shogi set does reaches the table and pins a guard that no
+    /// real game can reach. Two such boards did.
+    fn board(sfen: &str) -> Position {
+        let partial = PartialPosition::from_usi(sfen).expect("valid sfen");
+        Game::from_partial(partial)
+            .expect("a fixture is a position the searcher could be handed")
+            .search_board()
+    }
 
     fn partial(sfen: &str) -> PartialPosition {
         PartialPosition::from_usi(sfen).expect("valid sfen")
@@ -209,23 +239,39 @@ mod tests {
     /// `OTHER_POINTS` to 0, each arm of `required_points` moved to the other's
     /// value, each of the five blocks deleted (the king-in-zone guard, the 王手
     /// guard, the king skip, the zone mask, the hand loop), and each of the two
-    /// bars made strict. Every one turned this test red, and
-    /// `the_two_implementations_agree` with it.
+    /// bars made strict. Every one turned this test red.
     ///
-    /// ⚠️ **`ZONE_RANKS` to 2 was green until two fixtures were added for it**:
-    /// every row then put its pieces and its king on the first two ranks, so
-    /// narrowing the zone changed nothing. The two rows naming the third rank
-    /// are what that mutation goes through.
+    /// ⚠️ Four more were **green** against an earlier table, and are what the
+    /// と金, enemy-gold and two White third-rank rows were added for:
+    /// `player_bb(us)` widened to `occupied()`, every promoted kind scored
+    /// `MAJOR_POINTS`, and `in_zone` narrowed to 2 and widened to 4 for White
+    /// alone. All four are red now.
     #[test]
     fn the_fixtures_answer_what_they_claim() {
         for &(sfen, expected, why) in FIXTURES {
-            let board = Position::new(partial(sfen));
-            assert_eq!(can_declare(&board), expected, "{why}: {sfen}");
+            assert_eq!(can_declare(&board(sfen)), expected, "{why}: {sfen}");
         }
     }
 
-    /// Both bars are read from both sides: each colour has a fixture that
-    /// declares and one that is refused.
+    /// ⚠️ **A position whose idle side is in check cannot arise in a game**, so
+    /// a guard pinned only by one would be pinned by nothing. `check_piece_counts`
+    /// catches an impossible piece census; nothing catches this, so it is
+    /// checked here.
+    #[test]
+    fn no_fixture_leaves_the_idle_side_in_check() {
+        for &(sfen, _, why) in FIXTURES {
+            let position = partial(sfen);
+            let idle = position.side_to_move().flip();
+            assert!(
+                !rinsai_game::in_check(&position, idle),
+                "{why}: {sfen} — {idle:?} is in check and not to move"
+            );
+        }
+    }
+
+    /// Both bars are read from both sides, and each colour crosses its own zone
+    /// boundary: a fixture that declares, one that is refused, and one whose
+    /// answer turns on a piece or a king standing on the third rank.
     ///
     /// ⚠️ Sabotage: writing every row `false` leaves
     /// `the_two_implementations_agree` **green** — an agreement test cannot see
@@ -242,26 +288,39 @@ mod tests {
                     "no fixture has {color:?} answered {wanted}"
                 );
             }
+            let on_the_third_rank = FIXTURES.iter().filter(|&&(sfen, _, _)| {
+                let position = partial(sfen);
+                position.side_to_move() == color
+                    && position
+                        .player_bitboard(color)
+                        .into_iter()
+                        .any(|square| square.relative_rank(color) == ZONE_RANKS)
+            });
+            assert!(
+                on_the_third_rank.count() >= 2,
+                "{color:?} never crosses its own zone boundary"
+            );
         }
     }
 
     /// Put every fixture through the referee's implementation as well, and
     /// demand one answer.
     ///
-    /// The two read different boards — `shogi_core`'s accessors against
-    /// shunsai's bitboards — and reach 王手 by different libraries, so this
-    /// binds the numbers that are private to each: the zone, the ten pieces,
-    /// the point map, and the 28/27 asymmetry.
+    /// ⚠️ **What this binds is the accessor layer and 王手**, not the numbers:
+    /// the referee reads `shogi_core`'s board where this reads shunsai's, and
+    /// the two reach 王手 by different libraries. The constants are written the
+    /// same way in both, so an edit applied to both passes here — the expected
+    /// column above is what holds those.
     ///
-    /// ⚠️ **The referee is asked about the side to move**, which is the only
-    /// side `can_declare` here has an answer for. Its `NotToMove` refusal has
-    /// no counterpart on this side and is not covered.
+    /// The referee is asked about the side to move, the only side this
+    /// `can_declare` answers for; its `NotToMove` refusal has no counterpart
+    /// here and is not covered.
     #[test]
     fn the_two_implementations_agree() {
         for &(sfen, _, why) in FIXTURES {
             let position = partial(sfen);
             let refereed = rinsai_game::can_declare(&position, position.side_to_move());
-            let searched = can_declare(&Position::new(position));
+            let searched = can_declare(&board(sfen));
             assert_eq!(refereed.is_ok(), searched, "{why}: {sfen} — {refereed:?}");
         }
     }

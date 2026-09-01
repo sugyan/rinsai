@@ -139,8 +139,8 @@ pub enum BestMove {
     Resign,
     /// The side to move may claim 入玉宣言 — a win taken in place of a move.
     ///
-    /// ⚠️ **A claim the opponent's referee refuses loses the game**, so this is
-    /// answered only for a position the declaration rule has counted.
+    /// ⚠️ **A claim a referee refuses loses the game**, so this is answered only
+    /// for a position the declaration rule has counted.
     Win,
 }
 

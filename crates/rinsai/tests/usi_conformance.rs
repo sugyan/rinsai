@@ -274,11 +274,8 @@ fn no_legal_move_yields_bestmove_resign() {
 
 /// 入玉宣言 reaches the wire as `bestmove win`.
 ///
-/// The two boards differ by one point — the first is the 28 Black needs, the
-/// second the 27 that is White's bar and not Black's — so the pair fails if
-/// the claim is answered by anything coarser than the rule. The declaration
-/// rule's own boundaries are pinned where it lives; what this covers is the
-/// path from the search's verdict to the line.
+/// What this covers is the path from the search's verdict to the line; the
+/// rule's own boundaries are pinned where it lives.
 #[test]
 fn a_declarable_position_yields_bestmove_win() {
     let declarable = "sfen +R+R+B+BGGGGK/SSSS5/9/9/9/9/9/9/k8 b - 1";
@@ -580,9 +577,10 @@ fn the_info_line_is_well_formed_and_its_pv_is_playable() {
 
 /// A GUI expects to see the engine thinking, not just the answer.
 ///
-/// Restricted to a position with legal moves, deliberately: a checkmated root
-/// answers `bestmove resign` with no `info` at all, because there was no
-/// iteration to report — see `a_checkmated_root_answers_without_pretending_to_search`.
+/// Restricted to a position the search actually searches, deliberately: the two
+/// answers that skip the deepening loop — a checkmated root's `resign` and a
+/// declarable root's `win` — report no `info` at all, because there was no
+/// iteration to report.
 #[test]
 fn a_search_reports_progress_before_it_moves() {
     let lines = dialogue("position startpos\ngo depth 2\nquit\n");
