@@ -26,6 +26,7 @@ use shogi_core::{Color, Move};
 use shunsai::Position;
 
 use crate::clock::{Clock, RealClock};
+use crate::declaration;
 use crate::eval;
 use crate::game::HistoryEntry;
 use crate::info::SearchInfo;
@@ -978,6 +979,16 @@ impl<C: Clock> Searcher for NegamaxSearcher<C> {
         self.path.extend_from_slice(job.game.history());
         self.path.reserve(MAX_PLY);
 
+        // 入玉宣言 is taken in place of a move, so it is settled before one is
+        // looked for — including in a position that is declarable with no legal
+        // move, where the declaration is still the answer.
+        //
+        // ⚠️ **Root only.** Scoring a declarable position inside the tree would
+        // change what the search explores, and every `bench` count with it.
+        if declaration::can_declare(&board) {
+            return self.finish(job, BestMove::Win);
+        }
+
         self.root_moves.clear();
         let root_moves = &mut self.root_moves;
         let _ = board.generate_moves(|set| {
@@ -1558,7 +1569,9 @@ mod tests {
                 assert!(is_legal(fixture.position(), mv));
                 assert_eq!(ponder, None);
             }
-            BestMove::Resign => panic!("the initial position has 30 legal moves"),
+            BestMove::Resign | BestMove::Win => {
+                panic!("the initial position has 30 legal moves and no declaration")
+            }
         }
     }
 
@@ -1866,7 +1879,9 @@ mod tests {
         assert!(!pv.is_empty(), "{first}");
         match best {
             BestMove::Play { mv, .. } => assert_eq!(mv.to_usi_owned(), pv[0]),
-            BestMove::Resign => panic!("a position with legal moves resigned"),
+            BestMove::Resign | BestMove::Win => {
+                panic!("a position with legal moves answered neither a move nor a declaration")
+            }
         }
     }
 

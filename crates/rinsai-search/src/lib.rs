@@ -23,6 +23,7 @@ pub use shogi_core;
 pub use shunsai;
 
 mod clock;
+mod declaration;
 mod eval;
 mod game;
 mod info;

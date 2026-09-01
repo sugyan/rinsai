@@ -272,6 +272,27 @@ fn no_legal_move_yields_bestmove_resign() {
     assert_eq!(bestmoves(&lines), vec!["bestmove resign"]);
 }
 
+/// 入玉宣言 reaches the wire as `bestmove win`.
+///
+/// The two boards differ by one point — the first is the 28 Black needs, the
+/// second the 27 that is White's bar and not Black's — so the pair fails if
+/// the claim is answered by anything coarser than the rule. The declaration
+/// rule's own boundaries are pinned where it lives; what this covers is the
+/// path from the search's verdict to the line.
+#[test]
+fn a_declarable_position_yields_bestmove_win() {
+    let declarable = "sfen +R+R+B+BGGGGK/SSSS5/9/9/9/9/9/9/k8 b - 1";
+    let lines = dialogue(&format!("position {declarable}\ngo movetime 1\nquit\n"));
+    assert_eq!(bestmoves(&lines), vec!["bestmove win"]);
+
+    let short = "sfen +R+R+B+BGGG1K/SSSS5/9/9/9/9/9/9/k8 b - 1";
+    let lines = dialogue(&format!("position {short}\ngo movetime 1\nquit\n"));
+    let answered = bestmoves(&lines);
+    assert_eq!(answered.len(), 1, "{lines:?}");
+    assert_ne!(answered[0], "bestmove win");
+    assert_legal_after(short, answered[0]);
+}
+
 // -------------------------------------------------------------------------- go
 
 #[test]
