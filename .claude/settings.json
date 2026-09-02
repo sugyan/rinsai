@@ -31,5 +31,8 @@
       "Bash(tail:*)",
       "Bash(wc:*)"
     ]
+  },
+  "attribution": {
+    "sessionUrl": false
   }
 }
