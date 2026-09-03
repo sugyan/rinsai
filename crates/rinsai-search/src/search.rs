@@ -137,6 +137,11 @@ pub enum BestMove {
     },
     /// The side to move has no legal move.
     Resign,
+    /// The side to move may claim 入玉宣言 — a win taken in place of a move.
+    ///
+    /// ⚠️ **A claim a referee refuses loses the game**, so this is answered only
+    /// for a position the declaration rule has counted.
+    Win,
 }
 
 /// Where `info` lines go while a search runs.
@@ -407,6 +412,7 @@ impl fmt::Display for BestMove {
         use shogi_core::ToUsi;
         match self {
             Self::Resign => f.write_str("resign"),
+            Self::Win => f.write_str("win"),
             Self::Play {
                 mv, ponder: None, ..
             } => f.write_str(&mv.to_usi_owned()),

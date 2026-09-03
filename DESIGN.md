@@ -180,7 +180,7 @@ Each addition is prototyped on a shunsai branch, measured on shunsai's own bench
 
 | API | Phase | The shunsai re-measurement it unlocks |
 |---|---|---|
-| expose `attackers_to` + public `Bitboard` iteration | E1 | — (SEE's prerequisite) |
+| expose `attackers_to` | E1 | — (SEE's prerequisite) |
 | staged generation (captures / evasions / quiets) | E1 | **the `MoveSet` 48-byte question** — this is the caller that finally *collects* move sets. **Measured demand from E0 step 3a**: every quiescence node runs full legal generation and keeps a handful, **48× generated per kept at the initial position and 86× on a drop-heavy middlegame** |
 | `gives_check` | E1 | — |
 | `do_null_move` / `undo_null_move` | E1 | — |

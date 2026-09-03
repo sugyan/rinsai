@@ -476,9 +476,10 @@ impl BalanceSearch {
             BestMove::Play {
                 completed_depth, ..
             } => completed_depth,
-            // No legal move at all: a candidate the window should never have
-            // produced, since it snapshots positions the game continued from.
-            BestMove::Resign => 0,
+            // No legal move at all, which the window cannot snapshot since it
+            // takes positions the game continued from; or a position already won
+            // by 入玉宣言, which it cannot reach at its ply range.
+            BestMove::Resign | BestMove::Win => 0,
         };
         Ok(Balance {
             completed_depth,

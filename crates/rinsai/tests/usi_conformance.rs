@@ -272,6 +272,24 @@ fn no_legal_move_yields_bestmove_resign() {
     assert_eq!(bestmoves(&lines), vec!["bestmove resign"]);
 }
 
+/// 入玉宣言 reaches the wire as `bestmove win`.
+///
+/// What this covers is the path from the search's verdict to the line; the
+/// rule's own boundaries are pinned where it lives.
+#[test]
+fn a_declarable_position_yields_bestmove_win() {
+    let declarable = "sfen +R+R+B+BGGGGK/SSSS5/9/9/9/9/9/9/k8 b - 1";
+    let lines = dialogue(&format!("position {declarable}\ngo movetime 1\nquit\n"));
+    assert_eq!(bestmoves(&lines), vec!["bestmove win"]);
+
+    let short = "sfen +R+R+B+BGGG1K/SSSS5/9/9/9/9/9/9/k8 b - 1";
+    let lines = dialogue(&format!("position {short}\ngo movetime 1\nquit\n"));
+    let answered = bestmoves(&lines);
+    assert_eq!(answered.len(), 1, "{lines:?}");
+    assert_ne!(answered[0], "bestmove win");
+    assert_legal_after(short, answered[0]);
+}
+
 // -------------------------------------------------------------------------- go
 
 #[test]
@@ -559,9 +577,10 @@ fn the_info_line_is_well_formed_and_its_pv_is_playable() {
 
 /// A GUI expects to see the engine thinking, not just the answer.
 ///
-/// Restricted to a position with legal moves, deliberately: a checkmated root
-/// answers `bestmove resign` with no `info` at all, because there was no
-/// iteration to report — see `a_checkmated_root_answers_without_pretending_to_search`.
+/// Restricted to a position the search actually searches, deliberately: the two
+/// answers that skip the deepening loop — a checkmated root's `resign` and a
+/// declarable root's `win` — report no `info` at all, because there was no
+/// iteration to report.
 #[test]
 fn a_search_reports_progress_before_it_moves() {
     let lines = dialogue("position startpos\ngo depth 2\nquit\n");
