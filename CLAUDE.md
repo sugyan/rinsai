@@ -138,11 +138,15 @@ found zero defects in its code.
   change, re-run the sabotages in the files the diff touches**; full-tree sweeps
   are for phase gates.
 - **A surface with no caller stays only if a *specific* caller can be named, and
-  the name goes in its doc comment.** Otherwise it goes.
+  the name goes in its doc comment.** Otherwise it goes. ⚠️ **`rinsai-game` is
+  the exception**: it publishes, so its callers are not in this repository and
+  cannot be named. The test there is whether the API is what a standalone shogi
+  rules layer must have, and its doc says what it is for rather than who calls
+  it.
 - **A module with children is `foo.rs` beside `foo/`, never `foo/mod.rs`** — the
   family layout, shunsai's too.
 
-## 6. Depending on shunsai, and the other consumer
+## 6. Depending on shunsai
 
 - rinsai depends on a **released version** (`shunsai = "0.1"`), never a git pin.
   **No SPRT number may be attributed to a rev that is not a release.**
@@ -151,12 +155,6 @@ found zero defects in its code.
   around a missing API with a slow local reimplementation without saying so.
   Several additions unlock a re-measurement shunsai parked for this consumer —
   see DESIGN.md's API catalogue, and say which one you are unlocking.
-- **`rinsai-game` has a second consumer**,
-  [tuishogi](https://github.com/sugyan/tuishogi), which depends on it by git
-  rev. ⚠️ An issue raised "from the other consumer" is only answerable by
-  reading tuishogi's actual call sites — the issue text has been wrong about
-  which API shape the consumer can use.
-
 ## 7. What runs where
 
 The development machine is an Apple Silicon Mac; sessions also run in the cloud,
@@ -169,7 +167,6 @@ its node counts are deterministic, so they are a valid result from any machine.
 - any timing measurement, and any real-time SPRT — a shared cloud runner is not
   a quiet machine;
 - sparring and SPRT against GPL engines, which live in `../benchmarks`;
-- reading the sibling shunsai or tuishogi checkouts. shunsai arrives as a
-  crates.io dependency, and ⚠️ **the published crate ships `src/` only** — its
-  `benches/` and `examples/` are in the repository and nowhere in the vendored
-  source.
+- reading the sibling shunsai checkout. shunsai arrives as a crates.io
+  dependency, and ⚠️ **the published crate ships `src/` only** — its `benches/`
+  and `examples/` are in the repository and nowhere in the vendored source.
