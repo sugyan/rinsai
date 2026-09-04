@@ -383,8 +383,8 @@ mod tests {
     /// can fail: each is over both bars when the whole board is counted and
     /// under one when only the zone is.
     ///
-    /// Sabotage: drop the `in_zone` guard from the counting loop and this is
-    /// the only test in the workspace that goes red.
+    /// Sabotage: drop the `in_zone` guard from the counting loop, and this and
+    /// `rinsai-search`'s `the_two_implementations_agree` go red.
     #[test]
     fn a_piece_outside_the_zone_counts_for_nothing() {
         // Nine in the zone and three behind it, which together would be twelve.

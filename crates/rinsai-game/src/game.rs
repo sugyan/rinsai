@@ -9,7 +9,9 @@ use shogi_usi_parser::FromUsi;
 
 use crate::moves;
 use crate::repetition::RepetitionIndex;
-use crate::types::{MoveError, Outcome, Ply, PromotionChoice, UsiMoveError, UsiPositionError};
+use crate::types::{
+    MoveError, Outcome, Ply, PromotionChoice, RootError, UsiMoveError, UsiPositionError,
+};
 
 #[derive(Debug, Clone)]
 pub struct Game {
@@ -33,17 +35,25 @@ impl Game {
     #[must_use]
     pub fn startpos() -> Self {
         Self::from_position(PartialPosition::startpos())
+            .expect("a game starts from a possible position")
     }
 
-    #[must_use]
-    pub fn from_position(initial: PartialPosition) -> Self {
-        Self {
+    /// Begin a game at `initial`.
+    ///
+    /// The root is the only position whose piece census has to be checked: no
+    /// move creates a piece, so every position the game reaches from a possible
+    /// root is possible too.
+    pub fn from_position(initial: PartialPosition) -> Result<Self, RootError> {
+        if legality::status_partial(&initial) == PositionStatus::Invalid {
+            return Err(RootError::ImpossiblePieceCount);
+        }
+        Ok(Self {
             repetition: RepetitionIndex::new(&initial),
             root_in_check: moves::in_check(&initial, initial.side_to_move()),
             positions: vec![initial],
             moves: Vec::new(),
             outcome: None,
-        }
+        })
     }
 
     /// Build a game from the argument of a USI `position` command:
@@ -72,7 +82,7 @@ impl Game {
             tokens.next();
         }
         let initial = PartialPosition::from_usi(&root).map_err(UsiPositionError::Root)?;
-        let mut game = Self::from_position(initial);
+        let mut game = Self::from_position(initial).map_err(UsiPositionError::ImpossibleRoot)?;
 
         if tokens.next().is_some() {
             for (index, token) in tokens.enumerate() {
@@ -282,10 +292,6 @@ impl Game {
             PositionStatus::WhiteWins => Some(Outcome::Checkmate {
                 winner: Color::White,
             }),
-            // ⚠️ Not an outcome, and not a no-op either: a position the
-            // rules library calls invalid never reaches the repetition arm
-            // below, so such a game runs on past a fourfold repetition.
-            PositionStatus::Invalid => None,
             _ if count >= 4 => Some(self.classify_repetition()),
             _ => None,
         };
@@ -416,6 +422,7 @@ mod tests {
 
     fn game_from(sfen: &str) -> Game {
         Game::from_position(PartialPosition::from_usi(sfen).expect("valid sfen"))
+            .expect("a possible root")
     }
 
     /// The invariant [`Game::positions`] states, asserted through the accessor
@@ -458,6 +465,50 @@ mod tests {
                 .make_move(ply.mv)
                 .expect("the recorded move replays from the position beside it");
         }
+    }
+
+    /// A root no shogi set could produce, refused before a move is offered.
+    /// The census is invariant under play — no move creates a piece — so it is
+    /// decidable exactly once, at the door.
+    ///
+    /// ⚠️ Nineteen pawns above and eighteen below are the boundary, and it
+    /// takes both to say the bound is the bound rather than a smell. The king
+    /// case says what the answer does *not* cover.
+    ///
+    /// Sabotage: drop the `status_partial` guard from `from_position`, and this
+    /// and `rinsai-search`'s `the_two_root_validators_agree_on_what_a_shogi_set_holds`
+    /// go red.
+    #[test]
+    fn a_root_no_shogi_set_could_produce_cannot_begin_a_game() {
+        for sfen in [
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 19P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 5R 1",
+            // Promoted pieces count as what they promoted from: a +P on the
+            // board plus eighteen in hand is nineteen pawns.
+            "sfen 4k4/9/9/9/4+P4/9/9/9/4K4 b 18P 1",
+            // Per kind, not only about pawns.
+            "sfen 3kg4/9/9/9/9/9/9/9/3KG4 b 4G 1",
+        ] {
+            assert!(
+                matches!(
+                    Game::from_usi_position(sfen),
+                    Err(UsiPositionError::ImpossibleRoot(
+                        RootError::ImpossiblePieceCount
+                    ))
+                ),
+                "accepted an impossible root: {sfen}"
+            );
+        }
+        assert!(
+            Game::from_usi_position("sfen 4k4/9/9/9/9/9/9/9/4K4 b 18P 1").is_ok(),
+            "eighteen pawns is a real position"
+        );
+        // ⚠️ The kings are the rules library's blind spot, and this is the only
+        // place that says so.
+        assert!(
+            Game::from_usi_position("sfen 4k4/9/9/9/9/9/9/9/3KK4 b - 1").is_ok(),
+            "the census does not count kings"
+        );
     }
 
     /// A refused move must not leave a trace. Sabotage note: moving the
@@ -752,10 +803,11 @@ mod tests {
     ///
     /// Sabotage: in `classify_repetition`, seed `all_checks` with
     /// `[false, false]` **and** accumulate with `|=` — both together, which is
-    /// what turns the rule into "checked at least once" — and this test and
-    /// `the_ply_a_repetition_window_opens_on_decides_the_verdict` go red.
-    /// ⚠️ Either half alone makes every window a draw instead: each on its own
-    /// fails the two perpetual-check tests and neither of these two.
+    /// what turns the rule into "checked at least once" — and this test,
+    /// `the_ply_a_repetition_window_opens_on_decides_the_verdict` and that
+    /// one's differential twin in `rinsai-search` go red.
+    /// ⚠️ Either half alone makes every window a draw instead, which the
+    /// perpetual-check tests in both crates catch and none of these three can.
     #[test]
     fn a_cycle_with_one_quiet_move_is_a_draw_rather_than_a_perpetual_check() {
         let mut game = game_from("sfen 4k4/9/9/9/9/9/9/9/K7R b - 1");
@@ -861,9 +913,9 @@ mod tests {
     /// lap differs — the rook steps down to 1c and back rather than up to 1a
     /// and back, checking nothing on the way — and the verdicts are opposite.
     ///
-    /// Sabotage: `.skip(first + 1)` in `classify_repetition`, and this is the
-    /// only test in the workspace that goes red — it awards Black a
-    /// perpetual-check loss the game did not produce.
+    /// Sabotage: `.skip(first + 1)` in `classify_repetition`, and this and
+    /// `rinsai-search`'s `the_referee_and_the_search_agree_when_the_window_opens_on_a_quiet_ply`
+    /// go red, awarding Black a perpetual-check loss the game did not produce.
     #[test]
     fn the_ply_a_repetition_window_opens_on_decides_the_verdict() {
         let mut game = game_from("sfen 4k4/8R/9/9/9/9/9/9/K8 b - 1");

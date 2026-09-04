@@ -609,6 +609,29 @@ mod tests {
         }
     }
 
+    /// The two root validators, on the fixtures they both answer: this crate's
+    /// own `check_piece_counts` and the referee's, which asks
+    /// `shogi_legality_lite`. Scoped to the piece-count cases, because the
+    /// king bound below is this crate's alone — `status_partial` does not
+    /// count kings.
+    #[test]
+    fn the_two_root_validators_agree_on_what_a_shogi_set_holds() {
+        for sfen in [
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 19P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 5R 1",
+            "sfen 4k4/9/9/9/4+P4/9/9/9/4K4 b 18P 1",
+            "sfen 3kg4/9/9/9/9/9/9/9/3KG4 b 4G 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 18P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 2R2B4G4S4N4L18P 1",
+        ] {
+            assert_eq!(
+                Game::from_usi_position(sfen).is_ok(),
+                rinsai_game::Game::from_usi_position(sfen).is_ok(),
+                "the two validators disagree about {sfen}"
+            );
+        }
+    }
+
     /// The bound is on the total, so a set that is merely *unusual* still works.
     #[test]
     fn a_legal_but_lopsided_position_is_accepted() {

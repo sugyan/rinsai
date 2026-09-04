@@ -14,6 +14,29 @@ pub struct Ply {
     pub gave_check: bool,
 }
 
+/// Why a position cannot begin a game.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootError {
+    /// Some piece kind is on the board and in the hands more times than a
+    /// shogi set holds it, counting a promoted piece as the piece it promoted
+    /// from. No move creates a piece, so no game reaches such a position and
+    /// none can start from one.
+    ///
+    /// ⚠️ The kings are not counted: a position with none, or with three, is a
+    /// possible root as far as this answer goes.
+    ImpossiblePieceCount,
+}
+
+impl fmt::Display for RootError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ImpossiblePieceCount => f.write_str("more pieces than a shogi set holds"),
+        }
+    }
+}
+
+impl std::error::Error for RootError {}
+
 /// How a game ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -143,6 +166,8 @@ pub enum UsiPositionError {
     Empty,
     /// The root — `startpos` or `sfen …` — did not parse.
     Root(shogi_usi_parser::Error),
+    /// The root parsed but cannot begin a game.
+    ImpossibleRoot(RootError),
     /// A token in the `moves` list was refused; `index` counts from the first
     /// move token.
     Move {
@@ -157,6 +182,7 @@ impl fmt::Display for UsiPositionError {
         match self {
             Self::Empty => f.write_str("empty position argument"),
             Self::Root(e) => write!(f, "bad root: {e}"),
+            Self::ImpossibleRoot(e) => write!(f, "impossible root: {e}"),
             Self::Move {
                 index,
                 token,
@@ -170,6 +196,7 @@ impl std::error::Error for UsiPositionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Empty | Self::Root(_) => None,
+            Self::ImpossibleRoot(source) => Some(source),
             Self::Move { source, .. } => Some(source),
         }
     }

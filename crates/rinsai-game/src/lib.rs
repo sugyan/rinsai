@@ -23,5 +23,6 @@ pub use game::Game;
 pub use moves::{in_check, move_from_usi};
 pub use repetition::{PositionKey, position_key};
 pub use types::{
-    MoveError, Outcome, Ply, PromotionChoice, UsiMoveError, UsiPositionError, illegal, side,
+    MoveError, Outcome, Ply, PromotionChoice, RootError, UsiMoveError, UsiPositionError, illegal,
+    side,
 };
