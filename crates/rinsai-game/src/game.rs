@@ -704,10 +704,10 @@ mod tests {
     ///
     /// Sabotage: in `classify_repetition`, seed `all_checks` with
     /// `[false, false]` **and** accumulate with `|=` — both together, which is
-    /// what turns the rule into "checked at least once" — and this is the only
-    /// test in the workspace that goes red. ⚠️ Either half alone makes every
-    /// window a draw instead, which the two perpetual-check tests catch and
-    /// this one cannot.
+    /// what turns the rule into "checked at least once" — and this test and
+    /// `the_ply_a_repetition_window_opens_on_decides_the_verdict` go red.
+    /// ⚠️ Either half alone makes every window a draw instead: each on its own
+    /// fails the two perpetual-check tests and neither of these two.
     #[test]
     fn a_cycle_with_one_quiet_move_is_a_draw_rather_than_a_perpetual_check() {
         let mut game = game_from("sfen 4k4/9/9/9/9/9/9/9/K7R b - 1");
@@ -800,6 +800,57 @@ mod tests {
         // root. Sabotage: return `Some(0)` from `first_occurrence` and this
         // assertion fails while every other repetition test stays green.
         assert_eq!(game.repetition.first_occurrence(), Some(1));
+    }
+
+    /// The ply a window opens on. Every other repetition test here plays a
+    /// uniform cycle, which repeats that ply twice more inside the window, so
+    /// dropping it leaves two identical copies behind and the verdict does not
+    /// move. Here the quiet lap happens exactly once and it is the lap the
+    /// window opens on, so the first ply is the whole verdict.
+    ///
+    /// The board and the last two laps are
+    /// `a_perpetual_check_loses_for_the_checking_side`'s. Only Black's first
+    /// lap differs — the rook steps down to 1c and back rather than up to 1a
+    /// and back, checking nothing on the way — and the verdicts are opposite.
+    ///
+    /// Sabotage: `.skip(first + 1)` in `classify_repetition`, and this is the
+    /// only test in the workspace that goes red — it awards Black a
+    /// perpetual-check loss the game did not produce.
+    #[test]
+    fn the_ply_a_repetition_window_opens_on_decides_the_verdict() {
+        let mut game = game_from("sfen 4k4/8R/9/9/9/9/9/9/K8 b - 1");
+        let quiet: [Slide; 4] = [
+            ((1, 2), (1, 3)), // the rook steps off rank b, checking nothing
+            ((5, 1), (5, 2)),
+            ((1, 3), (1, 2)),
+            ((5, 2), (5, 1)),
+        ];
+        let checking: [Slide; 4] = [
+            ((1, 2), (1, 1)), // and now it checks along rank a instead
+            ((5, 1), (5, 2)),
+            ((1, 1), (1, 2)),
+            ((5, 2), (5, 1)),
+        ];
+        for (from, to) in quiet {
+            game.play(normal(from, to)).expect("the quiet lap is legal");
+        }
+        for _ in 0..2 {
+            for (from, to) in checking {
+                game.play(normal(from, to))
+                    .expect("the checking lap is legal");
+            }
+        }
+        // The premise stated exactly rather than assumed: Black's one quiet
+        // move is the window's first ply, and no later lap repeats it.
+        let checks: Vec<bool> = game.moves().iter().map(|ply| ply.gave_check).collect();
+        assert_eq!(
+            checks,
+            [
+                false, false, true, false, true, false, true, false, true, false, true, false
+            ]
+        );
+        assert_eq!(game.repetition.first_occurrence(), Some(0));
+        assert_eq!(game.outcome(), Some(Outcome::Repetition));
     }
 
     /// Three returns to the start position by different squares and — the part

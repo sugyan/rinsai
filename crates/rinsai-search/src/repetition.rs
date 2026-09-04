@@ -338,4 +338,23 @@ mod tests {
              1b1a 5a5b 1a1b 5b5a",
         );
     }
+
+    /// The same board and the same last two laps, with the window's opening
+    /// ply quiet: the rook steps down to 1c and back instead of up to 1a and
+    /// back. One ply turns the verdict above into a draw, and both windows
+    /// have to see it.
+    ///
+    /// ⚠️ The laps here are of unequal shape on purpose. Every other game in
+    /// this module repeats its window's first ply twice more inside the
+    /// window, so a window opening one ply late still reads the same flags.
+    ///
+    /// Sabotage: `(first + 3..now)` for `we_checked`, and this is the only
+    /// test in the workspace that goes red.
+    #[test]
+    fn the_referee_and_the_search_agree_when_the_window_opens_on_a_quiet_ply() {
+        the_two_implementations_agree(
+            "sfen 4k4/8R/9/9/9/9/9/9/K8 b - 1 moves 1b1c 5a5b 1c1b 5b5a 1b1a 5a5b 1a1b 5b5a \
+             1b1a 5a5b 1a1b 5b5a",
+        );
+    }
 }
