@@ -247,13 +247,16 @@ impl Game {
     /// `moves()[ply]` in official kifu notation, e.g. `▲７六歩`. `None` when
     /// the game has no such ply.
     ///
-    /// Computed on demand: the notation needs the position the move was played
-    /// from, and brute-forces every piece that could have reached the square to
-    /// pick a disambiguation character. A caller that never renders a move must
-    /// not pay for that on every move played.
+    /// Computed on demand, and not cheap: a caller rendering a whole record
+    /// repeatedly should keep the strings.
     ///
     /// ⚠️ A move the notation cannot name unambiguously comes back as its USI
     /// text instead.
+    ///
+    /// ⚠️ Ply 0 also reads the root's own last move, which 同 is written
+    /// against. A root built by [`Self::from_position`] from a position some
+    /// other game moved into carries that game's last move, and names ply 0
+    /// against a move this game does not contain.
     #[must_use]
     pub fn kifu(&self, ply: usize) -> Option<String> {
         let mv = self.moves.get(ply)?.mv;
@@ -265,8 +268,9 @@ impl Game {
 
     /// Whether the side to move is in check.
     ///
-    /// Answered from what is already recorded rather than by scanning: the
-    /// scan happens once per move played, in [`Self::play`].
+    /// Answered from what is already recorded rather than by scanning. Two
+    /// places record it: [`Self::from_position`] for the root, [`Self::play`]
+    /// for every ply after it.
     #[must_use]
     pub fn in_check(&self) -> bool {
         self.moves
@@ -530,7 +534,9 @@ mod tests {
     /// row is the one a *status* function cannot answer: it is mate as well as
     /// impossible, and mate is reported before anything is counted.
     ///
-    /// Sabotage: drop the `over_inventory` guard from `from_position`.
+    /// Sabotage: drop the `over_inventory` guard from `from_position`, and
+    /// this and `rinsai-search`'s
+    /// `the_two_root_censuses_agree_on_what_a_shogi_set_holds` go red.
     #[test]
     fn a_root_no_shogi_set_could_produce_cannot_begin_a_game() {
         for sfen in [
@@ -569,7 +575,8 @@ mod tests {
     /// reports itself in progress and then refuses every move as illegal —
     /// a different verdict from the one on the board.
     ///
-    /// Sabotage: drop the `checkmate` call from `from_position`.
+    /// Sabotage: drop the `checkmate` call from `from_position`, and this is
+    /// the only test in the workspace that goes red.
     #[test]
     fn a_root_that_is_already_mate_says_so() {
         let mated = game_from("sfen rr2k4/9/9/9/9/9/9/9/K8 b - 1");
@@ -882,8 +889,9 @@ mod tests {
     /// what turns the rule into "checked at least once" — and this test,
     /// `the_ply_a_repetition_window_opens_on_decides_the_verdict` and that
     /// one's differential twin in `rinsai-search` go red.
-    /// ⚠️ Either half alone makes every window a draw instead, which the
-    /// perpetual-check tests in both crates catch and none of these three can.
+    /// ⚠️ Either half alone makes every window a draw instead: each on its own
+    /// fails the two perpetual-check tests here and the three outside this
+    /// crate, and none of these three.
     #[test]
     fn a_cycle_with_one_quiet_move_is_a_draw_rather_than_a_perpetual_check() {
         let mut game = game_from("sfen 4k4/9/9/9/9/9/9/9/K7R b - 1");
@@ -978,16 +986,17 @@ mod tests {
         assert_eq!(game.repetition.first_occurrence(), Some(1));
     }
 
-    /// The ply a window opens on. Every other repetition test here plays a
-    /// uniform cycle, which repeats that ply twice more inside the window, so
-    /// dropping it leaves two identical copies behind and the verdict does not
-    /// move. Here the quiet lap happens exactly once and it is the lap the
-    /// window opens on, so the first ply is the whole verdict.
+    /// The ply a window opens on. Every other repetition test here either has
+    /// no checks in it at all, or repeats the window's first ply twice more
+    /// inside the window, so dropping that ply leaves two identical copies
+    /// behind and no verdict moves. Here the window's first ply is quiet and
+    /// nothing later repeats it, so that one ply is the whole verdict.
     ///
-    /// The board and the last two laps are
-    /// `a_perpetual_check_loses_for_the_checking_side`'s. Only Black's first
-    /// lap differs — the rook steps down to 1c and back rather than up to 1a
-    /// and back, checking nothing on the way — and the verdicts are opposite.
+    /// The board and the last two laps are `rinsai-search`'s
+    /// `the_referee_and_the_search_agree_when_the_checker_faces_the_fourth_occurrence`'s.
+    /// Only Black's first lap differs — the rook steps down to 1c before
+    /// returning to 1b rather than up to 1a — and that one step is the whole
+    /// difference between a draw and a perpetual-check loss.
     ///
     /// Sabotage: `.skip(first + 1)` in `classify_repetition`, and this and
     /// `rinsai-search`'s `the_referee_and_the_search_agree_when_the_window_opens_on_a_quiet_ply`
@@ -995,7 +1004,9 @@ mod tests {
     #[test]
     fn the_ply_a_repetition_window_opens_on_decides_the_verdict() {
         let mut game = game_from("sfen 4k4/8R/9/9/9/9/9/9/K8 b - 1");
-        let quiet: [Slide; 4] = [
+        // ⚠️ Only this lap's *first* ply is quiet; its return to 1b checks the
+        // king that stepped to 5b, which the flags below record.
+        let opening: [Slide; 4] = [
             ((1, 2), (1, 3)), // the rook steps off rank b, checking nothing
             ((5, 1), (5, 2)),
             ((1, 3), (1, 2)),
@@ -1007,8 +1018,9 @@ mod tests {
             ((1, 1), (1, 2)),
             ((5, 2), (5, 1)),
         ];
-        for (from, to) in quiet {
-            game.play(normal(from, to)).expect("the quiet lap is legal");
+        for (from, to) in opening {
+            game.play(normal(from, to))
+                .expect("the opening lap is legal");
         }
         for _ in 0..2 {
             for (from, to) in checking {

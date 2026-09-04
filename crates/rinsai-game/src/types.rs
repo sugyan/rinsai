@@ -9,8 +9,13 @@ use shogi_core::{Color, IllegalMoveKind, Move, PieceKind};
 #[derive(Debug, Clone, Copy)]
 pub struct Ply {
     pub mv: Move,
-    /// Whether this move gave check. Cached because the perpetual-check rule
-    /// needs it for every ply inside a repetition window.
+    /// Whether the side to move is in check in the position this move reached.
+    /// Recorded because the perpetual-check rule needs it for every ply inside
+    /// a repetition window.
+    ///
+    /// ⚠️ That is "the mover gave check" for every position a game reaches by
+    /// play, because a move may not leave its own king attacked. It is not, at
+    /// ply 1 of a hand-built root whose idle side was already in check.
     pub gave_check: bool,
 }
 
@@ -202,7 +207,8 @@ impl fmt::Display for UsiPositionError {
 impl std::error::Error for UsiPositionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Empty | Self::Root(_) => None,
+            Self::Empty => None,
+            Self::Root(source) => Some(source),
             Self::ImpossibleRoot(source) => Some(source),
             Self::Move { source, .. } => Some(source),
         }

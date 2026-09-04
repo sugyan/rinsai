@@ -3,8 +3,8 @@
 //!
 //! ⚠️ Not the 24-point rule professional games are adjudicated by. That one is
 //! agreed to rather than declared, counts every piece a side holds rather than
-//! the zone, and can end in a draw. They share a scale and nothing else, so it
-//! is [`jishogi_points`] rather than an argument to [`can_declare`].
+//! the zone, and can end in a draw. They share a scale and nothing else, and
+//! the count is [`jishogi_points`].
 //!
 //! Counted here from the board and the hand, because `shogi_legality_lite` has
 //! no declaration surface to ask.
@@ -109,10 +109,7 @@ pub fn can_declare(position: &PartialPosition, color: Color) -> Result<(), Decla
         return Err(DeclarationError::TooFewPieces { pieces });
     }
 
-    let hand = position.hand_of_a_player(color);
-    for kind in Hand::all_hand_pieces() {
-        points += u32::from(hand.count(kind).unwrap_or(0)) * piece_points(kind);
-    }
+    points += hand_points(position, color);
     let required = required_points(color);
     if points < required {
         return Err(DeclarationError::TooFewPoints { points, required });
@@ -138,10 +135,7 @@ pub fn jishogi_points(position: &PartialPosition, color: Color) -> u32 {
                 .piece_kind(),
         );
     }
-    let hand = position.hand_of_a_player(color);
-    for kind in Hand::all_hand_pieces() {
-        points += u32::from(hand.count(kind).unwrap_or(0)) * piece_points(kind);
-    }
+    points += hand_points(position, color);
     points
 }
 
@@ -156,6 +150,15 @@ const fn required_points(color: Color) -> u32 {
 
 fn in_zone(square: Square, color: Color) -> bool {
     square.relative_rank(color) <= ZONE_RANKS
+}
+
+/// What `color` holds in hand, on [`piece_points`]'s scale. Both rules count the
+/// whole hand, so this is the half of the two censuses that is one thing.
+fn hand_points(position: &PartialPosition, color: Color) -> u32 {
+    let hand = position.hand_of_a_player(color);
+    Hand::all_hand_pieces()
+        .map(|kind| u32::from(hand.count(kind).unwrap_or(0)) * piece_points(kind))
+        .sum()
 }
 
 fn piece_points(kind: PieceKind) -> u32 {

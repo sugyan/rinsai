@@ -139,10 +139,10 @@ found zero defects in its code.
   are for phase gates.
 - **A surface with no caller stays only if a *specific* caller can be named, and
   the name goes in its doc comment.** Otherwise it goes. ⚠️ **`rinsai-game` is
-  the exception**: it publishes, so its callers are not in this repository and
-  cannot be named. The test there is whether the API is what a standalone shogi
-  rules layer must have, and its doc says what it is for rather than who calls
-  it.
+  the exception**: it publishes, so the callers that decide its API are not in
+  this repository and an in-repo one does not settle the question either way.
+  The test there is whether the API is what a standalone shogi rules layer must
+  have, and its doc says what a surface is for rather than who calls it.
 - **A module with children is `foo.rs` beside `foo/`, never `foo/mod.rs`** — the
   family layout, shunsai's too.
 
@@ -155,6 +155,7 @@ found zero defects in its code.
   around a missing API with a slow local reimplementation without saying so.
   Several additions unlock a re-measurement shunsai parked for this consumer —
   see DESIGN.md's API catalogue, and say which one you are unlocking.
+
 ## 7. What runs where
 
 The development machine is an Apple Silicon Mac; sessions also run in the cloud,

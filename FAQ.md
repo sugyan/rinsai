@@ -292,8 +292,8 @@ long — but a future change that moved it onto the `go` path would look free.
 
 ### Why does `score.rs` have surfaces with no caller?
 
-It is the named-caller rule's one exception: a type that exists to freeze a
-convention. A wrong negamax sign, centipawn scale, mate band or `MAX_PLY` is a
+It is the named-caller rule's exception among the crates that do not publish: a
+type that exists to freeze a convention. A wrong negamax sign, centipawn scale, mate band or `MAX_PLY` is a
 class of bug SPRT reads as "that patch was bad". Of the six surfaces it put on
 probation, five gained a named caller and stayed; `Score::NONE`'s never turned
 up and it went.
