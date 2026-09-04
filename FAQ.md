@@ -39,9 +39,8 @@ is not also a release**, because a rating series has to name what it measured.
 
 A path dependency carries no unreleased-dependency debt, and the shunsai git pin
 was the one such debt E0's exit criterion existed to clear. Rejected also:
-vendoring it into `xtask`, because a crate boundary is what lets tuishogi adopt
-it. It was moved from tuishogi rather than written (tuishogi @ 73d0d9c, MIT,
-same author, relicensed by the author to `MIT OR Apache-2.0`).
+vendoring it into `xtask`, because a crate boundary is what a rules layer meant
+to publish needs and a module inside a tool is not.
 
 ### Why does the referee use `shogi_legality_lite` instead of shunsai?
 
@@ -293,8 +292,8 @@ long — but a future change that moved it onto the `go` path would look free.
 
 ### Why does `score.rs` have surfaces with no caller?
 
-It is the named-caller rule's one exception: a type that exists to freeze a
-convention. A wrong negamax sign, centipawn scale, mate band or `MAX_PLY` is a
+It is the named-caller rule's exception among the crates that do not publish: a
+type that exists to freeze a convention. A wrong negamax sign, centipawn scale, mate band or `MAX_PLY` is a
 class of bug SPRT reads as "that patch was bad". Of the six surfaces it put on
 probation, five gained a named caller and stayed; `Score::NONE`'s never turned
 up and it went.
@@ -459,22 +458,6 @@ it in a document is a second copy that drifts.
 
 ## Protocols
 
-### Why isn't the USI layer shared with `tuishogi`?
-
-USI is asymmetric: an engine **reads** what a GUI sends and **writes** its
-answers, and a GUI does exactly the reverse. The function that parses
-`go btime 1000` and the function that writes it are two functions, and having
-either does not give you the other. rinsai holds the engine half and only that,
-so an extraction hands tuishogi nothing it can call.
-
-So this was never "extract the USI layer" but "write a new crate holding both
-directions of both types". **A shared type is the *union* of both sides' needs
-rather than the intersection** — rinsai's deliberately lossy `GuiCommand`
-variants are each small and together a permanent tax on both consumers.
-
-**Reopened when** a dialect bug found in one repository turns out to have a twin
-in the other, or a second Rust consumer of either half appears.
-
 ### Why not use the `usi` crate?
 
 `usi` 0.6.2 (nozaq/usi-rs) is MIT and **does not depend on `shogi_core` at all**
@@ -523,7 +506,7 @@ A public setter would hand a caller the three endings `play` *derives* — 詰�
 crate exists to check. Six methods buy the property that a declared ending and a
 derived one cannot be spelled the same way. Rejected also: a second enum for the
 declared endings converted into `Outcome` — two vocabularies and a conversion,
-where both consumers match on `Outcome` at the end of it anyway.
+where a caller matches on `Outcome` at the end of it anyway.
 
 ### Why isn't `EndReason` collapsed onto `Outcome`?
 
@@ -613,10 +596,10 @@ it said "fix the sentences and return to step 1", which has no stopping
 condition. Against that, its mechanical checker found nothing. The rules survive
 as six imperatives in CLAUDE.md.
 
-Rejected: moving the plugin into `.claude/hooks` and `.claude/agents`, which is
-what tuishogi does and would have worked in the cloud — the machinery was the
-cost, not its location. Rejected also: publishing the marketplace to GitHub,
-which keeps one shared copy for three repositories and keeps the loop.
+Rejected: moving the plugin into `.claude/hooks` and `.claude/agents`, which
+would have worked in the cloud — the machinery was the cost, not its location.
+Rejected also: publishing the marketplace to GitHub, which keeps one shared copy
+across repositories and keeps the loop.
 
 **Reopens if** false claims start reaching `main` at a rate the six imperatives
 do not hold down.

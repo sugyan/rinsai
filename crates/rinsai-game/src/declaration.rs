@@ -3,7 +3,8 @@
 //!
 //! ⚠️ Not the 24-point rule professional games are adjudicated by. That one is
 //! agreed to rather than declared, counts every piece a side holds rather than
-//! the zone, and can end in a draw; nothing here answers it.
+//! the zone, and can end in a draw. They share a scale and nothing else, and
+//! the count is [`jishogi_points`].
 //!
 //! Counted here from the board and the hand, because `shogi_legality_lite` has
 //! no declaration surface to ask.
@@ -108,15 +109,34 @@ pub fn can_declare(position: &PartialPosition, color: Color) -> Result<(), Decla
         return Err(DeclarationError::TooFewPieces { pieces });
     }
 
-    let hand = position.hand_of_a_player(color);
-    for kind in Hand::all_hand_pieces() {
-        points += u32::from(hand.count(kind).unwrap_or(0)) * piece_points(kind);
-    }
+    points += hand_points(position, color);
     let required = required_points(color);
     if points < required {
         return Err(DeclarationError::TooFewPoints { points, required });
     }
     Ok(())
+}
+
+/// 持将棋 points for `color` under the 24-point rule: every piece it holds, on
+/// the board and in hand, 飛角 and their promotions five and everything else
+/// one, the king nothing.
+///
+/// ⚠️ The count, not the verdict. Who is under 24 needs both sides' totals and
+/// an agreement that the game cannot progress, and no position carries the
+/// second — the same reason the clock is not here either.
+#[must_use]
+pub fn jishogi_points(position: &PartialPosition, color: Color) -> u32 {
+    let mut points = 0;
+    for square in position.player_bitboard(color) {
+        points += piece_points(
+            position
+                .piece_at(square)
+                .expect("a player's bitboard names occupied squares")
+                .piece_kind(),
+        );
+    }
+    points += hand_points(position, color);
+    points
 }
 
 /// The points the declaring side needs. Black's extra point is what keeps both
@@ -130,6 +150,15 @@ const fn required_points(color: Color) -> u32 {
 
 fn in_zone(square: Square, color: Color) -> bool {
     square.relative_rank(color) <= ZONE_RANKS
+}
+
+/// What `color` holds in hand, on [`piece_points`]'s scale. Both rules count the
+/// whole hand, so this is the half of the two censuses that is one thing.
+fn hand_points(position: &PartialPosition, color: Color) -> u32 {
+    let hand = position.hand_of_a_player(color);
+    Hand::all_hand_pieces()
+        .map(|kind| u32::from(hand.count(kind).unwrap_or(0)) * piece_points(kind))
+        .sum()
 }
 
 fn piece_points(kind: PieceKind) -> u32 {
@@ -357,8 +386,8 @@ mod tests {
     /// can fail: each is over both bars when the whole board is counted and
     /// under one when only the zone is.
     ///
-    /// Sabotage: drop the `in_zone` guard from the counting loop and this is
-    /// the only test in the workspace that goes red.
+    /// Sabotage: drop the `in_zone` guard from the counting loop, and this and
+    /// `rinsai-search`'s `the_two_implementations_agree` go red.
     #[test]
     fn a_piece_outside_the_zone_counts_for_nothing() {
         // Nine in the zone and three behind it, which together would be twelve.
@@ -451,5 +480,43 @@ mod tests {
             assert_eq!(shown, sentence, "{refusal:?}");
             assert!(seen.insert(shown.clone()), "{refusal:?} repeats {shown:?}");
         }
+    }
+
+    /// The whole board against the zone: the two silvers behind the zone are
+    /// worth nothing to a declaration and two points to a 持将棋 count, so the
+    /// same position answers the two rules differently. A fixture with nothing
+    /// outside the zone could not tell the two readings apart.
+    ///
+    /// Sabotage: give `jishogi_points` an `in_zone` guard, and this and
+    /// `each_side_starts_three_points_clear_of_the_24_point_bar` go red.
+    #[test]
+    fn the_24_point_count_reads_the_whole_board_where_the_declaration_reads_the_zone() {
+        let position = position("sfen +R+R+B+BGGGGK/7SS/9/9/SS7/9/9/9/k8 b - 1");
+        assert_eq!(zone_census(&position, Color::Black), (10, 26));
+        assert_eq!(jishogi_points(&position, Color::Black), 28);
+        // White holds a king and nothing else, which is the only place a
+        // caller reads the king's zero rather than skipping the king first.
+        assert_eq!(jishogi_points(&position, Color::White), 0);
+    }
+
+    /// The hand is counted, and counted on the same scale as the board.
+    ///
+    /// Sabotage: stop summing the hand in `jishogi_points`, and this is the
+    /// only test in the workspace that goes red.
+    #[test]
+    fn a_major_in_hand_counts_towards_the_24_point_total() {
+        let held = position("sfen +R+R+BGGGGSK/SSS6/9/9/9/9/9/9/k8 b B 1");
+        assert_eq!(zone_census(&held, Color::Black), (11, 23));
+        assert_eq!(jishogi_points(&held, Color::Black), 28);
+    }
+
+    /// Both sides begin three points clear of the 24-point bar — and their sum
+    /// is the total `the_two_bars_together_ask_for_more_than_a_board_holds`
+    /// pins, reached by a different route.
+    #[test]
+    fn each_side_starts_three_points_clear_of_the_24_point_bar() {
+        let start = PartialPosition::startpos();
+        assert_eq!(jishogi_points(&start, Color::Black), 27);
+        assert_eq!(jishogi_points(&start, Color::White), 27);
     }
 }

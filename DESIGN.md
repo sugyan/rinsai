@@ -24,7 +24,7 @@ A shogi engine that places well on **floodgate** and in the **世界コンピュ
 
 `go mate` is out of scope: that is [`tsumeshogi-solver`](https://github.com/sugyan/tsumeshogi-solver)'s territory.
 
-**The dependency is a released version, not a git pin.** rinsai depends on `shunsai = "0.1"` from crates.io. Prototyping an API addition uses `[patch.crates-io]` with a path override; adopting it means **releasing shunsai** and raising rinsai's requirement. The loop is: try it on a shunsai branch → measure it on shunsai's own bench → adopt → release → bump. rinsai's **engine** crates are `publish = false` — nothing depends on a search engine as a library, and its artifact is a binary. The one publication-intended exception is `rinsai-game`, the rules library the match referee and [tuishogi](https://github.com/sugyan/tuishogi) share.
+**The dependency is a released version, not a git pin.** rinsai depends on `shunsai = "0.1"` from crates.io. Prototyping an API addition uses `[patch.crates-io]` with a path override; adopting it means **releasing shunsai** and raising rinsai's requirement. The loop is: try it on a shunsai branch → measure it on shunsai's own bench → adopt → release → bump. rinsai's **engine** crates are `publish = false` — nothing depends on a search engine as a library, and its artifact is a binary. The one publication-intended exception is `rinsai-game`: a rules layer is a library on its own terms, and the referee is one caller of it rather than what it is for.
 
 ## 3. Route: NNUE + αβ first, DL/MCTS conditional
 
@@ -55,7 +55,7 @@ rinsai/
 ├── Cargo.toml             # [workspace]
 ├── crates/
 │   ├── rinsai-game/       # lib: the rules layer — legality-gated play, undo, 千日手 and
-│   │                      #      連続王手 adjudication; the match referee, shared with tuishogi
+│   │                      #      連続王手 adjudication; the match referee
 │   ├── rinsai-search/     # lib: αβ + TT + qsearch + time management + repetition + eval
 │   │                      #      the only crate that depends on shunsai
 │   ├── rinsai/            # bin: the engine. USI on stdio by default, --csa for floodgate
@@ -75,7 +75,7 @@ An entry marked with a phase arrives then; everything else exists today.
 
 | Crate | Split off at | Because |
 |---|---|---|
-| `rinsai-game` | E0 (exists) | the match referee and tuishogi share one rules layer, and a crate boundary is what a second repository can adopt; moved from tuishogi rather than written |
+| `rinsai-game` | E0 (exists) | a rules layer is a library on its own terms, and this is the one crate here meant to publish |
 | `rinsai-nnue` | E3 | SIMD backends (NEON / AVX2) and PyTorch-parity tests want their own test surface. **Draw the boundary carefully**: the accumulator stack parallels the *search* stack, so `nnue` owns pure inference and the `Accumulator` type, while pushing and popping it stays in the search. |
 | `rinsai-protocol` | E2 | when the CSA client arrives and wants to share the **session layer** with USI: both drive the same `SearchDriver`, `Game` and time management, and both need "one answer per turn, structurally" to hold. **Not** the line-oriented loop, and **not** a codec — the two protocols share no grammar, no move notation (`+7776FU` against `7g7f`) and no state machine. |
 | `rinsai-selfplay` | E3 | data generation drives the search library in-process rather than over USI, so it needs its own binary |

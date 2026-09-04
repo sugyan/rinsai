@@ -2,21 +2,52 @@
 
 use std::fmt;
 
-use shogi_core::{Color, IllegalMoveKind, Move};
+use shogi_core::{Color, IllegalMoveKind, Move, PieceKind};
 
-/// One played move, with everything derived from it that is expensive or
-/// impossible to recompute later.
-#[derive(Debug, Clone)]
+/// One played move, with what the rules need from it that cannot be recomputed
+/// from the move alone.
+#[derive(Debug, Clone, Copy)]
 pub struct Ply {
     pub mv: Move,
-    /// Whether this move gave check. Cached because the perpetual-check rule
-    /// needs it for every ply inside a repetition window.
+    /// Whether the side to move is in check in the position this move reached.
+    /// Recorded because the perpetual-check rule needs it for every ply inside
+    /// a repetition window.
+    ///
+    /// ⚠️ That is "the mover gave check" for every position a game reaches by
+    /// play, because a move may not leave its own king attacked. It is not, at
+    /// ply 1 of a hand-built root whose idle side was already in check.
     pub gave_check: bool,
-    /// Official kifu text, e.g. `▲７六歩`. Computed at push time because
-    /// [`shogi_official_kifu::display_single_move_kansuji`] needs the position
-    /// *before* the move.
-    pub kifu: String,
 }
+
+/// Why a position cannot begin a game.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootError {
+    /// `count` pieces of `kind` stand on the board and in the hands together,
+    /// counting a promoted piece as the one it promoted from, where a set holds
+    /// `total`. No move creates a piece, so no game reaches such a position and
+    /// none can start from one.
+    ///
+    /// ⚠️ The kings are not counted: a position with none, or with three, is a
+    /// possible root as far as this answer goes.
+    ImpossiblePieceCount {
+        kind: PieceKind,
+        count: u32,
+        total: u32,
+    },
+}
+
+impl fmt::Display for RootError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ImpossiblePieceCount { kind, count, total } => write!(
+                f,
+                "{count} {kind:?} on the board and in hand, but a set holds {total}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RootError {}
 
 /// How a game ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +178,8 @@ pub enum UsiPositionError {
     Empty,
     /// The root — `startpos` or `sfen …` — did not parse.
     Root(shogi_usi_parser::Error),
+    /// The root parsed but cannot begin a game.
+    ImpossibleRoot(RootError),
     /// A token in the `moves` list was refused; `index` counts from the first
     /// move token.
     Move {
@@ -161,6 +194,7 @@ impl fmt::Display for UsiPositionError {
         match self {
             Self::Empty => f.write_str("empty position argument"),
             Self::Root(e) => write!(f, "bad root: {e}"),
+            Self::ImpossibleRoot(e) => write!(f, "impossible root: {e}"),
             Self::Move {
                 index,
                 token,
@@ -173,7 +207,9 @@ impl fmt::Display for UsiPositionError {
 impl std::error::Error for UsiPositionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Empty | Self::Root(_) => None,
+            Self::Empty => None,
+            Self::Root(source) => Some(source),
+            Self::ImpossibleRoot(source) => Some(source),
             Self::Move { source, .. } => Some(source),
         }
     }

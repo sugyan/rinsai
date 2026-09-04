@@ -1,7 +1,8 @@
 //! One game: a position, its history, and the gate every move passes through.
 
 use shogi_core::{
-    Bitboard, Color, IllegalMoveKind, Move, PartialPosition, Piece, PositionStatus, Square,
+    Bitboard, Color, Hand, IllegalMoveKind, Move, PartialPosition, Piece, PieceKind,
+    PositionStatus, Square,
 };
 use shogi_legality_lite as legality;
 
@@ -9,39 +10,111 @@ use shogi_usi_parser::FromUsi;
 
 use crate::moves;
 use crate::repetition::RepetitionIndex;
-use crate::types::{MoveError, Outcome, Ply, PromotionChoice, UsiMoveError, UsiPositionError};
+use crate::types::{
+    MoveError, Outcome, Ply, PromotionChoice, RootError, UsiMoveError, UsiPositionError,
+};
+
+/// What a shogi set holds of each kind, counting a promoted piece as the one it
+/// promoted from.
+///
+/// ⚠️ The kings are not here, so nothing in this crate bounds their number: a
+/// 詰将棋 diagram routinely omits the attacking king.
+const PIECE_TOTALS: [(PieceKind, u32); 7] = [
+    (PieceKind::Pawn, 18),
+    (PieceKind::Lance, 4),
+    (PieceKind::Knight, 4),
+    (PieceKind::Silver, 4),
+    (PieceKind::Gold, 4),
+    (PieceKind::Bishop, 2),
+    (PieceKind::Rook, 2),
+];
+
+/// The first kind a position holds more of than a set does, with its count.
+///
+/// Counted here rather than read off a status function, which answers mate
+/// first and returns before it counts: a census that runs only for undecided
+/// positions is not a census.
+fn over_inventory(position: &PartialPosition) -> Option<(PieceKind, u32, u32)> {
+    let mut seen = [0u32; PieceKind::NUM];
+    for square in Square::all() {
+        if let Some(piece) = position.piece_at(square) {
+            let kind = piece.piece_kind();
+            seen[kind.unpromote().unwrap_or(kind).array_index()] += 1;
+        }
+    }
+    for color in Color::all() {
+        let hand = position.hand_of_a_player(color);
+        for kind in Hand::all_hand_pieces() {
+            seen[kind.array_index()] += u32::from(hand.count(kind).unwrap_or(0));
+        }
+    }
+    PIECE_TOTALS.into_iter().find_map(|(kind, total)| {
+        let count = seen[kind.array_index()];
+        (count > total).then_some((kind, count, total))
+    })
+}
+
+/// 詰み, if the position is already it.
+///
+/// `status_partial` folds stalemate into checkmate, which is right: in shogi a
+/// player with no legal move loses either way.
+fn checkmate(position: &PartialPosition) -> Option<Outcome> {
+    match legality::status_partial(position) {
+        PositionStatus::BlackWins => Some(Outcome::Checkmate {
+            winner: Color::Black,
+        }),
+        PositionStatus::WhiteWins => Some(Outcome::Checkmate {
+            winner: Color::White,
+        }),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Game {
-    /// `positions[0]` is the initial position and `positions[i]` is the position
-    /// after `moves[i - 1]`.
-    ///
-    /// Snapshots rather than replay, at one position per ply: undo is O(1), the
-    /// repetition index can be decremented exactly, and jumping to an arbitrary
-    /// ply is free.
-    ///
-    /// Invariant: `positions.len() == moves.len() + 1`, and never empty.
+    /// Snapshots rather than replay, at one position per ply: undo is O(1) and
+    /// the repetition index can be decremented exactly. The layout and the
+    /// invariant are [`Game::positions`]'s to state, since it hands them out.
     positions: Vec<PartialPosition>,
     moves: Vec<Ply>,
     repetition: RepetitionIndex,
     /// `None` while the game is in progress.
     outcome: Option<Outcome>,
+    /// Whether the side to move at the root is in check. Written once, at
+    /// construction, and never again: after a move the side to move is in check
+    /// exactly when that move gave check, which the [`Ply`] carries. Undo needs
+    /// no handling for the same reason — popping a ply falls back to the ply
+    /// below, and at ply 0 to a root that has not moved.
+    root_in_check: bool,
 }
 
 impl Game {
     #[must_use]
     pub fn startpos() -> Self {
         Self::from_position(PartialPosition::startpos())
+            .expect("a game starts from a possible position")
     }
 
-    #[must_use]
-    pub fn from_position(initial: PartialPosition) -> Self {
-        Self {
+    /// Begin a game at `initial`, which must be a position a shogi set could
+    /// hold.
+    ///
+    /// The root is the only position whose census has to be taken — no move
+    /// creates a piece — and the only one [`Self::play`] cannot adjudicate,
+    /// since nothing was played into it. A root that is already 詰み therefore
+    /// arrives with its outcome set.
+    pub fn from_position(initial: PartialPosition) -> Result<Self, RootError> {
+        if let Some((kind, count, total)) = over_inventory(&initial) {
+            return Err(RootError::ImpossiblePieceCount { kind, count, total });
+        }
+        let root_in_check = moves::in_check(&initial, initial.side_to_move());
+        let outcome = checkmate(&initial);
+        Ok(Self {
             repetition: RepetitionIndex::new(&initial),
+            root_in_check,
             positions: vec![initial],
             moves: Vec::new(),
-            outcome: None,
-        }
+            outcome,
+        })
     }
 
     /// Build a game from the argument of a USI `position` command:
@@ -70,7 +143,7 @@ impl Game {
             tokens.next();
         }
         let initial = PartialPosition::from_usi(&root).map_err(UsiPositionError::Root)?;
-        let mut game = Self::from_position(initial);
+        let mut game = Self::from_position(initial).map_err(UsiPositionError::ImpossibleRoot)?;
 
         if tokens.next().is_some() {
             for (index, token) in tokens.enumerate() {
@@ -100,6 +173,17 @@ impl Game {
     #[must_use]
     pub fn position(&self) -> &PartialPosition {
         self.positions.last().expect("positions is never empty")
+    }
+
+    /// Every position the game has held, root first: `positions()[i]` is the
+    /// position `moves()[i]` was played from, and the last is the position now.
+    ///
+    /// `positions().len() == moves().len() + 1` and it is never empty, so
+    /// `positions().iter().zip(game.moves())` pairs each move with the position
+    /// before it — which is the position that names it, not the one it reaches.
+    #[must_use]
+    pub fn positions(&self) -> &[PartialPosition] {
+        &self.positions
     }
 
     /// The position the game began at.
@@ -156,32 +240,42 @@ impl Game {
     }
 
     #[must_use]
-    pub fn last_move(&self) -> Option<Move> {
-        self.moves.last().map(|ply| ply.mv)
-    }
-
-    #[must_use]
     pub fn outcome(&self) -> Option<Outcome> {
         self.outcome
     }
 
+    /// `moves()[ply]` in official kifu notation, e.g. `▲７六歩`. `None` when
+    /// the game has no such ply.
+    ///
+    /// Computed on demand, and not cheap: a caller rendering a whole record
+    /// repeatedly should keep the strings.
+    ///
+    /// ⚠️ A move the notation cannot name unambiguously comes back as its USI
+    /// text instead.
+    ///
+    /// ⚠️ Ply 0 also reads the root's own last move, which 同 is written
+    /// against. A root built by [`Self::from_position`] from a position some
+    /// other game moved into carries that game's last move, and names ply 0
+    /// against a move this game does not contain.
     #[must_use]
-    pub fn in_check(&self) -> bool {
-        moves::in_check(self.position(), self.side_to_move())
+    pub fn kifu(&self, ply: usize) -> Option<String> {
+        let mv = self.moves.get(ply)?.mv;
+        Some(
+            shogi_official_kifu::display_single_move_kansuji(&self.positions[ply], mv)
+                .unwrap_or_else(|| shogi_core::ToUsi::to_usi_owned(&mv)),
+        )
     }
 
-    /// Squares holding a king that is currently attacked.
+    /// Whether the side to move is in check.
+    ///
+    /// Answered from what is already recorded rather than by scanning. Two
+    /// places record it: [`Self::from_position`] for the root, [`Self::play`]
+    /// for every ply after it.
     #[must_use]
-    pub fn check_squares(&self) -> Bitboard {
-        let mut bb = Bitboard::empty();
-        for color in Color::all() {
-            if moves::in_check(self.position(), color)
-                && let Some(square) = self.position().king_position(color)
-            {
-                bb |= square;
-            }
-        }
-        bb
+    pub fn in_check(&self) -> bool {
+        self.moves
+            .last()
+            .map_or(self.root_in_check, |ply| ply.gave_check)
     }
 
     /// Fully legal destinations from `from`, pin- and check-filtered.
@@ -246,36 +340,19 @@ impl Game {
         next.make_move(mv)
             .expect("is_legal_partial implies make_move succeeds");
 
-        let kifu = shogi_official_kifu::display_single_move_kansuji(self.position(), mv)
-            .unwrap_or_else(|| shogi_core::ToUsi::to_usi_owned(&mv));
         // After the move the side to move is the opponent, so this asks exactly
         // "did the move just played give check".
         let gave_check = moves::in_check(&next, next.side_to_move());
 
         let count = self.repetition.push(&next);
         self.positions.push(next);
-        self.moves.push(Ply {
-            mv,
-            gave_check,
-            kifu,
-        });
+        self.moves.push(Ply { mv, gave_check });
 
         // Mate is settled before repetition: a mating move that happens to be
         // the fourth occurrence of a position is mate, not 千日手.
-        self.outcome = match legality::status_partial(self.position()) {
-            PositionStatus::BlackWins => Some(Outcome::Checkmate {
-                winner: Color::Black,
-            }),
-            PositionStatus::WhiteWins => Some(Outcome::Checkmate {
-                winner: Color::White,
-            }),
-            // ⚠️ Not an outcome, and not a no-op either: a position the
-            // rules library calls invalid never reaches the repetition arm
-            // below, so such a game runs on past a fourfold repetition.
-            PositionStatus::Invalid => None,
-            _ if count >= 4 => Some(self.classify_repetition()),
-            _ => None,
-        };
+        let outcome =
+            checkmate(self.position()).or_else(|| (count >= 4).then(|| self.classify_repetition()));
+        self.outcome = outcome;
         Ok(())
     }
 
@@ -403,24 +480,118 @@ mod tests {
 
     fn game_from(sfen: &str) -> Game {
         Game::from_position(PartialPosition::from_usi(sfen).expect("valid sfen"))
+            .expect("a possible root")
     }
 
+    /// The invariant [`Game::positions`] states, asserted through the accessor
+    /// rather than the field: it is what a caller zipping the two slices relies
+    /// on.
     #[test]
     fn the_position_count_invariant_survives_arbitrary_play_and_undo() {
         let mut game = Game::startpos();
-        assert_eq!(game.positions.len(), game.moves.len() + 1);
+        assert_eq!(game.positions().len(), game.moves().len() + 1);
         game.play(normal((7, 7), (7, 6))).expect("legal");
         game.play(normal((3, 3), (3, 4))).expect("legal");
-        assert_eq!(game.positions.len(), game.moves.len() + 1);
+        assert_eq!(game.positions().len(), game.moves().len() + 1);
         game.undo();
-        assert_eq!(game.positions.len(), game.moves.len() + 1);
+        assert_eq!(game.positions().len(), game.moves().len() + 1);
         game.undo();
-        assert_eq!(game.positions.len(), game.moves.len() + 1);
+        assert_eq!(game.positions().len(), game.moves().len() + 1);
         assert!(
             game.undo().is_none(),
             "cannot undo past the initial position"
         );
-        assert_eq!(game.positions.len(), 1);
+        assert_eq!(game.positions().len(), 1);
+    }
+
+    /// The pairing the slice exists for: each position beside the move played
+    /// *from* it, which is not the move that reached it. Replaying the pair is
+    /// the assertion — a slice off by one leaves `make_move` nothing to move.
+    ///
+    /// Sabotage: return `&self.positions[1..]` from `positions`, and this and
+    /// `the_position_count_invariant_survives_arbitrary_play_and_undo` go red.
+    #[test]
+    fn each_position_is_the_one_its_move_was_played_from() {
+        let mut game = Game::startpos();
+        for (from, to) in [((7, 7), (7, 6)), ((3, 3), (3, 4)), ((8, 8), (2, 2))] {
+            game.play(normal(from, to)).expect("legal");
+        }
+        assert_eq!(game.positions().len(), game.moves().len() + 1);
+        for (position, ply) in game.positions().iter().zip(game.moves()) {
+            let mut replayed = position.clone();
+            replayed
+                .make_move(ply.mv)
+                .expect("the recorded move replays from the position beside it");
+        }
+    }
+
+    /// A root no shogi set could produce, refused before a move is offered.
+    /// The census is invariant under play — no move creates a piece — so it is
+    /// decidable exactly once, at the door.
+    ///
+    /// ⚠️ Nineteen pawns above and eighteen below are the boundary, and it
+    /// takes both to say the bound is the bound rather than a smell. The last
+    /// row is the one a *status* function cannot answer: it is mate as well as
+    /// impossible, and mate is reported before anything is counted.
+    ///
+    /// Sabotage: drop the `over_inventory` guard from `from_position`, and
+    /// this and `rinsai-search`'s
+    /// `the_two_root_censuses_agree_on_what_a_shogi_set_holds` go red.
+    #[test]
+    fn a_root_no_shogi_set_could_produce_cannot_begin_a_game() {
+        for sfen in [
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 19P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 5R 1",
+            // Promoted pieces count as what they promoted from: a +P on the
+            // board plus eighteen in hand is nineteen pawns.
+            "sfen 4k4/9/9/9/4+P4/9/9/9/4K4 b 18P 1",
+            // Per kind, not only about pawns.
+            "sfen 3kg4/9/9/9/9/9/9/9/3KG4 b 4G 1",
+            // Impossible *and* mate.
+            "sfen 8l/9/9/9/9/9/9/8g/8K b 19P 1",
+        ] {
+            assert!(
+                matches!(
+                    Game::from_usi_position(sfen),
+                    Err(UsiPositionError::ImpossibleRoot(
+                        RootError::ImpossiblePieceCount { .. }
+                    ))
+                ),
+                "accepted an impossible root: {sfen}"
+            );
+        }
+        assert!(
+            Game::from_usi_position("sfen 4k4/9/9/9/9/9/9/9/4K4 b 18P 1").is_ok(),
+            "eighteen pawns is a real position"
+        );
+        assert!(
+            Game::from_usi_position("sfen 4k4/9/9/9/9/9/9/9/3KK4 b - 1").is_ok(),
+            "the census does not count kings"
+        );
+    }
+
+    /// A root is the one position [`Game::play`] cannot adjudicate, because
+    /// nothing was played into it. Without adjudicating it, a finished game
+    /// reports itself in progress and then refuses every move as illegal —
+    /// a different verdict from the one on the board.
+    ///
+    /// Sabotage: drop the `checkmate` call from `from_position`, and this is
+    /// the only test in the workspace that goes red.
+    #[test]
+    fn a_root_that_is_already_mate_says_so() {
+        let mated = game_from("sfen rr2k4/9/9/9/9/9/9/9/K8 b - 1");
+        assert_eq!(
+            mated.outcome(),
+            Some(Outcome::Checkmate {
+                winner: Color::White
+            })
+        );
+        assert_eq!(
+            mated.clone().play(normal((9, 9), (8, 9))),
+            Err(MoveError::GameOver),
+            "a decided game refuses a move as decided, not as illegal"
+        );
+        assert_eq!(Game::startpos().outcome(), None, "an ordinary root is not");
     }
 
     /// A refused move must not leave a trace. Sabotage note: moving the
@@ -513,13 +684,17 @@ mod tests {
     /// Each adjudicator's own write, which nothing else observes: every other
     /// call site hands them a game that is already decided, so the guard
     /// discards the value before anyone can look at it. Sabotage: an empty
-    /// `max_moves` body, `declare` building `Abandoned`, `foul` dropping its
-    /// `kind`, and `flag_fall` flipping its `loser` each pass the rest of the
-    /// suite and fail here. Every side is `White`, so a flip shows up as
-    /// `Black`.
+    /// `max_moves` body, `declare` building `Abandoned`, `flag_fall` flipping
+    /// its `loser`, and `foul` substituting a fixed `kind` for the one it was
+    /// given each pass the rest of the suite and fail here. Every side is
+    /// `White`, so a flip shows up as `Black`.
+    ///
+    /// ⚠️ `foul` needs **two** rows to say that. With one, a substituted kind
+    /// is caught only when it differs from that row's, so the two here differ
+    /// from each other.
     #[test]
     fn each_adjudication_records_its_own_ending() {
-        let cases: [(Adjudication, Outcome); 6] = [
+        let cases: [(Adjudication, Outcome); 7] = [
             (
                 |g| g.resign(Color::White),
                 Outcome::Resignation {
@@ -537,6 +712,13 @@ mod tests {
                 Outcome::IllegalMove {
                     loser: Color::White,
                     kind: IllegalMoveKind::TwoPawns,
+                },
+            ),
+            (
+                |g| g.foul(Color::White, IllegalMoveKind::IgnoredCheck),
+                Outcome::IllegalMove {
+                    loser: Color::White,
+                    kind: IllegalMoveKind::IgnoredCheck,
                 },
             ),
             (
@@ -704,10 +886,12 @@ mod tests {
     ///
     /// Sabotage: in `classify_repetition`, seed `all_checks` with
     /// `[false, false]` **and** accumulate with `|=` — both together, which is
-    /// what turns the rule into "checked at least once" — and this is the only
-    /// test in the workspace that goes red. ⚠️ Either half alone makes every
-    /// window a draw instead, which the two perpetual-check tests catch and
-    /// this one cannot.
+    /// what turns the rule into "checked at least once" — and this test,
+    /// `the_ply_a_repetition_window_opens_on_decides_the_verdict` and that
+    /// one's differential twin in `rinsai-search` go red.
+    /// ⚠️ Either half alone makes every window a draw instead: each on its own
+    /// fails the two perpetual-check tests here and the three outside this
+    /// crate, and none of these three.
     #[test]
     fn a_cycle_with_one_quiet_move_is_a_draw_rather_than_a_perpetual_check() {
         let mut game = game_from("sfen 4k4/9/9/9/9/9/9/9/K7R b - 1");
@@ -802,6 +986,61 @@ mod tests {
         assert_eq!(game.repetition.first_occurrence(), Some(1));
     }
 
+    /// The ply a window opens on. Every other repetition test here either has
+    /// no checks in it at all, or repeats the window's first ply twice more
+    /// inside the window, so dropping that ply leaves two identical copies
+    /// behind and no verdict moves. Here the window's first ply is quiet and
+    /// nothing later repeats it, so that one ply is the whole verdict.
+    ///
+    /// The board and the last two laps are `rinsai-search`'s
+    /// `the_referee_and_the_search_agree_when_the_checker_faces_the_fourth_occurrence`'s.
+    /// Only Black's first lap differs — the rook steps down to 1c before
+    /// returning to 1b rather than up to 1a — and that one step is the whole
+    /// difference between a draw and a perpetual-check loss.
+    ///
+    /// Sabotage: `.skip(first + 1)` in `classify_repetition`, and this and
+    /// `rinsai-search`'s `the_referee_and_the_search_agree_when_the_window_opens_on_a_quiet_ply`
+    /// go red, awarding Black a perpetual-check loss the game did not produce.
+    #[test]
+    fn the_ply_a_repetition_window_opens_on_decides_the_verdict() {
+        let mut game = game_from("sfen 4k4/8R/9/9/9/9/9/9/K8 b - 1");
+        // ⚠️ Only this lap's *first* ply is quiet; its return to 1b checks the
+        // king that stepped to 5b, which the flags below record.
+        let opening: [Slide; 4] = [
+            ((1, 2), (1, 3)), // the rook steps off rank b, checking nothing
+            ((5, 1), (5, 2)),
+            ((1, 3), (1, 2)),
+            ((5, 2), (5, 1)),
+        ];
+        let checking: [Slide; 4] = [
+            ((1, 2), (1, 1)), // and now it checks along rank a instead
+            ((5, 1), (5, 2)),
+            ((1, 1), (1, 2)),
+            ((5, 2), (5, 1)),
+        ];
+        for (from, to) in opening {
+            game.play(normal(from, to))
+                .expect("the opening lap is legal");
+        }
+        for _ in 0..2 {
+            for (from, to) in checking {
+                game.play(normal(from, to))
+                    .expect("the checking lap is legal");
+            }
+        }
+        // The premise stated exactly rather than assumed: Black's one quiet
+        // move is the window's first ply, and no later lap repeats it.
+        let checks: Vec<bool> = game.moves().iter().map(|ply| ply.gave_check).collect();
+        assert_eq!(
+            checks,
+            [
+                false, false, true, false, true, false, true, false, true, false, true, false
+            ]
+        );
+        assert_eq!(game.repetition.first_occurrence(), Some(0));
+        assert_eq!(game.outcome(), Some(Outcome::Repetition));
+    }
+
     /// Three returns to the start position by different squares and — the part
     /// that matters — different numbers of moves. The index counts occurrences
     /// of a position, so a cycle of six has to count the same as a cycle of
@@ -851,22 +1090,98 @@ mod tests {
         assert_eq!(game.outcome(), Some(Outcome::Repetition));
     }
 
+    /// The recorded answer against a fresh scan, at every ply of a game that
+    /// reaches a check and back again — a quiet game would pin `false == false`
+    /// and nothing else — and again all the way back through `undo`.
+    ///
+    /// Sabotage: return `self.root_in_check` unconditionally from `in_check`.
     #[test]
-    fn check_squares_names_the_attacked_king() {
+    fn the_recorded_check_bit_equals_a_fresh_scan_at_every_ply() {
         let mut game = game_from("sfen 4k4/9/9/9/9/9/9/9/K7R b - 1");
-        assert!(game.check_squares().is_empty());
-        game.play(normal((1, 9), (1, 1)))
-            .expect("rook to 1a checks");
-        assert_eq!(game.check_squares(), Bitboard::single(sq(5, 1)));
-        assert!(game.in_check(), "White is to move and is checked");
+        let fresh = |game: &Game| moves::in_check(game.position(), game.side_to_move());
+        assert_eq!(game.in_check(), fresh(&game));
+
+        let mut checked = false;
+        for (from, to) in [((1, 9), (1, 1)), ((5, 1), (5, 2)), ((1, 1), (1, 2))] {
+            game.play(normal(from, to))
+                .expect("a clear rook or king step");
+            assert_eq!(game.in_check(), fresh(&game), "at ply {}", game.ply());
+            checked |= game.in_check();
+        }
+        assert!(checked, "a game with no check in it would pin nothing");
+
+        while game.undo().is_some() {
+            assert_eq!(game.in_check(), fresh(&game), "back at ply {}", game.ply());
+        }
     }
 
+    /// The root is the only position whose check has to be scanned for, and
+    /// both of its cases are reachable only by building one: a root already in
+    /// check, and a root with the *idle* side in check. After a legal move it is
+    /// the mover's own king that `is_legal_partial` refused to leave attacked,
+    /// so the side to move is the only one left to ask about — which is what
+    /// lets one recorded bit stand for the whole question.
+    ///
+    /// Sabotage: seed `root_in_check` with `false`, and this is the only test
+    /// in the workspace that goes red.
     #[test]
-    fn kifu_text_is_recorded_in_official_notation() {
+    fn a_root_is_the_only_position_whose_check_must_be_scanned_for() {
+        let checked_root = game_from("sfen 4k4/9/9/9/9/9/9/9/K7r b - 1");
+        assert!(
+            checked_root.in_check(),
+            "Black is to move and the rook holds the ninth rank"
+        );
+
+        let game = game_from("sfen 4k4/9/9/9/9/9/9/9/K3R4 b - 1");
+        assert!(!game.in_check(), "Black is to move and is not attacked");
+        assert!(
+            moves::in_check(game.position(), Color::White),
+            "White is attacked down the 5 file while not to move"
+        );
+
+        let mut played = game_from("sfen 4k4/9/9/9/9/9/9/9/K7R b - 1");
+        played
+            .play(normal((1, 9), (1, 1)))
+            .expect("rook to 1a checks");
+        assert!(played.in_check(), "White is to move and is attacked");
+        assert!(
+            !moves::in_check(played.position(), Color::Black),
+            "the mover cannot leave its own king attacked"
+        );
+    }
+
+    /// Sabotage: name the position *after* the move — `positions[ply + 1]` in
+    /// `kifu` — and this and `a_move_two_pieces_could_have_played_is_told_apart`
+    /// go red.
+    #[test]
+    fn a_ply_is_named_in_official_notation() {
         let mut game = Game::startpos();
         game.play(normal((7, 7), (7, 6))).expect("legal");
-        assert_eq!(game.moves()[0].kifu, "▲７六歩");
+        assert_eq!(game.kifu(0).as_deref(), Some("▲７六歩"));
+        assert_eq!(game.kifu(1), None, "the game has one ply");
         assert!(!game.moves()[0].gave_check);
+    }
+
+    /// Two golds able to reach one square, which is the branch that makes the
+    /// notation expensive: it enumerates every piece that could have played the
+    /// move, to pick the character telling them apart. The plain fixture above
+    /// never reaches it, so without this one nothing here would notice a
+    /// disambiguation going missing.
+    #[test]
+    fn a_move_two_pieces_could_have_played_is_told_apart() {
+        let mut game = game_from("sfen 4k4/9/9/9/9/9/9/4GG3/4K4 b - 1");
+        // What makes this fixture able to fail, asserted rather than assumed:
+        // both golds reach the square, so naming the move needs the character
+        // that tells them apart.
+        for from in [sq(5, 8), sq(4, 8)] {
+            assert!(
+                game.destinations(from).contains(sq(4, 7)),
+                "both golds must reach 4g"
+            );
+        }
+        game.play(normal((5, 8), (4, 7)))
+            .expect("a gold step is legal");
+        assert_eq!(game.kifu(0).as_deref(), Some("▲４七金左"));
     }
 
     #[test]

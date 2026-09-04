@@ -609,6 +609,42 @@ mod tests {
         }
     }
 
+    /// The two root censuses, on every fixture this module owns: this crate's
+    /// `check_piece_counts` and the referee's `over_inventory`, written
+    /// independently on different accessors.
+    ///
+    /// ⚠️ Scoped to the piece-count cases. The king bound below is this crate's
+    /// alone, and the referee deliberately has none.
+    ///
+    /// ⚠️ The mate rows are what makes this able to fail: a census inferred
+    /// from a *status* function is skipped for a position that is already
+    /// decided, because the status is answered first. Nothing else here reaches
+    /// that shape.
+    #[test]
+    fn the_two_root_censuses_agree_on_what_a_shogi_set_holds() {
+        for sfen in [
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 19P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 w 19p 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 5R 1",
+            "sfen 4k4/9/9/9/4p4/9/9/9/4K4 b 18P 1",
+            "sfen 4k4/9/9/9/4+P4/9/9/9/4K4 b 18P 1",
+            "sfen 3kg4/9/9/9/9/9/9/9/3KG4 b 4G 1",
+            // Impossible and mate, which is the pair a status function cannot
+            // answer, and mate alone, which both must accept.
+            "sfen 8l/9/9/9/9/9/9/8g/8K b 19P 1",
+            "sfen 8l/9/9/9/9/9/9/8g/8K b - 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 18P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 2R2B4G4S4N4L18P 1",
+        ] {
+            assert_eq!(
+                Game::from_usi_position(sfen).is_ok(),
+                rinsai_game::Game::from_usi_position(sfen).is_ok(),
+                "the two censuses disagree about {sfen}"
+            );
+        }
+    }
+
     /// The bound is on the total, so a set that is merely *unusual* still works.
     #[test]
     fn a_legal_but_lopsided_position_is_accepted() {
