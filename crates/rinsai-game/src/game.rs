@@ -551,13 +551,17 @@ mod tests {
     /// Each adjudicator's own write, which nothing else observes: every other
     /// call site hands them a game that is already decided, so the guard
     /// discards the value before anyone can look at it. Sabotage: an empty
-    /// `max_moves` body, `declare` building `Abandoned`, `foul` dropping its
-    /// `kind`, and `flag_fall` flipping its `loser` each pass the rest of the
-    /// suite and fail here. Every side is `White`, so a flip shows up as
-    /// `Black`.
+    /// `max_moves` body, `declare` building `Abandoned`, `flag_fall` flipping
+    /// its `loser`, and `foul` substituting a fixed `kind` for the one it was
+    /// given each pass the rest of the suite and fail here. Every side is
+    /// `White`, so a flip shows up as `Black`.
+    ///
+    /// ⚠️ `foul` needs **two** rows to say that. With one, a substituted kind
+    /// is caught only when it differs from that row's, so the two here differ
+    /// from each other.
     #[test]
     fn each_adjudication_records_its_own_ending() {
-        let cases: [(Adjudication, Outcome); 6] = [
+        let cases: [(Adjudication, Outcome); 7] = [
             (
                 |g| g.resign(Color::White),
                 Outcome::Resignation {
@@ -575,6 +579,13 @@ mod tests {
                 Outcome::IllegalMove {
                     loser: Color::White,
                     kind: IllegalMoveKind::TwoPawns,
+                },
+            ),
+            (
+                |g| g.foul(Color::White, IllegalMoveKind::IgnoredCheck),
+                Outcome::IllegalMove {
+                    loser: Color::White,
+                    kind: IllegalMoveKind::IgnoredCheck,
                 },
             ),
             (
