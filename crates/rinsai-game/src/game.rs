@@ -21,6 +21,12 @@ pub struct Game {
     repetition: RepetitionIndex,
     /// `None` while the game is in progress.
     outcome: Option<Outcome>,
+    /// Whether the side to move at the root is in check. Written once, at
+    /// construction, and never again: after a move the side to move is in check
+    /// exactly when that move gave check, which the [`Ply`] carries. Undo needs
+    /// no handling for the same reason — popping a ply falls back to the ply
+    /// below, and at ply 0 to a root that has not moved.
+    root_in_check: bool,
 }
 
 impl Game {
@@ -33,6 +39,7 @@ impl Game {
     pub fn from_position(initial: PartialPosition) -> Self {
         Self {
             repetition: RepetitionIndex::new(&initial),
+            root_in_check: moves::in_check(&initial, initial.side_to_move()),
             positions: vec![initial],
             moves: Vec::new(),
             outcome: None,
@@ -185,23 +192,15 @@ impl Game {
         )
     }
 
+    /// Whether the side to move is in check.
+    ///
+    /// Answered from what is already recorded rather than by scanning: the
+    /// scan happens once per move played, in [`Self::play`].
     #[must_use]
     pub fn in_check(&self) -> bool {
-        moves::in_check(self.position(), self.side_to_move())
-    }
-
-    /// Squares holding a king that is currently attacked.
-    #[must_use]
-    pub fn check_squares(&self) -> Bitboard {
-        let mut bb = Bitboard::empty();
-        for color in Color::all() {
-            if moves::in_check(self.position(), color)
-                && let Some(square) = self.position().king_position(color)
-            {
-                bb |= square;
-            }
-        }
-        bb
+        self.moves
+            .last()
+            .map_or(self.root_in_check, |ply| ply.gave_check)
     }
 
     /// Fully legal destinations from `from`, pin- and check-filtered.
@@ -951,14 +950,64 @@ mod tests {
         assert_eq!(game.outcome(), Some(Outcome::Repetition));
     }
 
+    /// The recorded answer against a fresh scan, at every ply of a game that
+    /// reaches a check and back again — a quiet game would pin `false == false`
+    /// and nothing else — and again all the way back through `undo`.
+    ///
+    /// Sabotage: return `self.root_in_check` unconditionally from `in_check`.
     #[test]
-    fn check_squares_names_the_attacked_king() {
+    fn the_recorded_check_bit_equals_a_fresh_scan_at_every_ply() {
         let mut game = game_from("sfen 4k4/9/9/9/9/9/9/9/K7R b - 1");
-        assert!(game.check_squares().is_empty());
-        game.play(normal((1, 9), (1, 1)))
+        let fresh = |game: &Game| moves::in_check(game.position(), game.side_to_move());
+        assert_eq!(game.in_check(), fresh(&game));
+
+        let mut checked = false;
+        for (from, to) in [((1, 9), (1, 1)), ((5, 1), (5, 2)), ((1, 1), (1, 2))] {
+            game.play(normal(from, to))
+                .expect("a clear rook or king step");
+            assert_eq!(game.in_check(), fresh(&game), "at ply {}", game.ply());
+            checked |= game.in_check();
+        }
+        assert!(checked, "a game with no check in it would pin nothing");
+
+        while game.undo().is_some() {
+            assert_eq!(game.in_check(), fresh(&game), "back at ply {}", game.ply());
+        }
+    }
+
+    /// The root is the only position whose check has to be scanned for, and
+    /// both of its cases are reachable only by building one: a root already in
+    /// check, and a root with the *idle* side in check. After a legal move it is
+    /// the mover's own king that `is_legal_partial` refused to leave attacked,
+    /// so the side to move is the only one left to ask about — which is what
+    /// lets one recorded bit stand for the whole question.
+    ///
+    /// Sabotage: seed `root_in_check` with `false`, and this is the only test
+    /// in the workspace that goes red.
+    #[test]
+    fn a_root_is_the_only_position_whose_check_must_be_scanned_for() {
+        let checked_root = game_from("sfen 4k4/9/9/9/9/9/9/9/K7r b - 1");
+        assert!(
+            checked_root.in_check(),
+            "Black is to move and the rook holds the ninth rank"
+        );
+
+        let game = game_from("sfen 4k4/9/9/9/9/9/9/9/K3R4 b - 1");
+        assert!(!game.in_check(), "Black is to move and is not attacked");
+        assert!(
+            moves::in_check(game.position(), Color::White),
+            "White is attacked down the 5 file while not to move"
+        );
+
+        let mut played = game_from("sfen 4k4/9/9/9/9/9/9/9/K7R b - 1");
+        played
+            .play(normal((1, 9), (1, 1)))
             .expect("rook to 1a checks");
-        assert_eq!(game.check_squares(), Bitboard::single(sq(5, 1)));
-        assert!(game.in_check(), "White is to move and is checked");
+        assert!(played.in_check(), "White is to move and is attacked");
+        assert!(
+            !moves::in_check(played.position(), Color::Black),
+            "the mover cannot leave its own king attacked"
+        );
     }
 
     /// Sabotage: name the position *after* the move — `positions[ply + 1]` in
