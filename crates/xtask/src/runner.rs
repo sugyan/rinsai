@@ -683,26 +683,31 @@ fn check_opening(opening: &str) -> Result<(), String> {
              for a move"
         ));
     }
-    // A declarable position is not an *ended* one — a declaration is claimed
+    // ⚠️ A declarable position is not an *ended* one — a declaration is claimed
     // and never adjudicated — so the check above cannot see it, while the
-    // engine answers `bestmove win` from it before searching. Against a
-    // baseline that also declares the pair is a fixed 1-1 carrying no
-    // evidence; against a sparring engine without declaration support it is a
-    // 2-0 attributed to whatever is under test. Both are silent, because a
+    // engine answers `bestmove win` from it without searching, and a
     // declaration is not an abnormal ending.
-    if rinsai_game::can_declare(game.position(), game.side_to_move()).is_ok() {
-        return Err(format!(
-            "{} may declare 入玉宣言 here, so the engine answers `bestmove win` instead of \
-             searching",
-            rinsai_game::side(game.side_to_move())
-        ));
+    //
+    // Asked of both sides. `can_declare` answers `NotToMove` for the idle one,
+    // so the question goes to a copy with the side to move set: a king cannot
+    // move before its own turn, so a line the idle side may declare from is
+    // answered at ply 1 exactly as this one would be at ply 0.
+    for color in Color::all() {
+        let mut asked = game.position().clone();
+        asked.side_to_move_set(color);
+        if rinsai_game::can_declare(&asked, color).is_ok() {
+            return Err(format!(
+                "{} may declare 入玉宣言 here, so the engine answers `bestmove win` instead of \
+                 searching",
+                rinsai_game::side(color)
+            ));
+        }
     }
-    // The engine's parser is stricter than the referee's — it bounds
-    // piece counts and rejects an out-of-range SFEN move number, where
-    // `PartialPosition::from_usi` saturates and reports success. An
-    // opening only the referee accepts makes the engine keep its previous
-    // board and answer from it, which the referee then scores as an
-    // illegal move.
+    // The engine's parser is stricter than the referee's — it bounds the kings
+    // per colour and rejects an out-of-range SFEN move number, where
+    // `PartialPosition::from_usi` saturates and reports success. An opening
+    // only the referee accepts makes the engine keep its previous board and
+    // answer from it, which the referee then scores as an illegal move.
     rinsai_search::Game::from_usi_position(opening)
         .map_err(|e| format!("the engine refuses this position: {e:?}"))?;
     Ok(())
@@ -899,25 +904,33 @@ mod tests {
         assert!(with(&["--elo0", "0"]).is_err(), "half a pair");
     }
 
-    /// The opening validator's own class of already-decided line. An ended
-    /// game is refused beside this one; a declarable position is not ended —
-    /// `outcome()` is `None`, which the first assertion states rather than
-    /// assumes — yet the engine answers it without searching.
+    /// The class of already-decided line the ended-game check cannot see, in
+    /// both of its shapes. A declarable position is not an ended game —
+    /// `outcome()` is `None`, which the loop states rather than assumes — yet
+    /// the engine answers it without searching: at ply 0 when the mover may
+    /// declare, at ply 1 when the idle side may.
     ///
-    /// Sabotage: drop the `can_declare` arm from `check_opening`.
+    /// ⚠️ The second row is the one asking only the side to move cannot see,
+    /// because `can_declare` refuses the idle side with `NotToMove` before it
+    /// counts anything. The two SFENs are the same board.
+    ///
+    /// Sabotage: ask only `game.side_to_move()` rather than both colours.
     #[test]
-    fn an_opening_whose_mover_may_declare_is_refused() {
-        let declarable = "sfen +R+R+B+BGGGGK/SSSS5/9/9/9/9/9/9/k8 b - 1";
-        let game =
-            rinsai_game::Game::from_usi_position(declarable).expect("the referee replays it");
-        assert_eq!(
-            game.outcome(),
-            None,
-            "a declaration is claimed, not adjudicated"
-        );
-
-        let refused = check_opening(declarable).expect_err("declarable at ply 0");
-        assert!(refused.contains("入玉宣言"), "{refused}");
+    fn an_opening_either_side_may_declare_from_is_refused() {
+        for declarable in [
+            "sfen +R+R+B+BGGGGK/SSSS5/9/9/9/9/9/9/k8 b - 1",
+            "sfen +R+R+B+BGGGGK/SSSS5/9/9/9/9/9/9/k8 w - 1",
+        ] {
+            let game =
+                rinsai_game::Game::from_usi_position(declarable).expect("the referee replays it");
+            assert_eq!(
+                game.outcome(),
+                None,
+                "a declaration is claimed, not adjudicated"
+            );
+            let refused = check_opening(declarable).expect_err("declarable");
+            assert!(refused.contains("入玉宣言"), "{refused}");
+        }
         assert!(
             check_opening("startpos moves 7g7f 3c3d").is_ok(),
             "an ordinary opening still passes"
