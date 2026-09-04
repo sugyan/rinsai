@@ -18,7 +18,7 @@ mod moves;
 mod repetition;
 mod types;
 
-pub use declaration::{DeclarationError, can_declare};
+pub use declaration::{DeclarationError, can_declare, jishogi_points};
 pub use game::Game;
 pub use moves::{in_check, move_from_usi};
 pub use repetition::{PositionKey, position_key};
