@@ -1,7 +1,8 @@
 //! One game: a position, its history, and the gate every move passes through.
 
 use shogi_core::{
-    Bitboard, Color, IllegalMoveKind, Move, PartialPosition, Piece, PositionStatus, Square,
+    Bitboard, Color, Hand, IllegalMoveKind, Move, PartialPosition, Piece, PieceKind,
+    PositionStatus, Square,
 };
 use shogi_legality_lite as legality;
 
@@ -12,6 +13,62 @@ use crate::repetition::RepetitionIndex;
 use crate::types::{
     MoveError, Outcome, Ply, PromotionChoice, RootError, UsiMoveError, UsiPositionError,
 };
+
+/// What a shogi set holds of each kind, counting a promoted piece as the one it
+/// promoted from.
+///
+/// ⚠️ The kings are not here, so nothing in this crate bounds their number: a
+/// 詰将棋 diagram routinely omits the attacking king.
+const PIECE_TOTALS: [(PieceKind, u32); 7] = [
+    (PieceKind::Pawn, 18),
+    (PieceKind::Lance, 4),
+    (PieceKind::Knight, 4),
+    (PieceKind::Silver, 4),
+    (PieceKind::Gold, 4),
+    (PieceKind::Bishop, 2),
+    (PieceKind::Rook, 2),
+];
+
+/// The first kind a position holds more of than a set does, with its count.
+///
+/// Counted here rather than read off a status function, which answers mate
+/// first and returns before it counts: a census that runs only for undecided
+/// positions is not a census.
+fn over_inventory(position: &PartialPosition) -> Option<(PieceKind, u32, u32)> {
+    let mut seen = [0u32; PieceKind::NUM];
+    for square in Square::all() {
+        if let Some(piece) = position.piece_at(square) {
+            let kind = piece.piece_kind();
+            seen[kind.unpromote().unwrap_or(kind).array_index()] += 1;
+        }
+    }
+    for color in Color::all() {
+        let hand = position.hand_of_a_player(color);
+        for kind in Hand::all_hand_pieces() {
+            seen[kind.array_index()] += u32::from(hand.count(kind).unwrap_or(0));
+        }
+    }
+    PIECE_TOTALS.into_iter().find_map(|(kind, total)| {
+        let count = seen[kind.array_index()];
+        (count > total).then_some((kind, count, total))
+    })
+}
+
+/// 詰み, if the position is already it.
+///
+/// `status_partial` folds stalemate into checkmate, which is right: in shogi a
+/// player with no legal move loses either way.
+fn checkmate(position: &PartialPosition) -> Option<Outcome> {
+    match legality::status_partial(position) {
+        PositionStatus::BlackWins => Some(Outcome::Checkmate {
+            winner: Color::Black,
+        }),
+        PositionStatus::WhiteWins => Some(Outcome::Checkmate {
+            winner: Color::White,
+        }),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Game {
@@ -38,21 +95,25 @@ impl Game {
             .expect("a game starts from a possible position")
     }
 
-    /// Begin a game at `initial`.
+    /// Begin a game at `initial`, which must be a position a shogi set could
+    /// hold.
     ///
-    /// The root is the only position whose piece census has to be checked: no
-    /// move creates a piece, so every position the game reaches from a possible
-    /// root is possible too.
+    /// The root is the only position whose census has to be taken — no move
+    /// creates a piece — and the only one [`Self::play`] cannot adjudicate,
+    /// since nothing was played into it. A root that is already 詰み therefore
+    /// arrives with its outcome set.
     pub fn from_position(initial: PartialPosition) -> Result<Self, RootError> {
-        if legality::status_partial(&initial) == PositionStatus::Invalid {
-            return Err(RootError::ImpossiblePieceCount);
+        if let Some((kind, count, total)) = over_inventory(&initial) {
+            return Err(RootError::ImpossiblePieceCount { kind, count, total });
         }
+        let root_in_check = moves::in_check(&initial, initial.side_to_move());
+        let outcome = checkmate(&initial);
         Ok(Self {
             repetition: RepetitionIndex::new(&initial),
-            root_in_check: moves::in_check(&initial, initial.side_to_move()),
+            root_in_check,
             positions: vec![initial],
             moves: Vec::new(),
-            outcome: None,
+            outcome,
         })
     }
 
@@ -285,16 +346,9 @@ impl Game {
 
         // Mate is settled before repetition: a mating move that happens to be
         // the fourth occurrence of a position is mate, not 千日手.
-        self.outcome = match legality::status_partial(self.position()) {
-            PositionStatus::BlackWins => Some(Outcome::Checkmate {
-                winner: Color::Black,
-            }),
-            PositionStatus::WhiteWins => Some(Outcome::Checkmate {
-                winner: Color::White,
-            }),
-            _ if count >= 4 => Some(self.classify_repetition()),
-            _ => None,
-        };
+        let outcome =
+            checkmate(self.position()).or_else(|| (count >= 4).then(|| self.classify_repetition()));
+        self.outcome = outcome;
         Ok(())
     }
 
@@ -472,12 +526,11 @@ mod tests {
     /// decidable exactly once, at the door.
     ///
     /// ⚠️ Nineteen pawns above and eighteen below are the boundary, and it
-    /// takes both to say the bound is the bound rather than a smell. The king
-    /// case says what the answer does *not* cover.
+    /// takes both to say the bound is the bound rather than a smell. The last
+    /// row is the one a *status* function cannot answer: it is mate as well as
+    /// impossible, and mate is reported before anything is counted.
     ///
-    /// Sabotage: drop the `status_partial` guard from `from_position`, and this
-    /// and `rinsai-search`'s `the_two_root_validators_agree_on_what_a_shogi_set_holds`
-    /// go red.
+    /// Sabotage: drop the `over_inventory` guard from `from_position`.
     #[test]
     fn a_root_no_shogi_set_could_produce_cannot_begin_a_game() {
         for sfen in [
@@ -488,12 +541,14 @@ mod tests {
             "sfen 4k4/9/9/9/4+P4/9/9/9/4K4 b 18P 1",
             // Per kind, not only about pawns.
             "sfen 3kg4/9/9/9/9/9/9/9/3KG4 b 4G 1",
+            // Impossible *and* mate.
+            "sfen 8l/9/9/9/9/9/9/8g/8K b 19P 1",
         ] {
             assert!(
                 matches!(
                     Game::from_usi_position(sfen),
                     Err(UsiPositionError::ImpossibleRoot(
-                        RootError::ImpossiblePieceCount
+                        RootError::ImpossiblePieceCount { .. }
                     ))
                 ),
                 "accepted an impossible root: {sfen}"
@@ -503,12 +558,33 @@ mod tests {
             Game::from_usi_position("sfen 4k4/9/9/9/9/9/9/9/4K4 b 18P 1").is_ok(),
             "eighteen pawns is a real position"
         );
-        // ⚠️ The kings are the rules library's blind spot, and this is the only
-        // place that says so.
         assert!(
             Game::from_usi_position("sfen 4k4/9/9/9/9/9/9/9/3KK4 b - 1").is_ok(),
             "the census does not count kings"
         );
+    }
+
+    /// A root is the one position [`Game::play`] cannot adjudicate, because
+    /// nothing was played into it. Without adjudicating it, a finished game
+    /// reports itself in progress and then refuses every move as illegal —
+    /// a different verdict from the one on the board.
+    ///
+    /// Sabotage: drop the `checkmate` call from `from_position`.
+    #[test]
+    fn a_root_that_is_already_mate_says_so() {
+        let mated = game_from("sfen rr2k4/9/9/9/9/9/9/9/K8 b - 1");
+        assert_eq!(
+            mated.outcome(),
+            Some(Outcome::Checkmate {
+                winner: Color::White
+            })
+        );
+        assert_eq!(
+            mated.clone().play(normal((9, 9), (8, 9))),
+            Err(MoveError::GameOver),
+            "a decided game refuses a move as decided, not as illegal"
+        );
+        assert_eq!(Game::startpos().outcome(), None, "an ordinary root is not");
     }
 
     /// A refused move must not leave a trace. Sabotage note: moving the

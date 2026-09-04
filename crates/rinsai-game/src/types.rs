@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use shogi_core::{Color, IllegalMoveKind, Move};
+use shogi_core::{Color, IllegalMoveKind, Move, PieceKind};
 
 /// One played move, with what the rules need from it that cannot be recomputed
 /// from the move alone.
@@ -17,20 +17,27 @@ pub struct Ply {
 /// Why a position cannot begin a game.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootError {
-    /// Some piece kind is on the board and in the hands more times than a
-    /// shogi set holds it, counting a promoted piece as the piece it promoted
-    /// from. No move creates a piece, so no game reaches such a position and
+    /// `count` pieces of `kind` stand on the board and in the hands together,
+    /// counting a promoted piece as the one it promoted from, where a set holds
+    /// `total`. No move creates a piece, so no game reaches such a position and
     /// none can start from one.
     ///
     /// ⚠️ The kings are not counted: a position with none, or with three, is a
     /// possible root as far as this answer goes.
-    ImpossiblePieceCount,
+    ImpossiblePieceCount {
+        kind: PieceKind,
+        count: u32,
+        total: u32,
+    },
 }
 
 impl fmt::Display for RootError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ImpossiblePieceCount => f.write_str("more pieces than a shogi set holds"),
+            Self::ImpossiblePieceCount { kind, count, total } => write!(
+                f,
+                "{count} {kind:?} on the board and in hand, but a set holds {total}"
+            ),
         }
     }
 }
