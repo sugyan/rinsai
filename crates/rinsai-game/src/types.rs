@@ -4,18 +4,14 @@ use std::fmt;
 
 use shogi_core::{Color, IllegalMoveKind, Move};
 
-/// One played move, with everything derived from it that is expensive or
-/// impossible to recompute later.
-#[derive(Debug, Clone)]
+/// One played move, with what the rules need from it that cannot be recomputed
+/// from the move alone.
+#[derive(Debug, Clone, Copy)]
 pub struct Ply {
     pub mv: Move,
     /// Whether this move gave check. Cached because the perpetual-check rule
     /// needs it for every ply inside a repetition window.
     pub gave_check: bool,
-    /// Official kifu text, e.g. `▲７六歩`. Computed at push time because
-    /// [`shogi_official_kifu::display_single_move_kansuji`] needs the position
-    /// *before* the move.
-    pub kifu: String,
 }
 
 /// How a game ended.

@@ -13,14 +13,9 @@ use crate::types::{MoveError, Outcome, Ply, PromotionChoice, UsiMoveError, UsiPo
 
 #[derive(Debug, Clone)]
 pub struct Game {
-    /// `positions[0]` is the initial position and `positions[i]` is the position
-    /// after `moves[i - 1]`.
-    ///
-    /// Snapshots rather than replay, at one position per ply: undo is O(1), the
-    /// repetition index can be decremented exactly, and jumping to an arbitrary
-    /// ply is free.
-    ///
-    /// Invariant: `positions.len() == moves.len() + 1`, and never empty.
+    /// Snapshots rather than replay, at one position per ply: undo is O(1) and
+    /// the repetition index can be decremented exactly. The layout and the
+    /// invariant are [`Game::positions`]'s to state, since it hands them out.
     positions: Vec<PartialPosition>,
     moves: Vec<Ply>,
     repetition: RepetitionIndex,
@@ -102,6 +97,17 @@ impl Game {
         self.positions.last().expect("positions is never empty")
     }
 
+    /// Every position the game has held, root first: `positions()[i]` is the
+    /// position `moves()[i]` was played from, and the last is the position now.
+    ///
+    /// `positions().len() == moves().len() + 1` and it is never empty, so
+    /// `positions().iter().zip(game.moves())` pairs each move with the position
+    /// before it — which is the position that names it, not the one it reaches.
+    #[must_use]
+    pub fn positions(&self) -> &[PartialPosition] {
+        &self.positions
+    }
+
     /// The position the game began at.
     ///
     /// ⚠️ Not [`Self::position`], which answers the position *now*. A root
@@ -156,13 +162,27 @@ impl Game {
     }
 
     #[must_use]
-    pub fn last_move(&self) -> Option<Move> {
-        self.moves.last().map(|ply| ply.mv)
-    }
-
-    #[must_use]
     pub fn outcome(&self) -> Option<Outcome> {
         self.outcome
+    }
+
+    /// `moves()[ply]` in official kifu notation, e.g. `▲７六歩`. `None` when
+    /// the game has no such ply.
+    ///
+    /// Computed on demand: the notation needs the position the move was played
+    /// from, and brute-forces every piece that could have reached the square to
+    /// pick a disambiguation character. A caller that never renders a move must
+    /// not pay for that on every move played.
+    ///
+    /// ⚠️ A move the notation cannot name unambiguously comes back as its USI
+    /// text instead.
+    #[must_use]
+    pub fn kifu(&self, ply: usize) -> Option<String> {
+        let mv = self.moves.get(ply)?.mv;
+        Some(
+            shogi_official_kifu::display_single_move_kansuji(&self.positions[ply], mv)
+                .unwrap_or_else(|| shogi_core::ToUsi::to_usi_owned(&mv)),
+        )
     }
 
     #[must_use]
@@ -246,19 +266,13 @@ impl Game {
         next.make_move(mv)
             .expect("is_legal_partial implies make_move succeeds");
 
-        let kifu = shogi_official_kifu::display_single_move_kansuji(self.position(), mv)
-            .unwrap_or_else(|| shogi_core::ToUsi::to_usi_owned(&mv));
         // After the move the side to move is the opponent, so this asks exactly
         // "did the move just played give check".
         let gave_check = moves::in_check(&next, next.side_to_move());
 
         let count = self.repetition.push(&next);
         self.positions.push(next);
-        self.moves.push(Ply {
-            mv,
-            gave_check,
-            kifu,
-        });
+        self.moves.push(Ply { mv, gave_check });
 
         // Mate is settled before repetition: a mating move that happens to be
         // the fourth occurrence of a position is mate, not 千日手.
@@ -405,22 +419,46 @@ mod tests {
         Game::from_position(PartialPosition::from_usi(sfen).expect("valid sfen"))
     }
 
+    /// The invariant [`Game::positions`] states, asserted through the accessor
+    /// rather than the field: it is what a caller zipping the two slices relies
+    /// on.
     #[test]
     fn the_position_count_invariant_survives_arbitrary_play_and_undo() {
         let mut game = Game::startpos();
-        assert_eq!(game.positions.len(), game.moves.len() + 1);
+        assert_eq!(game.positions().len(), game.moves().len() + 1);
         game.play(normal((7, 7), (7, 6))).expect("legal");
         game.play(normal((3, 3), (3, 4))).expect("legal");
-        assert_eq!(game.positions.len(), game.moves.len() + 1);
+        assert_eq!(game.positions().len(), game.moves().len() + 1);
         game.undo();
-        assert_eq!(game.positions.len(), game.moves.len() + 1);
+        assert_eq!(game.positions().len(), game.moves().len() + 1);
         game.undo();
-        assert_eq!(game.positions.len(), game.moves.len() + 1);
+        assert_eq!(game.positions().len(), game.moves().len() + 1);
         assert!(
             game.undo().is_none(),
             "cannot undo past the initial position"
         );
-        assert_eq!(game.positions.len(), 1);
+        assert_eq!(game.positions().len(), 1);
+    }
+
+    /// The pairing the slice exists for: each position beside the move played
+    /// *from* it, which is not the move that reached it. Replaying the pair is
+    /// the assertion — a slice off by one leaves `make_move` nothing to move.
+    ///
+    /// Sabotage: return `&self.positions[1..]` from `positions`, and this and
+    /// `the_position_count_invariant_survives_arbitrary_play_and_undo` go red.
+    #[test]
+    fn each_position_is_the_one_its_move_was_played_from() {
+        let mut game = Game::startpos();
+        for (from, to) in [((7, 7), (7, 6)), ((3, 3), (3, 4)), ((8, 8), (2, 2))] {
+            game.play(normal(from, to)).expect("legal");
+        }
+        assert_eq!(game.positions().len(), game.moves().len() + 1);
+        for (position, ply) in game.positions().iter().zip(game.moves()) {
+            let mut replayed = position.clone();
+            replayed
+                .make_move(ply.mv)
+                .expect("the recorded move replays from the position beside it");
+        }
     }
 
     /// A refused move must not leave a trace. Sabotage note: moving the
@@ -912,12 +950,38 @@ mod tests {
         assert!(game.in_check(), "White is to move and is checked");
     }
 
+    /// Sabotage: name the position *after* the move — `positions[ply + 1]` in
+    /// `kifu` — and this and `a_move_two_pieces_could_have_played_is_told_apart`
+    /// go red.
     #[test]
-    fn kifu_text_is_recorded_in_official_notation() {
+    fn a_ply_is_named_in_official_notation() {
         let mut game = Game::startpos();
         game.play(normal((7, 7), (7, 6))).expect("legal");
-        assert_eq!(game.moves()[0].kifu, "▲７六歩");
+        assert_eq!(game.kifu(0).as_deref(), Some("▲７六歩"));
+        assert_eq!(game.kifu(1), None, "the game has one ply");
         assert!(!game.moves()[0].gave_check);
+    }
+
+    /// Two golds able to reach one square, which is the branch that makes the
+    /// notation expensive: it enumerates every piece that could have played the
+    /// move, to pick the character telling them apart. The plain fixture above
+    /// never reaches it, so without this one nothing here would notice a
+    /// disambiguation going missing.
+    #[test]
+    fn a_move_two_pieces_could_have_played_is_told_apart() {
+        let mut game = game_from("sfen 4k4/9/9/9/9/9/9/4GG3/4K4 b - 1");
+        // What makes this fixture able to fail, asserted rather than assumed:
+        // both golds reach the square, so naming the move needs the character
+        // that tells them apart.
+        for from in [sq(5, 8), sq(4, 8)] {
+            assert!(
+                game.destinations(from).contains(sq(4, 7)),
+                "both golds must reach 4g"
+            );
+        }
+        game.play(normal((5, 8), (4, 7)))
+            .expect("a gold step is legal");
+        assert_eq!(game.kifu(0).as_deref(), Some("▲４七金左"));
     }
 
     #[test]
