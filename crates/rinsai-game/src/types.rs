@@ -2,7 +2,9 @@
 
 use std::fmt;
 
-use shogi_core::{Color, IllegalMoveKind, Move, PieceKind};
+use shogi_core::{Color, IllegalMoveKind, Move};
+
+use crate::inventory::UnrepresentableRoot;
 
 /// One played move, with what the rules need from it that cannot be recomputed
 /// from the move alone.
@@ -18,36 +20,6 @@ pub struct Ply {
     /// ply 1 of a hand-built root whose idle side was already in check.
     pub gave_check: bool,
 }
-
-/// Why a position cannot begin a game.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RootError {
-    /// `count` pieces of `kind` stand on the board and in the hands together,
-    /// counting a promoted piece as the one it promoted from, where a set holds
-    /// `total`. No move creates a piece, so no game reaches such a position and
-    /// none can start from one.
-    ///
-    /// ⚠️ The kings are not counted: a position with none, or with three, is a
-    /// possible root as far as this answer goes.
-    ImpossiblePieceCount {
-        kind: PieceKind,
-        count: u32,
-        total: u32,
-    },
-}
-
-impl fmt::Display for RootError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ImpossiblePieceCount { kind, count, total } => write!(
-                f,
-                "{count} {kind:?} on the board and in hand, but a set holds {total}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RootError {}
 
 /// How a game ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,8 +150,8 @@ pub enum UsiPositionError {
     Empty,
     /// The root — `startpos` or `sfen …` — did not parse.
     Root(shogi_usi_parser::Error),
-    /// The root parsed but cannot begin a game.
-    ImpossibleRoot(RootError),
+    /// The root parsed but holds more of a kind than a game can represent.
+    Unrepresentable(UnrepresentableRoot),
     /// A token in the `moves` list was refused; `index` counts from the first
     /// move token.
     Move {
@@ -194,7 +166,7 @@ impl fmt::Display for UsiPositionError {
         match self {
             Self::Empty => f.write_str("empty position argument"),
             Self::Root(e) => write!(f, "bad root: {e}"),
-            Self::ImpossibleRoot(e) => write!(f, "impossible root: {e}"),
+            Self::Unrepresentable(e) => write!(f, "unrepresentable root: {e}"),
             Self::Move {
                 index,
                 token,
@@ -209,7 +181,7 @@ impl std::error::Error for UsiPositionError {
         match self {
             Self::Empty => None,
             Self::Root(source) => Some(source),
-            Self::ImpossibleRoot(source) => Some(source),
+            Self::Unrepresentable(source) => Some(source),
             Self::Move { source, .. } => Some(source),
         }
     }

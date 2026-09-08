@@ -613,6 +613,12 @@ mod tests {
     /// `check_piece_counts` and the referee's `over_inventory`, written
     /// independently on different accessors.
     ///
+    /// ⚠️ Asked of the two censuses themselves, not of the two constructors:
+    /// the referee holds an over-inventory root deliberately and only reports
+    /// it, so the constructors disagree by design. `from_usi_position` would
+    /// also fold in the king bound and the move-number range, and report a
+    /// disagreement those two never had.
+    ///
     /// ⚠️ Scoped to the piece-count cases. The king bound below is this crate's
     /// alone, and the referee deliberately has none.
     ///
@@ -637,9 +643,10 @@ mod tests {
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 18P 1",
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 2R2B4G4S4N4L18P 1",
         ] {
+            let position = PartialPosition::from_usi(sfen).expect("valid sfen");
             assert_eq!(
-                Game::from_usi_position(sfen).is_ok(),
-                rinsai_game::Game::from_usi_position(sfen).is_ok(),
+                check_piece_counts(&position).is_ok(),
+                rinsai_game::over_inventory(&position).is_none(),
                 "the two censuses disagree about {sfen}"
             );
         }
