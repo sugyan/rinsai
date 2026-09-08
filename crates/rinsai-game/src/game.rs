@@ -7,6 +7,7 @@ use shogi_legality_lite as legality;
 
 use shogi_usi_parser::FromUsi;
 
+use crate::inventory::{self, UnrepresentableRoot};
 use crate::moves;
 use crate::repetition::RepetitionIndex;
 use crate::types::{MoveError, Outcome, Ply, PromotionChoice, UsiMoveError, UsiPositionError};
@@ -49,29 +50,34 @@ impl Game {
     #[must_use]
     pub fn startpos() -> Self {
         Self::from_position(PartialPosition::startpos())
+            .expect("a game starts from a representable position")
     }
 
     /// Begin a game at `initial`.
     ///
-    /// Any position is a root, including one no shogi set could hold:
-    /// [`over_inventory`](crate::over_inventory) answers that question for a
-    /// caller whose own rules turn on it, and this one referees such a game
-    /// like any other.
+    /// Begin a game at `initial`.
+    ///
+    /// A position outside a standard shogi set is a root like any other, and
+    /// [`over_inventory`](crate::over_inventory) is where *that* is asked. The
+    /// refusal here is the far higher one the representation itself imposes —
+    /// see [`UnrepresentableRoot`](crate::UnrepresentableRoot).
     ///
     /// The root is the one position [`Self::play`] cannot adjudicate, since
     /// nothing was played into it. A root that is already 詰み therefore
     /// arrives with its outcome set.
-    #[must_use]
-    pub fn from_position(initial: PartialPosition) -> Self {
+    pub fn from_position(initial: PartialPosition) -> Result<Self, UnrepresentableRoot> {
+        if let Some(over) = inventory::unrepresentable(&initial) {
+            return Err(over);
+        }
         let root_in_check = moves::in_check(&initial, initial.side_to_move());
         let outcome = checkmate(&initial);
-        Self {
+        Ok(Self {
             repetition: RepetitionIndex::new(&initial),
             root_in_check,
             positions: vec![initial],
             moves: Vec::new(),
             outcome,
-        }
+        })
     }
 
     /// Build a game from the argument of a USI `position` command:
@@ -100,7 +106,7 @@ impl Game {
             tokens.next();
         }
         let initial = PartialPosition::from_usi(&root).map_err(UsiPositionError::Root)?;
-        let mut game = Self::from_position(initial);
+        let mut game = Self::from_position(initial).map_err(UsiPositionError::Unrepresentable)?;
 
         if tokens.next().is_some() {
             for (index, token) in tokens.enumerate() {
@@ -437,6 +443,7 @@ mod tests {
 
     fn game_from(sfen: &str) -> Game {
         Game::from_position(PartialPosition::from_usi(sfen).expect("valid sfen"))
+            .expect("a representable root")
     }
 
     /// The invariant [`Game::positions`] states, asserted through the accessor
@@ -502,12 +509,17 @@ mod tests {
             "sfen lnsgkgsnl/1r5b1/ggggggggg/9/9/9/GGGGGGGGG/1B5R1/LNSGKGSNL b - 1",
         )
         .expect("valid sfen");
-        assert!(
-            crate::over_inventory(&root).is_some(),
+        assert_eq!(
+            crate::over_inventory(&root),
+            Some(crate::ImpossiblePieceCount {
+                kind: PieceKind::Gold,
+                count: 22,
+                total: 4,
+            }),
             "the fixture has to be over-inventory for this test to say anything"
         );
 
-        let mut game = Game::from_position(root);
+        let mut game = Game::from_position(root).expect("twenty-two golds is representable");
         assert_eq!(
             game.outcome(),
             None,
@@ -517,6 +529,55 @@ mod tests {
             .expect("a gold may step forward here");
         assert_eq!(game.outcome(), None);
         assert_eq!(game.positions().len(), 2);
+    }
+
+    /// The three things that break past the representable bound, each on the
+    /// root that reaches it. The SFEN hand grammar takes two digits per token
+    /// but accumulates repeated tokens, which is how every row gets there.
+    ///
+    /// ⚠️ Each row is a different breakage and none of them is a shogi rule:
+    /// 255 pawns overflows the `u8` the legality crate's status sums board and
+    /// both hands into; a 256th capture wraps `shogi_core`'s hand to zero and
+    /// destroys the lot; and 108 in hand is written back out as three digits
+    /// that the same crate's reader cannot take. The accepted rows are what
+    /// keeps the bound from simply being "refuse everything odd".
+    ///
+    /// Sabotage: raise `REPRESENTABLE` to 255 and the third row is accepted,
+    /// this test the only one red in the workspace. Drop the `unrepresentable`
+    /// guard from `from_position` and the first row does not fail but panics,
+    /// "attempt to add with overflow" inside `shogi_legality_lite`.
+    #[test]
+    fn a_root_past_what_a_game_can_represent_is_refused() {
+        for sfen in [
+            // Overflows the status census, which sums board and both hands in a u8.
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P99P57P9p 1",
+            // One capture from wrapping shogi_core's hand to zero.
+            "sfen 4k4/9/9/9/4p4/4P4/9/9/4K4 b 99P99P57P 1",
+            // Written back out as `108P`, which the hand reader cannot take.
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P9P 1",
+        ] {
+            assert!(
+                matches!(
+                    Game::from_usi_position(sfen),
+                    Err(UsiPositionError::Unrepresentable(_))
+                ),
+                "accepted a root a game cannot represent: {sfen}"
+            );
+        }
+
+        // Far outside a shogi set, and still held: the bound is the
+        // representation's, not the set's.
+        let golds = "sfen lnsgkgsnl/1r5b1/ggggggggg/9/9/9/GGGGGGGGG/1B5R1/LNSGKGSNL b - 1";
+        assert!(Game::from_usi_position(golds).is_ok(), "{golds}");
+        let ninety_nine = "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P 1";
+        let game = Game::from_usi_position(ninety_nine).expect("ninety-nine is the bound");
+        assert_eq!(
+            Game::from_usi_position(&game.to_usi_position())
+                .expect("and it round-trips")
+                .to_usi_position(),
+            game.to_usi_position(),
+            "the bound is exactly what can be written and read back"
+        );
     }
 
     /// A root is the one position [`Game::play`] cannot adjudicate, because

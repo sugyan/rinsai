@@ -1,5 +1,5 @@
 //! The piece census: what a position holds of each kind, against what a shogi
-//! set holds.
+//! set holds and against what this crate can represent.
 //!
 //! Counted here rather than read off `shogi_legality_lite::status_partial`,
 //! which answers mate first and returns before it counts: a census that runs
@@ -9,11 +9,7 @@ use std::fmt;
 
 use shogi_core::{Color, Hand, PartialPosition, PieceKind, Square};
 
-/// What a shogi set holds of each kind, counting a promoted piece as the one it
-/// promoted from.
-///
-/// ⚠️ The kings are not here, so nothing in this crate bounds their number: a
-/// 詰将棋 diagram routinely omits the attacking king.
+/// What a shogi set holds of each kind.
 const PIECE_TOTALS: [(PieceKind, u32); 7] = [
     (PieceKind::Pawn, 18),
     (PieceKind::Lance, 4),
@@ -32,7 +28,8 @@ const PIECE_TOTALS: [(PieceKind, u32); 7] = [
 /// is the caller's rule.
 ///
 /// ⚠️ The kings are not counted, so a position missing one, or holding three,
-/// is outside this answer entirely.
+/// is outside this answer entirely: a 詰将棋 diagram routinely omits the
+/// attacking king.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImpossiblePieceCount {
     pub kind: PieceKind,
@@ -52,17 +49,46 @@ impl fmt::Display for ImpossiblePieceCount {
 
 impl std::error::Error for ImpossiblePieceCount {}
 
-/// The first kind `position` holds more of than a shogi set does, if any.
+/// The most of one kind a game can hold, board and hands together.
 ///
-/// A caller decides what that means for it: this crate referees such a position
-/// like any other, and [`Game`](crate::Game) will hold and play one.
+/// ⚠️ Not a rule of shogi — a limit of what can be represented, and the reason
+/// [`Game::from_position`](crate::Game::from_position) can refuse. Three things
+/// break above it, none of them here: USI hand notation writes a count its own
+/// reader takes at two digits, so a game holding more could not write itself
+/// back out; `shogi_core`'s hand counts a kind in a `u8` that wraps rather than
+/// refusing, so a capture past it destroys pieces silently; and the legality
+/// crate's status sums board and both hands in a `u8` too.
+const REPRESENTABLE: u32 = 99;
+
+/// A root holding more of `kind` than a game can represent.
 ///
-/// No move creates a piece — a move relocates one, a promotion stays inside its
-/// kind's union, and a capture moves one to a hand of the same base kind — so
-/// the answer is a property of the root, and asking it of any later position in
-/// a game gives the same one.
-#[must_use]
-pub fn over_inventory(position: &PartialPosition) -> Option<ImpossiblePieceCount> {
+/// ⚠️ Far above what a shogi set holds: an over-inventory position is
+/// [`over_inventory`]'s answer and is played like any other. This is the
+/// separate line past which the representation itself stops being faithful.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnrepresentableRoot {
+    pub kind: PieceKind,
+    pub count: u32,
+}
+
+impl fmt::Display for UnrepresentableRoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { kind, count } = self;
+        write!(
+            f,
+            "{count} {kind:?} on the board and in hand, past the {REPRESENTABLE} a game can hold"
+        )
+    }
+}
+
+impl std::error::Error for UnrepresentableRoot {}
+
+/// Every kind's count, board and both hands together, a promoted piece counting
+/// as the one it promoted from.
+///
+/// ⚠️ Indexed by [`PieceKind`], but only the seven hand kinds are ever read:
+/// nothing bounds the kings, and a promoted kind's slot stays zero.
+fn census(position: &PartialPosition) -> [u32; PieceKind::NUM] {
     let mut seen = [0u32; PieceKind::NUM];
     for square in Square::all() {
         if let Some(piece) = position.piece_at(square) {
@@ -76,9 +102,25 @@ pub fn over_inventory(position: &PartialPosition) -> Option<ImpossiblePieceCount
             seen[kind.array_index()] += u32::from(hand.count(kind).unwrap_or(0));
         }
     }
+    seen
+}
+
+/// The first kind `position` holds more of than a shogi set does, if any.
+#[must_use]
+pub fn over_inventory(position: &PartialPosition) -> Option<ImpossiblePieceCount> {
+    let seen = census(position);
     PIECE_TOTALS.into_iter().find_map(|(kind, total)| {
         let count = seen[kind.array_index()];
         (count > total).then_some(ImpossiblePieceCount { kind, count, total })
+    })
+}
+
+/// The first kind `position` holds more of than a game can represent, if any.
+pub(crate) fn unrepresentable(position: &PartialPosition) -> Option<UnrepresentableRoot> {
+    let seen = census(position);
+    PIECE_TOTALS.into_iter().find_map(|(kind, _)| {
+        let count = seen[kind.array_index()];
+        (count > REPRESENTABLE).then_some(UnrepresentableRoot { kind, count })
     })
 }
 
@@ -99,10 +141,13 @@ mod tests {
     /// row is the one a *status* function cannot answer: it is mate as well as
     /// over-inventory, and mate is reported before anything is counted.
     ///
-    /// Sabotage: drop the `unpromote()` in `over_inventory`, or widen its
-    /// `count > total` to `count >= total`. Each mutation turned this test and
+    /// Sabotage: drop the `unpromote()` in `census`, and this test and
     /// `rinsai-search`'s `the_two_root_censuses_agree_on_what_a_shogi_set_holds`
-    /// red, and no other test in the workspace.
+    /// go red, no other test in the workspace. Widening `count > total` to
+    /// `count >= total` turns those two red and `rinsai-game`'s
+    /// `a_root_outside_the_standard_inventory_still_plays` with them, because
+    /// the all-golds fixture holds four lances and `PIECE_TOTALS` reaches Lance
+    /// before Gold.
     #[test]
     fn a_position_no_shogi_set_could_hold_names_the_kind_and_the_count() {
         for (sfen, kind, count, total) in [

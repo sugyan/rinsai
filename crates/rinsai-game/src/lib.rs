@@ -21,7 +21,7 @@ mod types;
 
 pub use declaration::{DeclarationError, can_declare, jishogi_points};
 pub use game::Game;
-pub use inventory::{ImpossiblePieceCount, over_inventory};
+pub use inventory::{ImpossiblePieceCount, UnrepresentableRoot, over_inventory};
 pub use moves::{in_check, move_from_usi};
 pub use repetition::{PositionKey, position_key};
 pub use types::{

@@ -4,6 +4,8 @@ use std::fmt;
 
 use shogi_core::{Color, IllegalMoveKind, Move};
 
+use crate::inventory::UnrepresentableRoot;
+
 /// One played move, with what the rules need from it that cannot be recomputed
 /// from the move alone.
 #[derive(Debug, Clone, Copy)]
@@ -148,6 +150,8 @@ pub enum UsiPositionError {
     Empty,
     /// The root — `startpos` or `sfen …` — did not parse.
     Root(shogi_usi_parser::Error),
+    /// The root parsed but holds more of a kind than a game can represent.
+    Unrepresentable(UnrepresentableRoot),
     /// A token in the `moves` list was refused; `index` counts from the first
     /// move token.
     Move {
@@ -162,6 +166,7 @@ impl fmt::Display for UsiPositionError {
         match self {
             Self::Empty => f.write_str("empty position argument"),
             Self::Root(e) => write!(f, "bad root: {e}"),
+            Self::Unrepresentable(e) => write!(f, "unrepresentable root: {e}"),
             Self::Move {
                 index,
                 token,
@@ -176,6 +181,7 @@ impl std::error::Error for UsiPositionError {
         match self {
             Self::Empty => None,
             Self::Root(source) => Some(source),
+            Self::Unrepresentable(source) => Some(source),
             Self::Move { source, .. } => Some(source),
         }
     }
