@@ -55,8 +55,6 @@ impl Game {
 
     /// Begin a game at `initial`.
     ///
-    /// Begin a game at `initial`.
-    ///
     /// A position outside a standard shogi set is a root like any other, and
     /// [`over_inventory`](crate::over_inventory) is where *that* is asked. The
     /// refusal here is the far higher one the representation itself imposes —
@@ -531,37 +529,49 @@ mod tests {
         assert_eq!(game.positions().len(), 2);
     }
 
-    /// The three things that break past the representable bound, each on the
-    /// root that reaches it. The SFEN hand grammar takes two digits per token
-    /// but accumulates repeated tokens, which is how every row gets there.
+    /// Roots past the bound, and the ones at or under it that keep the refusal
+    /// from being "refuse everything odd". The SFEN hand grammar takes two
+    /// digits per token but accumulates repeated ones, which is how a row gets
+    /// past ninety-nine at all.
     ///
-    /// ⚠️ Each row is a different breakage and none of them is a shogi rule:
-    /// 255 pawns overflows the `u8` the legality crate's status sums board and
-    /// both hands into; a 256th capture wraps `shogi_core`'s hand to zero and
-    /// destroys the lot; and 108 in hand is written back out as three digits
-    /// that the same crate's reader cannot take. The accepted rows are what
-    /// keeps the bound from simply being "refuse everything odd".
+    /// ⚠️ Each row asserts the count the census must report rather than
+    /// describing it, so a row that stops holding what its comment says fails
+    /// here instead of passing quietly.
     ///
-    /// Sabotage: raise `REPRESENTABLE` to 255 and the third row is accepted,
-    /// this test the only one red in the workspace. Drop the `unrepresentable`
-    /// guard from `from_position` and the first row does not fail but panics,
-    /// "attempt to add with overflow" inside `shogi_legality_lite`.
+    /// ⚠️ A hundred above and ninety-nine below are both here, because a bound
+    /// is only pinned from both sides — the same reason the census test carries
+    /// nineteen pawns above eighteen.
+    ///
+    /// Sabotage: `REPRESENTABLE` 99 → 100, and this test is the only one red in
+    /// the workspace, on the hundred row. Dropping the `unrepresentable` guard
+    /// from `from_position` turns the same row red; with only the 264-pawn row
+    /// left it does not fail but panics, "attempt to add with overflow" at
+    /// `shogi_legality_lite`'s lib.rs:157.
     #[test]
     fn a_root_past_what_a_game_can_represent_is_refused() {
-        for sfen in [
-            // Overflows the status census, which sums board and both hands in a u8.
-            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P99P57P9p 1",
-            // One capture from wrapping shogi_core's hand to zero.
-            "sfen 4k4/9/9/9/4p4/4P4/9/9/4K4 b 99P99P57P 1",
-            // Written back out as `108P`, which the hand reader cannot take.
-            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P9P 1",
+        for (sfen, total) in [
+            // A hundred: one past the bound, and the only row of the four that
+            // nothing but the round-trip would have stopped.
+            ("sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P1P 1", 100),
+            // Written back out as `108P`, three digits where the reader takes
+            // two.
+            ("sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P9P 1", 108),
+            // 255 in hand and two on the board: a capture from here would wrap
+            // `shogi_core`'s hand, which counts a kind in a `u8`.
+            ("sfen 4k4/9/9/9/4p4/4P4/9/9/4K4 b 99P99P57P 1", 257),
+            // Past what `shogi_legality_lite`'s status can even count: it sums
+            // board and both hands into a `u8`.
+            ("sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P99P57P9p 1", 264),
         ] {
             assert!(
                 matches!(
                     Game::from_usi_position(sfen),
-                    Err(UsiPositionError::Unrepresentable(_))
+                    Err(UsiPositionError::Unrepresentable(UnrepresentableRoot {
+                        kind: PieceKind::Pawn,
+                        count,
+                    })) if count == total
                 ),
-                "accepted a root a game cannot represent: {sfen}"
+                "expected {sfen} refused as {total} pawns"
             );
         }
 
@@ -569,15 +579,13 @@ mod tests {
         // representation's, not the set's.
         let golds = "sfen lnsgkgsnl/1r5b1/ggggggggg/9/9/9/GGGGGGGGG/1B5R1/LNSGKGSNL b - 1";
         assert!(Game::from_usi_position(golds).is_ok(), "{golds}");
+
+        // The bound itself, held and written back out unchanged — compared
+        // against the argument it was built from, not against itself.
         let ninety_nine = "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P 1";
         let game = Game::from_usi_position(ninety_nine).expect("ninety-nine is the bound");
-        assert_eq!(
-            Game::from_usi_position(&game.to_usi_position())
-                .expect("and it round-trips")
-                .to_usi_position(),
-            game.to_usi_position(),
-            "the bound is exactly what can be written and read back"
-        );
+        assert_eq!(game.to_usi_position(), ninety_nine);
+        assert!(Game::from_usi_position(&game.to_usi_position()).is_ok());
     }
 
     /// A root is the one position [`Game::play`] cannot adjudicate, because

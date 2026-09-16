@@ -49,15 +49,18 @@ impl fmt::Display for ImpossiblePieceCount {
 
 impl std::error::Error for ImpossiblePieceCount {}
 
-/// The most of one kind a game can hold, board and hands together.
+/// The most of one kind a game can hold, board and hands together, and the
+/// reason [`Game::from_position`](crate::Game::from_position) can refuse.
 ///
-/// ⚠️ Not a rule of shogi — a limit of what can be represented, and the reason
-/// [`Game::from_position`](crate::Game::from_position) can refuse. Three things
-/// break above it, none of them here: USI hand notation writes a count its own
-/// reader takes at two digits, so a game holding more could not write itself
-/// back out; `shogi_core`'s hand counts a kind in a `u8` that wraps rather than
-/// refusing, so a capture past it destroys pieces silently; and the legality
-/// crate's status sums board and both hands in a `u8` too.
+/// ⚠️ Neither a rule of shogi nor the set census above — a limit of what can be
+/// written and read back. `shogi_core` writes a hand count of a hundred as
+/// three digits and `shogi_usi_parser` reads at most two, so a game past this
+/// could not round-trip through [`Game::to_usi_position`](crate::Game::to_usi_position).
+///
+/// ⚠️ Two worse breakages sit far above and are closed by the same refusal, so
+/// neither sets this number: `shogi_core`'s hand counts a kind in a `u8` that
+/// wraps at 256 rather than refusing, and `shogi_legality_lite`'s status sums
+/// board and both hands into a `u8` as well.
 const REPRESENTABLE: u32 = 99;
 
 /// A root holding more of `kind` than a game can represent.
