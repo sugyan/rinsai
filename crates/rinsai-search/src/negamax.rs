@@ -120,6 +120,25 @@ impl Window {
             beta: Score::INFINITE,
         }
     }
+
+    /// The window a move is scouted on: one point wide, sitting on `alpha`.
+    ///
+    /// A search this narrow cannot answer what a move is worth, only which side
+    /// of `alpha` the truth lies on — which is all a node needs from a move it
+    /// expects to reject. ⚠️ **A scout that comes back above `alpha` has
+    /// established a lower bound and nothing else.** It may cut the node off,
+    /// because a lower bound at or past `beta` proves the fail-high; it may not
+    /// become the node's value, and [`NegamaxSearcher::negamax`]'s move loop is
+    /// where that holds.
+    ///
+    /// The caller must have a window of its own to widen back to, so `alpha`
+    /// is a node's current alpha rather than any score.
+    fn scout(alpha: Score) -> Self {
+        Self {
+            alpha,
+            beta: alpha + 1,
+        }
+    }
 }
 
 impl Neg for Window {
@@ -655,8 +674,8 @@ impl<C: Clock> NegamaxSearcher<C> {
         // already computed and paid for. `board.in_check()` would buy it twice.
         //
         // ⚠️ **The invariant is "the top of the path is this node", not "every
-        // call site pushes".** The re-search below dispatches a second time on
-        // the entry the first push left, and null-move pruning is the change
+        // call site pushes".** The two searches below dispatch again on the
+        // entry the first push left, and null-move pruning is the change
         // that would break the invariant outright — a pass kept off the path
         // makes `last()` the position before it, whose `in_check` is the other
         // side's. The assertion is what says so, and only in debug.
@@ -684,15 +703,25 @@ impl<C: Clock> NegamaxSearcher<C> {
             let entry = HistoryEntry::of(board);
             let gives_check = entry.in_check;
             self.path.push(entry);
+            // The first move of the list takes the node's own window; every
+            // move behind it is scouted, and widens back only by proving it
+            // deserves to.
+            let scouted = i > base;
+            let probe = if scouted {
+                Window::scout(window.alpha)
+            } else {
+                window
+            };
             let taken = reduction::reduction(depth, i - base, quiet, gives_check, in_check);
-            let mut score = self.child(board, window, depth - 1 - taken, ply + 1, budget);
+            let mut score = self.child(board, probe, depth - 1 - taken, ply + 1, budget);
             // ⚠️ **A reduced score may raise alpha only after a full-depth
             // search agrees with it.** The saving is in the moves that stay
             // below alpha; believing one that does not is how a reduction
-            // becomes a wrong answer instead of a cheaper one. Since `beta`
-            // is above `alpha`, this also means a reduced search can never cut
-            // the node off on its own — every cutoff below came from a search
-            // at this node's own depth, which is what `remember_cutoff` records.
+            // becomes a wrong answer instead of a cheaper one. A cutoff needs
+            // `score >= window.beta` and this node's beta is above its alpha,
+            // so a score that could cut has already been searched again here —
+            // every cutoff below came from a search at this node's own depth,
+            // which is what `remember_cutoff` records.
             //
             // ⚠️ **It does not make the stored bound exact, and is not trying
             // to.** A reduced score at or below alpha is never re-searched, yet
@@ -702,6 +731,16 @@ impl<C: Clock> NegamaxSearcher<C> {
             // reduction carries, in the same family as the repetition verdict
             // reaching the table through a parent.
             if taken > 0 && !self.stopped && score > window.alpha {
+                score = self.child(board, probe, depth - 1, ply + 1, budget);
+            }
+            // ⚠️ **A scout answers where a score is, not what it is**, so one
+            // that landed inside this node's window is searched again on that
+            // window before it may raise alpha. A scout at or past `beta` is a
+            // lower bound that proves the fail-high, and needs no second
+            // search — and a node whose own window is already a scout's finds
+            // this condition empty, which is what keeps a scout from
+            // re-searching itself.
+            if scouted && !self.stopped && score > window.alpha && score < window.beta {
                 score = self.child(board, window, depth - 1, ply + 1, budget);
             }
             // Both of these come before every `break` below, without exception.
@@ -739,6 +778,11 @@ impl<C: Clock> NegamaxSearcher<C> {
         // `best` is then the maximum over a *prefix* of the list, so every bound
         // below would be false, and the entry outlives the search that made it.
         if !self.stopped {
+            // A node searched on a scout's window reaches only the first and
+            // last arms, and needs no guard to: raising alpha there lands at or
+            // past beta, so the loop broke on the cutoff and `best` is at least
+            // beta. **An exact score is a thing a one-point window cannot see**,
+            // and the arms already say so.
             let bound = if best >= window.beta {
                 Bound::Lower
             } else if window.alpha > entry_alpha {
@@ -1347,6 +1391,15 @@ mod tests {
     /// that surfaces in a reported line is always resolved in quiescence
     /// first, because quiescence runs past the nominal depth and the deepening
     /// loop stops at the first iteration that returns a mate score.
+    ///
+    /// **It is also what catches a scouted move being believed without being
+    /// searched again on the node's own window.** Dropping that search makes
+    /// the row asserting a five-ply mate announce `mate 5` behind a two-move
+    /// line, and [`assert_mate_is_real`]'s length check is what says so: a
+    /// scout answers which side of alpha a score is on and leaves no line
+    /// behind it, so a parent that raises alpha on one publishes the move and
+    /// then nothing. Within this crate it is the only test that fires on that
+    /// mutation.
     #[test]
     fn finds_a_mate_at_every_distance_from_one_to_five() {
         for (moves, hand) in [(1, "-"), (2, "p"), (3, "2p"), (4, "3p"), (5, "4p")] {
@@ -2336,24 +2389,29 @@ mod tests {
     /// once MVV-LVA and killers order the interior nodes, taking the stored
     /// move's front away *shrinks* the tree on most positions rather than
     /// growing it, and a ceiling cannot catch a mutation that makes the number
-    /// smaller. This is one of the two fixtures measured where it still costs,
-    /// and it costs more at seven plies than at six.
+    /// smaller. This is a position measured where it still costs, on all three
+    /// of the mutations below.
     ///
-    /// Sabotage, from a baseline of 159 843 nodes: deleting the whole `hit.mv`
-    /// block gives 192 205, and dropping only the `buf.swap` while leaving
-    /// `order_from` at `base + 1` gives 291 018. Both go red on the ceiling
+    /// Sabotage, from a baseline of 172 303 nodes: deleting the whole `hit.mv`
+    /// block gives 209 687, and dropping only the `buf.swap` while leaving
+    /// `order_from` at `base + 1` gives 374 860. Both go red on the ceiling
     /// below. Demoting the stored move rather than removing it — ordering
-    /// captures from `base` — gives 187 814 and goes red too.
+    /// captures from `base` — gives 210 738 and goes red too.
     ///
     /// ⚠️ **A ceiling only catches a mutation that makes the tree bigger**, and
     /// this fixture's baseline moves with every search feature that lands, so
     /// the three figures above are the ones to re-measure before trusting it.
+    /// The previous fixture — six plies of the double-wing opening, at depth 7
+    /// — is what that costs when it is not re-measured: it was calibrated
+    /// against an engine without the scout, and under one with it two of the
+    /// three mutations above came in *below* its own baseline, where no ceiling
+    /// can reach them.
     #[test]
     fn the_transposition_move_is_searched_first() {
-        let (_, lines) = run("startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c", depth(7));
+        let (_, lines) = run("startpos moves 7g7f 3c3d", depth(7));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 175_000,
+            field(last, "nodes") < 190_000,
             "the transposition move is not being tried first: {last}"
         );
     }
@@ -2374,11 +2432,11 @@ mod tests {
     ///
     /// Sabotage, either way of removing the feature — delete the
     /// `order_killers` call and leave the table filling up unread, or drop
-    /// `remember_cutoff`'s killer half: both take this fixture from 213 141
-    /// nodes to 341 504, and both go red on the ceiling below. ⚠️ **Ordering
-    /// by history after the killers rather than before gives 343 332** and
-    /// goes red here too. Removing history instead, either its ordering call
-    /// or `remember_cutoff`'s history half, gives 219 760 and stays green.
+    /// `remember_cutoff`'s killer half: both take this fixture from 212 442
+    /// nodes to 340 357, and both go red on the ceiling below. ⚠️ **Ordering
+    /// by history after the killers rather than before gives 342 203** and
+    /// goes red here too. Removing the history ordering call instead gives
+    /// 217 927 and stays green.
     #[test]
     fn a_killer_is_searched_before_the_quiet_moves_around_it() {
         let (_, lines) = run(DROP_HEAVY_FIXTURE, depth(4));
@@ -2396,20 +2454,20 @@ mod tests {
     /// Late quiet moves are searched a ply shallower, as a node-count tripwire.
     ///
     /// **The depth is load-bearing.** At the four plies the killer tripwire
-    /// above uses, removing the reduction costs 249 620 nodes against 213 141
+    /// above uses, removing the reduction costs 248 084 nodes against 212 442
     /// — a 17% gap that leaves no room between the two ceilings. At five it is
-    /// 3 734 435 against 802 442, so the ceiling below sits with room on both
+    /// 3 629 608 against 789 707, so the ceiling below sits with room on both
     /// sides and the two tests stop measuring one search.
     ///
-    /// Sabotage: make `reduction` return 0 and this fixture goes from 802 442
-    /// nodes to 3 734 435, which is red on the ceiling below.
+    /// Sabotage: make `reduction` return 0 and this fixture goes from 789 707
+    /// nodes to 3 629 608, which is red on the ceiling below.
     ///
     /// ⚠️ **A ceiling can only catch a reduction that stopped happening.**
     /// Every other way of breaking this feature makes the tree *smaller* —
-    /// deleting the re-search gives 801 742, dropping the promotion exemption
-    /// 651 809, dropping the check exemption 670 919 — and none of them is red
-    /// here. The frozen `bench` counts catch the last two; the test below
-    /// catches the first.
+    /// deleting the verification search gives 788 142, dropping the promotion
+    /// exemption 646 575, dropping the check exemption 660 563 — and none of
+    /// them is red here. The frozen `bench` counts catch all three; the test
+    /// below catches the first.
     #[test]
     fn late_quiet_moves_are_searched_a_ply_shallower() {
         let (_, lines) = run(DROP_HEAVY_FIXTURE, depth(5));
@@ -2421,22 +2479,24 @@ mod tests {
     }
 
     /// A position where the reduction guesses wrong, and the full-depth
-    /// re-search is the whole of what corrects it.
+    /// verification search is the whole of what corrects it.
     ///
-    /// ⚠️ **It is the only test that names the cause.** Deleting the re-search
+    /// ⚠️ **It is the only test that names the cause.** Deleting that search
     /// also reddens `bench`'s frozen counts and the process test that runs
     /// them, because the tree changes size; within this crate nothing else
     /// fires — not the mate ladder, not the repetition suite, not one ordering
-    /// tripwire. This fixture was found by playing a build with the re-search
-    /// against one without it over the first 300 lines of `openings-v3` at
-    /// depth 6: eleven disagreed, and this is the widest of them.
+    /// tripwire. This fixture was found by playing a build with the
+    /// verification search against one without it over the first 300 lines of
+    /// `openings-v3` at depth 6: eleven disagreed, and this is the widest of
+    /// them.
     ///
     /// ⚠️ **The reduction is not what finds the win here** — an engine with no
-    /// reduction at all reports the same score, from 246 018 nodes against
-    /// 77 324. What the reduction does is find it three times cheaper, and
-    /// what the re-search does is keep it found.
+    /// reduction at all reports the same score, from 244 361 nodes against
+    /// 76 976. What the reduction does is find it three times cheaper, and
+    /// what the verification search does is keep it found.
     ///
-    /// Sabotage: drop the re-search and this reports `cp 15` from 73 889 nodes.
+    /// Sabotage: drop the verification search and this reports `cp 15` from
+    /// 73 475 nodes.
     #[test]
     fn a_reduced_move_is_believed_only_after_a_full_depth_search() {
         let (_, lines) = run(RESEARCH_FIXTURE, depth(6));
@@ -2531,6 +2591,60 @@ mod tests {
             assert!(cuts(&hit(Bound::Upper, cp), &window), "{cp} cp");
             assert!(cuts(&hit(Bound::Exact, cp), &window), "{cp} cp");
             assert!(!cuts(&hit(Bound::Lower, cp), &window), "{cp} cp");
+        }
+    }
+
+    /// A scout is one point wide, and stays one point wide through the
+    /// negation [`NegamaxSearcher::child`] applies on the way down.
+    ///
+    /// **The negation is the half worth asserting.** The width is what makes
+    /// the move loop's `score < window.beta` empty at a node already searching
+    /// on a scout, and a window that widened when it changed sides would give
+    /// such a node an interior to re-search itself in.
+    ///
+    /// Sabotage: `beta: alpha + 2` fails the width assertion and reddens
+    /// [`a_scout_window_leaves_no_exact_score_uncut`] besides. `beta: alpha`
+    /// reddens both of those and `the_transposition_move_is_searched_first`
+    /// as well — a window with no width at all cuts every node off on its
+    /// first move.
+    #[test]
+    fn a_scout_is_one_point_wide_from_either_side() {
+        for cp in [-5_000, -1, 0, 1, 5_000] {
+            let window = Window::scout(Score::cp(cp));
+            assert_eq!(window.alpha, Score::cp(cp));
+            assert_eq!(window.beta.get() - window.alpha.get(), 1, "{cp} cp");
+            let flipped = -window;
+            assert_eq!(flipped.beta.get() - flipped.alpha.get(), 1, "{cp} cp");
+        }
+    }
+
+    /// A scout window has no strict inside, so the restriction above has
+    /// nothing to refuse there: an `Exact` hit always lands on or past an
+    /// edge, and always cuts.
+    ///
+    /// **This is a property of [`Window::scout`]'s width rather than of
+    /// `cuts`**, which is why it is asserted over a scout window rather than a
+    /// hand-built one: it goes red the day the scout gains an interior, and an
+    /// interior is what would let a scouted node return without the line its
+    /// parent then publishes. Sabotage: widen `scout` to `alpha + 2` and the
+    /// score between the edges stops cutting.
+    ///
+    /// ⚠️ **The other two arms are unchanged and are asserted as such** — a
+    /// `Lower` bound still proves only the β side and an `Upper` only the α
+    /// side, so "no strict inside" is not "everything cuts".
+    #[test]
+    fn a_scout_window_leaves_no_exact_score_uncut() {
+        let window = Window::scout(Score::cp(0));
+        let hit = |bound, cp| Hit {
+            score: Score::cp(cp),
+            depth: 0,
+            bound,
+            mv: None,
+        };
+        for cp in [-5_000, -1, 0, 1, 2, 5_000] {
+            assert!(cuts(&hit(Bound::Exact, cp), &window), "exact at {cp} cp");
+            assert_eq!(cuts(&hit(Bound::Lower, cp), &window), cp >= 1, "{cp} cp");
+            assert_eq!(cuts(&hit(Bound::Upper, cp), &window), cp <= 0, "{cp} cp");
         }
     }
 

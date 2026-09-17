@@ -5,7 +5,7 @@
 //! and a bare integer catches none of them.
 
 use core::fmt;
-use core::ops::{Add, AddAssign, Neg, Sub, SubAssign};
+use core::ops::{Add, Neg, Sub};
 
 /// The deepest ply the search will ever reach, counting quiescence.
 ///
@@ -148,8 +148,8 @@ impl Neg for Score {
     }
 }
 
-// Caller for the four impls below: the transposition table's
-// mate-score-by-ply adjustment.
+// Callers for the two impls below: the transposition table's mate-score-by-ply
+// adjustment, and the one-point window a scouted move is searched on.
 
 impl Add<i32> for Score {
     type Output = Self;
@@ -164,20 +164,6 @@ impl Sub<i32> for Score {
     #[inline]
     fn sub(self, rhs: i32) -> Self {
         Self(self.0 - rhs)
-    }
-}
-
-impl AddAssign<i32> for Score {
-    #[inline]
-    fn add_assign(&mut self, rhs: i32) {
-        self.0 += rhs;
-    }
-}
-
-impl SubAssign<i32> for Score {
-    #[inline]
-    fn sub_assign(&mut self, rhs: i32) {
-        self.0 -= rhs;
     }
 }
 
