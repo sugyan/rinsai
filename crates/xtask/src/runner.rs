@@ -703,11 +703,13 @@ fn check_opening(opening: &str) -> Result<(), String> {
             ));
         }
     }
-    // The engine's parser is stricter than the referee's — it bounds the kings
-    // per colour and rejects an out-of-range SFEN move number, where
-    // `PartialPosition::from_usi` saturates and reports success. An opening
-    // only the referee accepts makes the engine keep its previous board and
-    // answer from it, which the referee then scores as an illegal move.
+    // The engine's parser is stricter than the referee's — it bounds the piece
+    // census and the kings per colour, and rejects an out-of-range SFEN move
+    // number where `PartialPosition::from_usi` saturates and reports success.
+    // The referee reports an over-inventory root rather than refusing it, so
+    // this call is what keeps such an opening out of a match. An opening only
+    // the referee accepts makes the engine keep its previous board and answer
+    // from it, which the referee then scores as an illegal move.
     rinsai_search::Game::from_usi_position(opening)
         .map_err(|e| format!("the engine refuses this position: {e:?}"))?;
     Ok(())
@@ -935,6 +937,23 @@ mod tests {
             check_opening("startpos moves 7g7f 3c3d").is_ok(),
             "an ordinary opening still passes"
         );
+    }
+
+    /// An opening outside a standard shogi set is kept out of a match by the
+    /// engine's parser, because the referee holds one and only reports it.
+    ///
+    /// ⚠️ The refusal is matched on the engine's wording rather than merely
+    /// being an error, because every other check in `check_opening` also
+    /// answers with one and this test is about which of them fires.
+    #[test]
+    fn an_opening_outside_a_shogi_set_is_refused_by_the_engine() {
+        let over_inventory = "sfen lnsgkgsnl/1r5b1/ggggggggg/9/9/9/GGGGGGGGG/1B5R1/LNSGKGSNL b - 1";
+        let game =
+            rinsai_game::Game::from_usi_position(over_inventory).expect("the referee replays it");
+        assert_eq!(game.outcome(), None, "the referee holds it, in progress");
+
+        let refused = check_opening(over_inventory).expect_err("outside a shogi set");
+        assert!(refused.contains("the engine refuses"), "{refused}");
     }
 
     fn budget_with(extra: &[&str]) -> Result<Args, String> {
