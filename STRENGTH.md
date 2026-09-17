@@ -27,6 +27,50 @@ it like any other.
 
 ## E1 — classical search, one feature at a time
 
+### Item 5b — principal variation search at interior nodes — **pass**
+
+H1 accepted at elo0 = 0 / elo1 = 10.
+
+```
+pairs 437 | games 874 | candidate W-D-L 350-246-278
+pent [41, 12, 295, 12, 77] | llr +3.087 | score 54.12% (elo +28.7 est)
+```
+
+| | |
+|---|---|
+| candidate | `8087f78` |
+| baseline | `1ed00e9` |
+| `bench` | candidate 231 423, baseline 232 082 — both read off the binaries that played, before the run |
+| control | `--nodes 300000 --gain` (elo0 = 0 / elo1 = 10), α = β = 0.05, concurrency 3 |
+| openings | `openings-v3.sfen`, seed 1, 437 distinct openings for 437 pairs |
+| endings | 624 checkmates, 240 千日手, 6 at the 512-ply move limit, **4 入玉宣言** |
+
+The counts above were recomputed from `run.jsonl` rather than read off the
+harness's summary, and agree to the digit — including the LLR, where the
+recomputation over all 437 pairs and the decision that stopped the run are the
+same number.
+
+⚠️ **The first declarations to appear in a gate.** #72 put 入玉宣言 at the
+search root in E2 and nothing had yet reached one under match conditions. Four
+in 874 games is what the feature is worth here, and #74 is the reason it is not
+more: the search cannot see a declaration it has not already arrived at.
+
+⚠️ **The measurement this entry cannot make is the one the patch is about.**
+The same two builds were played over the first 300 lines of `openings-v3` at a
+fixed depth and agreed on **every bestmove and every score**; only the tail of
+the published line moved, on 9 of 300. So at a fixed depth this changes nothing,
+and the +28.7 is the scout spending a fixed *node* budget deeper. A fixed-depth
+gate would have measured zero.
+
+⚠️ **What a pass says: the true difference is positive at α = 0.05, and the gate
+had 95% power at +10.** The +28.7 is a point estimate from 437 pairs.
+
+**An earlier attempt was reaped at 49 pairs**, undecided at +0.457, when the
+process was launched outside the session's own supervision and the container
+reclaimed it while the session was idle. It is not a separate result: all 98 of
+its games appear in the run above with the same opening, colour, result, end
+reason and ply count, none mismatching, so they are a prefix of these 437.
+
 ### Item 5 — late move reductions for quiet moves — **pass**
 
 H1 accepted at elo0 = 0 / elo1 = 10.
