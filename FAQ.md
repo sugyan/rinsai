@@ -147,15 +147,14 @@ exists to freeze, in the same commit that froze them.
 Because the node's line has been cleared and not refilled, so a parent that
 raises alpha on it publishes one move followed by nothing.
 
-⚠️ **It was predicted to truncate a published line; measured against the engine
-that had no scout it did not, and against the one that has it, it does.**
-Letting the `Bound::Exact` arm cut unconditionally now takes a move off the end
-of a line — the two lone kings at depth eight report seven moves for an
-eight-ply search — where the same mutation before the scout left every published
-line byte-identical. Nothing about the rule changed; what changed is that a
-scout window has no strict inside, so the arm this restriction governs is
-reached at PV nodes and almost nowhere else, and a PV node is exactly where a
-truncated line surfaces.
+⚠️ **It truncates one, and the claim that it does not was a claim about the
+fixtures that were tried.** Letting the `Bound::Exact` arm cut unconditionally
+takes the two lone kings at depth eight from eight published moves to seven —
+on the engine with the scout and on the one before it alike, 1807 nodes against
+1802. The restriction is therefore load-bearing rather than merely defensible,
+and it always was; what was missing was a fixture that reached the path.
+`a_published_line_is_as_long_as_the_depth_it_claims` is that fixture, so the
+rule is checked by a test rather than argued for here.
 
 ### Why may an `Entry` not store a `Move`?
 
@@ -182,9 +181,12 @@ its line never lands on a published one. The truncated lines exist; none surface
 by design.** A scout leaves no line behind it, so a parent that raised alpha on
 one would publish the move and then nothing — which is why a scout landing
 inside the node's own window is searched again on that window before its score
-is believed. What keeps the induction is that a published line needs a window
-more than one point wide: every node on it was last searched on its parent's
-own window, and a scout's is never that.
+is believed. What keeps the induction is the shape of the window rather than
+whose it is: a node reaches a published line only by returning a score
+**strictly inside** the window it was searched on, and a one-point window has no
+strict inside. ⚠️ **"Its parent's own window" would not carry it** — a node
+already searching on a scout hands its own first move that same window verbatim,
+so the two are not disjoint.
 
 ### Why can't `negamax_root` be given a narrow window?
 
