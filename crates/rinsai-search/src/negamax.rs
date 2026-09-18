@@ -1405,8 +1405,9 @@ mod tests {
     /// line, and [`assert_mate_is_real`]'s length check is what says so: a
     /// scout answers which side of alpha a score is on and leaves no line
     /// behind it, so a parent that raises alpha on one publishes the move and
-    /// then nothing. Within this crate it is the only test that fires on that
-    /// mutation.
+    /// then nothing. [`a_published_line_is_as_long_as_the_depth_it_claims`]
+    /// fires on the same mutation, from the other end — it reads the length
+    /// this one reads the distance.
     #[test]
     fn finds_a_mate_at_every_distance_from_one_to_five() {
         for (moves, hand) in [(1, "-"), (2, "p"), (3, "2p"), (4, "3p"), (5, "4p")] {
@@ -2540,10 +2541,11 @@ mod tests {
     /// that before this test existed**, and the frozen `bench` counts move by
     /// 0.22%, which is inside what an ordinary rebaseline absorbs.
     ///
-    /// ⚠️ **The hunt has to run at the table size the suite searches at.** At
-    /// the engine's default size this same fixture reports `cp 30` either way:
-    /// a bigger table transposes past the mistake, so a sweep run at one size
-    /// hands back a fixture that does not discriminate at the other.
+    /// ⚠️ **Every move of the line is load-bearing, including the last two.**
+    /// Cut `6a7b 3i3h` off the end and the fixture reports `cp 30` under both
+    /// builds — it stops discriminating entirely. The gap is measured at 1, 256
+    /// and the engine's default table size alike, so nothing about it is a
+    /// property of the table.
     const WIDENING_FIXTURE: &str = "startpos moves 7g7f 8c8d 2g2f 3c3d 2f2e 4a3b 5i6h \
          8d8e 2e2d 2c2d 2h2d 8e8f 8g8f 8b8f 6i7h 2b8h+ 7i8h B*3c P*8g 3c2d 8g8f 6a7b \
          3i3h";

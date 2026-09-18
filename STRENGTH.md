@@ -62,14 +62,29 @@ the published line moved, on 9 of 300. So at a fixed depth this changes nothing,
 and the +28.7 is the scout spending a fixed *node* budget deeper. A fixed-depth
 gate would have measured zero.
 
-⚠️ **What a pass says: the true difference is positive at α = 0.05, and the gate
-had 95% power at +10.** The +28.7 is a point estimate from 437 pairs.
+⚠️ **What a pass says: the true difference is positive at α = 0.05.** The +28.7
+is a point estimate from 437 pairs.
+
+⚠️ **The 95% power the bounds are chosen for is the untruncated property, and
+this gate was truncated** — `--max-pairs 3000`, which `openings-v3` also caps it
+at. Simulating this run's own pentanomial shape, re-centred on φ(+10), under the
+harness's decision rule: **0.802 accept at the cap against 0.953 uncapped**, with
+15.4% of runs ending undecided. **α is untouched** — 0.044 at a true difference
+of zero — which is why a pass still means what it says and why no re-measurement
+is owed. What the cap costs is the reading of a *non*-pass. ⚠️ The phrase is this
+file's recurring formula; the two entries below it were run under the same kind
+of ceiling and say 95% without one.
 
 **An earlier attempt was reaped at 49 pairs**, undecided at +0.457, when the
 process was launched outside the session's own supervision and the container
 reclaimed it while the session was idle. It is not a separate result: all 98 of
 its games appear in the run above with the same opening, colour, result, end
-reason and ply count, none mismatching, so they are a prefix of these 437.
+reason, ply count **and move list**, none mismatching, so nothing is recorded
+twice. ⚠️ **They are not a prefix**, which is the word an earlier draft of this
+entry used: the reaped run finished pairs 0–47 and 49, and pair 48 was still in
+flight when the container took it. Under `--concurrency` the pairs are a race,
+so an interrupted run is a *subset* of the schedule and only happens to look
+like an initial segment.
 
 ### Item 5 — late move reductions for quiet moves — **pass**
 
