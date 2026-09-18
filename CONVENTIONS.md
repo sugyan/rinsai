@@ -133,8 +133,8 @@ paragraph, what is being written is the argument.
   past a window edge.** ⚠️ **An `Exact` score strictly inside the window may
   not**, even though the bound would justify it: the node's line has been
   cleared and not refilled, so a parent that raises alpha on it publishes one
-  move followed by nothing. The FAQ carries the measurement that could not
-  demonstrate this end to end and why the restriction is kept regardless.
+  move followed by nothing. `a_published_line_is_as_long_as_the_depth_it_claims`
+  is what catches it; the FAQ carries the measurement and what it cost to find.
 - **`USI_Hash` is queued through the search FIFO, never acknowledged.** The
   worker drains one queue, so waiting for a resize would hang the protocol
   thread behind whatever search is in front of it — an `isready` during

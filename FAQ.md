@@ -147,14 +147,14 @@ exists to freeze, in the same commit that froze them.
 Because the node's line has been cleared and not refilled, so a parent that
 raises alpha on it publishes one move followed by nothing.
 
-⚠️ **That was predicted to truncate a published line, and measured, it does
-not.** Letting the `Bound::Exact` arm cut unconditionally leaves every published
-line **byte-identical** over three fixtures at depths one to eight, moving only
-the node count and by at most 1.2%. The restriction is kept anyway: the path is
-reachable, the argument is about soundness rather than performance, and 1% is
-what it costs. An end-to-end test of a rule about an internal seam is a test of
-whether that seam is on today's hot path, which is a different and less stable
-question — so a unit test on the rule itself is what covers it.
+⚠️ **It truncates one, and the claim that it does not was a claim about the
+fixtures that were tried.** Letting the `Bound::Exact` arm cut unconditionally
+takes the two lone kings at depth eight from eight published moves to seven —
+on the engine with the scout and on the one before it alike, 1807 nodes against
+1802. The restriction is therefore load-bearing rather than merely defensible,
+and it always was; what was missing was a fixture that reached the path.
+`a_published_line_is_as_long_as_the_depth_it_claims` is that fixture, so the
+rule is checked by a test rather than argued for here.
 
 ### Why may an `Entry` not store a `Move`?
 
@@ -176,6 +176,17 @@ for a win. **`pv[0]` can only ever be assembled from exact children.**
 fails *low* does reach `update_pv` at its parent — it hands the parent a score at
 or above β — but doing so cuts the parent, so that parent is itself fail-high and
 its line never lands on a published one. The truncated lines exist; none surface.
+
+⚠️ **A scouted move is the second such step, and the one the search relies on
+by design.** A scout leaves no line behind it, so a parent that raised alpha on
+one would publish the move and then nothing — which is why a scout landing
+inside the node's own window is searched again on that window before its score
+is believed. What keeps the induction is the shape of the window rather than
+whose it is: a node reaches a published line only by returning a score
+**strictly inside** the window it was searched on, and a one-point window has no
+strict inside. ⚠️ **"Its parent's own window" would not carry it** — a node
+already searching on a scout hands its own first move that same window verbatim,
+so the two are not disjoint.
 
 ### Why can't `negamax_root` be given a narrow window?
 
@@ -295,8 +306,10 @@ long — but a future change that moved it onto the `go` path would look free.
 It is the named-caller rule's exception among the crates that do not publish: a
 type that exists to freeze a convention. A wrong negamax sign, centipawn scale, mate band or `MAX_PLY` is a
 class of bug SPRT reads as "that patch was bad". Of the six surfaces it put on
-probation, five gained a named caller and stayed; `Score::NONE`'s never turned
-up and it went.
+probation, three gained a named caller and stayed; `Score::NONE`'s never turned
+up and it went, and `AddAssign`/`SubAssign` went with it once the caller they
+were credited with — the table's mate-score-by-ply adjustment — turned out to
+use `Add` and `Sub`.
 
 ⚠️ **A named caller that does not turn up is a result too.** This file
 predicted per-ply state would gain a static evaluation; quiescence computes its

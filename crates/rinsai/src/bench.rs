@@ -37,10 +37,10 @@ const BENCH_HASH_MB: usize = 16;
 /// The counts are at `BENCH_HASH_MB` and at no other table size.
 const EXPECTED: &[u64] = &[
     2_769,   // startpos
-    5_474,   // startpos moves 7g7f 3c3d
-    3_332,   // startpos moves 2g2f 8c8d 2f2e 8d8e
-    7_211,   // startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c
-    213_031, // matsuri, the drop-heavy middlegame
+    5_336,   // startpos moves 7g7f 3c3d
+    3_297,   // startpos moves 2g2f 8c8d 2f2e 8d8e
+    7_412,   // startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c
+    212_344, // matsuri, the drop-heavy middlegame
     166,     // two lone kings
     99,      // 頭金
 ];
