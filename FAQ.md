@@ -77,24 +77,20 @@ effect reintroduced two plies down.
 
 ### Why is `QS_MAX_CHECK_PLIES` 2?
 
-Because E0 measured it as the cheapest cap that is also correct — and ⚠️ **that
-measurement no longer holds.** Re-derived at HEAD on the drop-heavy fixture at
-depth 4, the cost is now *monotone* in the cap and one checked ply is cheaper
-than two, where at E0 it was three times dearer. The ordering inverted when the
-interior nodes and quiescence gained move ordering.
+Because E0 measured it as the cheapest cap that is also correct. ⚠️ **Which cap
+is cheapest is not a property of the cap**: every ordering, pruning and
+extension patch moves it, so the cost is no argument for the value.
 
 What survives is only this: **zero is wrong rather than cheap.** It evaluates
 while in check and misses a mate one ply away, and no cost makes that a
-trade. Every cap above it resolves checks; which one is best is now an open
-question, and one the numbers currently answer as "fewer than two".
+trade. Every cap above it resolves checks; which one is best is an open
+question.
 
 E1's futility item owns settling it, with an SPRT rather than a node count.
 
 ⚠️ **Re-derive before quoting any ordering from this answer.** The counts are
 not written here because every ordering and pruning patch moves them — change
-the constant, run `bench`, read the drop-heavy position — and the previous
-version of this answer was falsified by a patch that landed two commits after
-it was written.
+the constant, run `bench`, read the drop-heavy position.
 
 ### Why did TT move ordering land with the table rather than at E1?
 

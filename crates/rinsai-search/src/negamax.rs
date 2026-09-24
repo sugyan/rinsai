@@ -95,10 +95,9 @@ pub(crate) const MAX_DEPTH: Depth = MAX_PLY as Depth - 1;
 /// plies down. A check-evasion chain has no such argument: an evasion may give
 /// check back, need not be a capture, and its move list is *every* legal move
 /// including drops. Left uncounted those chains dominate the whole search.
-/// ⚠️ **Two was E0's cheapest-and-correct, and re-measuring says it is not any
-/// more** — once the interior nodes and quiescence gained ordering, the cost
-/// went monotone in the cap and one checked ply became cheaper than two.
-/// E1's futility item owns re-deciding it.
+/// ⚠️ **Two was E0's cheapest-and-correct, and which cap is cheapest moves
+/// with every ordering, pruning and extension patch**, so the cost is no
+/// argument for the value. E1's futility item owns re-deciding it.
 ///
 /// ⚠️ Evaluating a position that is still in check is a known lie, bounded by
 /// how many times a line may be checked rather than by how long it is.
@@ -377,9 +376,8 @@ pub struct NegamaxSearcher<C = RealClock> {
     /// [`repetition::verdict`] reads.
     ///
     /// ⚠️ **Extended at interior nodes only, and [`Self::qsearch`] is a hole in
-    /// it on purpose.** Quiescence is the overwhelming majority of all nodes,
-    /// so keeping the push and the scan out of it is most of what the feature
-    /// costs — quiescence is 91–99% of all nodes. Two things
+    /// it on purpose.** Quiescence is most of the tree, so keeping the push
+    /// and the scan out of it is most of what the feature costs. Two things
     /// make the hole narrow: the position a quiescence subtree *starts* from is
     /// one its interior parent already pushed, and a quiescence line cannot
     /// come back to that starting position — every ply but at most
