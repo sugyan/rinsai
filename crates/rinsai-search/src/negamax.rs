@@ -1854,8 +1854,7 @@ mod tests {
     /// though it reads as the more direct mutation. A check is reachable one
     /// ply into this fixture, and a quiescence node in check takes the evasion
     /// branch — which generates every legal move and recurses whatever the
-    /// capture filter does. So the count stays above `1 + N` and only the
-    /// frozen `bench` counts move.
+    /// capture filter does. So the count stays above `1 + N`.
     #[test]
     fn quiescence_resolves_captures_the_horizon_would_have_hidden() {
         let args = "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
@@ -1877,19 +1876,32 @@ mod tests {
     /// at the same depths. ⚠️ An upper bound and nothing more: a search that
     /// broke some new way and reported ±90 passes.
     ///
-    /// Sabotage: evaluate in `child` instead of dispatching to `qsearch`.
+    /// ⚠️ **The initial position stopped showing the fingerprint once checks
+    /// were extended**, with or without quiescence, so on its own it cannot
+    /// fail. The opened bishop diagonals are the row that can: a root move
+    /// there hands the opponent a recapture, which is asserted, and the root
+    /// extends nothing, so depth 1 dispatches every root move straight to the
+    /// horizon.
+    ///
+    /// Sabotage: evaluate in `child` instead of dispatching to `qsearch` and
+    /// the opened diagonals report `cp 2100` at depth 1, while the initial
+    /// position reports 0 at every depth.
     #[test]
     fn the_horizon_effect_fingerprint_is_gone() {
         // 215 = a pawn on the board plus a pawn in hand, the two values the
         // fingerprint was made of.
         const FINGERPRINT: i64 = 215;
-        for d in 1..=6 {
-            let (_, lines) = run("startpos", depth(d));
-            let last = lines.last().expect("an iteration finished");
-            assert!(
-                field(last, "cp").abs() < FINGERPRINT,
-                "depth {d} still reports the horizon effect: {last}"
-            );
+        const OPENED_DIAGONALS: &str = "startpos moves 7g7f 3c3d";
+        assert!(a_capture_is_reachable_in_one_ply(OPENED_DIAGONALS));
+        for args in ["startpos", OPENED_DIAGONALS] {
+            for d in 1..=6 {
+                let (_, lines) = run(args, depth(d));
+                let last = lines.last().expect("an iteration finished");
+                assert!(
+                    field(last, "cp").abs() < FINGERPRINT,
+                    "depth {d} still reports the horizon effect: {last}"
+                );
+            }
         }
     }
 
@@ -2190,9 +2202,7 @@ mod tests {
     /// per frame on the way out is the guarantee, not exactness.
     ///
     /// Sabotage: drop the node-limit arm from `Budget::expired` and this times
-    /// out rather than failing on the bound. Replacing
-    /// [`Self::qsearch`]'s poll condition with `false` fails it on the bound
-    /// instead — which is what makes quiescence's poll load-bearing.
+    /// out rather than failing on the bound.
     #[test]
     fn a_deep_search_still_answers_a_node_limit() {
         let limits = Limits {
