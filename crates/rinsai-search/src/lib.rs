@@ -25,6 +25,7 @@ pub use shunsai;
 mod clock;
 mod declaration;
 mod eval;
+mod extension;
 mod game;
 mod info;
 mod moves;

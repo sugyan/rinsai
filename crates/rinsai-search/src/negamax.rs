@@ -28,6 +28,7 @@ use shunsai::Position;
 use crate::clock::{Clock, RealClock};
 use crate::declaration;
 use crate::eval;
+use crate::extension;
 use crate::game::HistoryEntry;
 use crate::info::SearchInfo;
 use crate::moves::{MAX_LEGAL_MOVES, MoveBuf};
@@ -675,7 +676,7 @@ impl<C: Clock> NegamaxSearcher<C> {
         self.buf.order_killers(quiets_from, self.stack[ply].killers);
 
         // Whether *this* node's side to move is in check, for the reduction
-        // below. ⚠️ **Read off the path rather than from the board**: `child`
+        // and the extension below. ⚠️ **Read off the path rather than from the board**: `child`
         // is the only way into this function, and no move is dispatched through
         // it without its own entry having been pushed first, so the answer is
         // already computed and paid for. `board.in_check()` would buy it twice.
@@ -705,8 +706,9 @@ impl<C: Clock> NegamaxSearcher<C> {
             let quiet = i >= quiets_from && !mv.is_promoting();
             let undo = board.do_move(mv);
             // The entry about to be pushed is the *child's*, so its `in_check`
-            // is whether `mv` gave check — the second thing the reduction needs,
-            // and the second one the push has already paid for.
+            // is whether `mv` gave check — the other thing the reduction and
+            // the extension need, and the other one the push has already paid
+            // for.
             let entry = HistoryEntry::of(board);
             let gives_check = entry.in_check;
             self.path.push(entry);
@@ -719,8 +721,10 @@ impl<C: Clock> NegamaxSearcher<C> {
             } else {
                 window
             };
+            // What every search of `mv` below runs at, the reduced one aside.
+            let full = depth - 1 + extension::extension(gives_check, in_check);
             let taken = reduction::reduction(depth, i - base, quiet, gives_check, in_check);
-            let mut score = self.child(board, probe, depth - 1 - taken, ply + 1, budget);
+            let mut score = self.child(board, probe, full - taken, ply + 1, budget);
             // ⚠️ **A reduced score may raise alpha only after a full-depth
             // search agrees with it.** The saving is in the moves that stay
             // below alpha; believing one that does not is how a reduction
@@ -738,7 +742,7 @@ impl<C: Clock> NegamaxSearcher<C> {
             // reduction carries, in the same family as the repetition verdict
             // reaching the table through a parent.
             if taken > 0 && !self.stopped && score > window.alpha {
-                score = self.child(board, probe, depth - 1, ply + 1, budget);
+                score = self.child(board, probe, full, ply + 1, budget);
             }
             // ⚠️ **A scout answers where a score is, not what it is**, so one
             // that landed inside this node's window is searched again on that
@@ -748,7 +752,7 @@ impl<C: Clock> NegamaxSearcher<C> {
             // this condition empty, which is what keeps a scout from
             // re-searching itself.
             if scouted && !self.stopped && score > window.alpha && score < window.beta {
-                score = self.child(board, window, depth - 1, ply + 1, budget);
+                score = self.child(board, window, full, ply + 1, budget);
             }
             // Both of these come before every `break` below, without exception.
             self.path.pop();
