@@ -676,10 +676,11 @@ impl<C: Clock> NegamaxSearcher<C> {
         self.buf.order_killers(quiets_from, self.stack[ply].killers);
 
         // Whether *this* node's side to move is in check, for the reduction
-        // and the extension below. ⚠️ **Read off the path rather than from the board**: `child`
-        // is the only way into this function, and no move is dispatched through
-        // it without its own entry having been pushed first, so the answer is
-        // already computed and paid for. `board.in_check()` would buy it twice.
+        // and the extension below. ⚠️ **Read off the path rather than from the
+        // board**: `child` is the only way into this function, and no move is
+        // dispatched through it without its own entry having been pushed first,
+        // so the answer is already computed and paid for. `board.in_check()`
+        // would buy it twice.
         //
         // ⚠️ **The invariant is "the top of the path is this node", not "every
         // call site pushes".** The two searches below dispatch again on the
@@ -1116,7 +1117,6 @@ impl<C: Clock> Searcher for NegamaxSearcher<C> {
                 self.root_moves.swap(0, index);
             }
 
-            // A proven mate does not get better with depth.
             if score.is_mate() || self.stopped || budget.expired(self.nodes, &self.clock) {
                 break;
             }
@@ -1384,14 +1384,9 @@ mod tests {
         );
     }
 
-    /// A mate at every distance from one move to five, each found at exactly
-    /// the depth it needs and each proved by replay.
+    /// A mate at every distance from one move to five, each proved by replay.
     ///
-    /// **The distance is asserted, not merely reported.** The deepening
-    /// loop stops at the first iteration that returns a mate score, so a
-    /// fixture holding a shorter mate than its row claims announces the
-    /// shorter number and fails the equality below. The depth each row is
-    /// searched at is the depth it needs, not what makes the assertion bite.
+    /// **The distance is asserted, not merely reported.**
     ///
     /// Sabotage: score a mated node `Score::mated_in(0)` rather than
     /// `mated_in(ply)` **in [`Self::qsearch`]** — the **first** row fails, on
@@ -1421,6 +1416,36 @@ mod tests {
                 "the attacker, not the defender, is to move at the root"
             );
             assert_mate_in(&args, 2 * moves - 1);
+        }
+    }
+
+    /// A mate given by checks alone is announced by an iteration shallower
+    /// than the line, because every check in it is searched a ply deeper.
+    ///
+    /// **The fixture is what makes it able to fail**, and the replay asserts
+    /// the property it was chosen for: every attacking move of the ladder
+    /// checks, so the extension applies at every ply the attacker plays.
+    ///
+    /// Sabotage: make `extension` return 0 and depth 5 reports `cp 2375`
+    /// instead of the mate.
+    #[test]
+    fn a_mate_by_checks_alone_is_found_short_of_its_length() {
+        const PLIES: i64 = 9;
+        let args = format!("{MATE_LADDER} 4p 1");
+        let (_, lines) = run(&args, depth(5));
+        let last = lines.last().expect("the search reported something");
+        assert!(last.contains(" score mate "), "no mate at depth 5: {last}");
+        assert_eq!(field(last, "mate"), PLIES, "{last}");
+        assert_mate_is_real(&args, last, PLIES);
+
+        let mut replay = game(&args);
+        for (i, token) in pv_of(last).into_iter().enumerate() {
+            replay
+                .push_usi_move(token)
+                .unwrap_or_else(|e| panic!("the pv is not playable: {e}"));
+            if i % 2 == 0 {
+                assert!(replay.in_check(), "move {i} does not check: {last}");
+            }
         }
     }
 
@@ -1904,8 +1929,8 @@ mod tests {
     }
 
     /// `seldepth` is the deepest ply an iteration reached. Where captures exist
-    /// it must exceed the nominal depth, and where none do it must equal it —
-    /// which is what makes it data rather than a copy of `depth`.
+    /// it must exceed the nominal depth, and on two lone kings it must equal
+    /// it — which is what makes it data rather than a copy of `depth`.
     ///
     /// Sabotage: feed `seldepth` from `depth`, or never update it in `qsearch`,
     /// and the tactical half fails.
@@ -2404,11 +2429,11 @@ mod tests {
     /// smaller. This is a position measured where it still costs, on all three
     /// of the mutations below.
     ///
-    /// Sabotage, from a baseline of 172 303 nodes: deleting the whole `hit.mv`
-    /// block gives 209 687, and dropping only the `buf.swap` while leaving
-    /// `order_from` at `base + 1` gives 374 860. Both go red on the ceiling
+    /// Sabotage, from a baseline of 207 613 nodes: deleting the whole `hit.mv`
+    /// block gives 424 138, and dropping only the `buf.swap` while leaving
+    /// `order_from` at `base + 1` gives 633 818. Both go red on the ceiling
     /// below. Demoting the stored move rather than removing it — ordering
-    /// captures from `base` — gives 210 738 and goes red too.
+    /// captures from `base` — gives 423 892 and goes red too.
     ///
     /// ⚠️ **A ceiling only catches a mutation that makes the tree bigger**, and
     /// this fixture's baseline moves with every search feature that lands, so
@@ -2423,7 +2448,7 @@ mod tests {
         let (_, lines) = run("startpos moves 7g7f 3c3d", depth(7));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 190_000,
+            field(last, "nodes") < 300_000,
             "the transposition move is not being tried first: {last}"
         );
     }
@@ -2444,10 +2469,10 @@ mod tests {
     ///
     /// Sabotage, either way of removing the feature — delete the
     /// `order_killers` call and leave the table filling up unread, or drop
-    /// `remember_cutoff`'s killer half: both take this fixture from 212 442
-    /// nodes to 340 357, and both go red on the ceiling below. ⚠️ **Ordering
-    /// by history after the killers rather than before gives 342 203** and
-    /// goes red here too. Removing history instead stays green at 217 927,
+    /// `remember_cutoff`'s killer half: both take this fixture from 446 250
+    /// nodes to 590 027, and both go red on the ceiling below. ⚠️ **Ordering
+    /// by history after the killers rather than before gives 593 482** and
+    /// goes red here too. Removing history instead stays green at 446 244,
     /// from either site — the `order_history` call, or `remember_cutoff`'s
     /// `history.record`. ⚠️ **The two give the identical count**, so this
     /// tripwire is blind to history being recorded as well as to its being
@@ -2457,7 +2482,7 @@ mod tests {
         let (_, lines) = run(DROP_HEAVY_FIXTURE, depth(4));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 260_000,
+            field(last, "nodes") < 520_000,
             "the killers are not being tried early: {last}"
         );
     }
@@ -2469,26 +2494,26 @@ mod tests {
     /// Late quiet moves are searched a ply shallower, as a node-count tripwire.
     ///
     /// **The depth is load-bearing.** At the four plies the killer tripwire
-    /// above uses, removing the reduction costs 248 084 nodes against 212 442
-    /// — a 17% gap that leaves no room between the two ceilings. At five it is
-    /// 3 629 608 against 789 707, so the ceiling below sits with room on both
+    /// above uses, removing the reduction costs 476 413 nodes against 446 250
+    /// — a 7% gap that leaves no room between the two ceilings. At five it is
+    /// 9 636 919 against 5 082 066, so the ceiling below sits with room on both
     /// sides and the two tests stop measuring one search.
     ///
-    /// Sabotage: make `reduction` return 0 and this fixture goes from 789 707
-    /// nodes to 3 629 608, which is red on the ceiling below.
+    /// Sabotage: make `reduction` return 0 and this fixture goes from
+    /// 5 082 066 nodes to 9 636 919, which is red on the ceiling below.
     ///
     /// ⚠️ **A ceiling can only catch a reduction that stopped happening.**
     /// Every other way of breaking this feature makes the tree *smaller* —
-    /// deleting the verification search gives 788 142, dropping the promotion
-    /// exemption 646 575, dropping the check exemption 660 563 — and none of
-    /// them is red here. The frozen `bench` counts catch all three; the test
-    /// below catches the first.
+    /// deleting the verification search gives 5 048 198, dropping the
+    /// promotion exemption 4 746 454, dropping the check exemption 3 715 296
+    /// — and none of them is red here. The frozen `bench` counts catch all
+    /// three; the test below catches the first.
     #[test]
     fn late_quiet_moves_are_searched_a_ply_shallower() {
         let (_, lines) = run(DROP_HEAVY_FIXTURE, depth(5));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 1_500_000,
+            field(last, "nodes") < 7_000_000,
             "late quiet moves are not being reduced: {last}"
         );
     }
@@ -2507,12 +2532,12 @@ mod tests {
     /// them.
     ///
     /// ⚠️ **The reduction is not what finds the win here** — an engine with no
-    /// reduction at all reports the same score, from 244 361 nodes against
-    /// 76 976. What the reduction does is find it three times cheaper, and
+    /// reduction at all reports the same score, from 251 104 nodes against
+    /// 78 077. What the reduction does is find it three times cheaper, and
     /// what the verification search does is keep it found.
     ///
     /// Sabotage: drop the verification search and this reports `cp 15` from
-    /// 73 475 nodes.
+    /// 74 434 nodes.
     #[test]
     fn a_reduced_move_is_believed_only_after_a_full_depth_search() {
         let (_, lines) = run(RESEARCH_FIXTURE, depth(6));
@@ -2540,10 +2565,10 @@ mod tests {
     /// lines of `openings-v3` at depth 6. **One position disagreed** — every
     /// other line matched on move and score — and this is it.
     ///
-    /// Sabotage: give the third search `depth - 1 - taken` and this reports
+    /// Sabotage: give the third search `full - taken` and this reports
     /// `cp 50` against `cp 130`. ⚠️ **Nothing else in this crate went red on
     /// that before this test existed**, and the frozen `bench` counts move by
-    /// 0.22%, which is inside what an ordinary rebaseline absorbs.
+    /// 1.5%, which is inside what an ordinary rebaseline absorbs.
     ///
     /// ⚠️ **Every move of the line is load-bearing, including the last two.**
     /// Cut `6a7b 3i3h` off the end and the fixture reports `cp 30` under both

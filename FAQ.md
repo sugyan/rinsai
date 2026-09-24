@@ -206,9 +206,8 @@ instrument for strength. It is an E1 item, where an SPRT can decide it.
 
 ⚠️ **The consequence shapes every test in the area**: twelve plies is more than
 an E0 search sees, so the fourth occurrence is reached almost entirely out of the
-*game's* history rather than from inside the tree. A fixture that exercises this
-has to carry a real move list — a bare `sfen` root cannot test repetition at all,
-and `bench` cannot exercise it either.
+*game's* history rather than from inside the tree, and `bench` cannot exercise
+it at all.
 
 ### Why does a 連続王手 win get a score band of its own rather than a mate score?
 
