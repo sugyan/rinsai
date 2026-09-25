@@ -78,12 +78,11 @@ const POLL_INTERVAL_NODES: u64 = 1024;
 
 /// The deepest iteration any search will start.
 ///
-/// Half of [`MAX_PLY`], less one, because an interior line can be twice as
-/// long as its iteration's depth — every other ply an extended check — and the
-/// longest still has to end with a ply to sit at. Quiescence then runs *past*
-/// it, and what stops that is the `ply >= MAX_PLY` guard both searches share —
-/// the spare plies here are not what bounds it.
-pub(crate) const MAX_DEPTH: Depth = MAX_PLY as Depth / 2 - 1;
+/// Half of [`MAX_PLY`], because an interior line can be twice as long as its
+/// iteration's depth, and [`NegamaxSearcher::negamax`] asserts as much.
+/// Quiescence then runs *past* that line, and what stops it is the
+/// `ply >= MAX_PLY` guard both searches share.
+pub(crate) const MAX_DEPTH: Depth = MAX_PLY as Depth / 2;
 
 /// How many **checked** plies one quiescence line may spend before it gives up
 /// and evaluates where it stands.
@@ -96,8 +95,6 @@ pub(crate) const MAX_DEPTH: Depth = MAX_PLY as Depth / 2 - 1;
 /// plies down. A check-evasion chain has no such argument: an evasion may give
 /// check back, need not be a capture, and its move list is *every* legal move
 /// including drops. Left uncounted those chains dominate the whole search.
-/// Two was E0's cheapest-and-correct; E1's futility item owns re-deciding it.
-///
 /// ⚠️ Evaluating a position that is still in check is a known lie, bounded by
 /// how many times a line may be checked rather than by how long it is.
 const QS_MAX_CHECK_PLIES: Depth = 2;
@@ -622,11 +619,9 @@ impl<C: Clock> NegamaxSearcher<C> {
         // `child` dispatches everything else to `qsearch`, so arriving here at
         // all means there is a ply to sit at and a depth left to spend.
         debug_assert!(depth > 0 && ply < MAX_PLY);
-        // ⚠️ **The bound the extension's in-check exemption buys**: a line
-        // spends a ply of depth at least every two plies, and the root's own
-        // move always spends one, so an interior line is never longer than
-        // twice its iteration's depth. Nothing else checks the exemption where
-        // it is applied.
+        // ⚠️ **`crate::extension`'s bound, with the root's own move spending
+        // a ply.** Nothing else checks the in-check exemption where it is
+        // applied.
         debug_assert!(
             2 * depth + ply as Depth <= 2 * self.iteration,
             "an interior line outran twice its iteration's depth"
@@ -1128,10 +1123,11 @@ impl<C: Clock> Searcher for NegamaxSearcher<C> {
                 self.root_moves.swap(0, index);
             }
 
-            // ⚠️ **A mate ends the deepening only once the iteration's own
-            // depth covers it.** Checks are searched deeper than the iteration
-            // that reaches them, so the first mate found can be longer than one
-            // a quiet move reaches an iteration later.
+            // ⚠️ **A mate ends the deepening only once its distance is within
+            // the iteration's depth.** An iteration sees further than its depth
+            // along checks and less far along reduced moves, so a mate it
+            // announces can be longer than one a later iteration finds. It is
+            // still no proof of the shortest: a reduced move can hide one.
             let settled = score.mate_plies().is_some_and(|plies| plies.abs() <= depth);
             if settled || self.stopped || budget.expired(self.nodes, &self.clock) {
                 break;
@@ -1428,8 +1424,8 @@ mod tests {
     ///
     /// **Two properties make it able to fail, and both are asserted.** Every
     /// attacking move of the ladder checks, which the replay checks. And
-    /// quiescence must not reach the mate from depth 5 on its own: it follows
-    /// at most `2 * QS_MAX_CHECK_PLIES - 1` plies of this ladder past the
+    /// quiescence must not reach the mate from depth 5 on its own: it sees this
+    /// ladder's mate at most `2 * QS_MAX_CHECK_PLIES - 1` plies past the
     /// horizon, measured at caps of two and three.
     ///
     /// Sabotage: make `extension` return 0 and depth 5 reports `cp 2375`
@@ -1441,8 +1437,8 @@ mod tests {
     /// [`assert_mate_is_real`]'s length check is what says so: a scout answers
     /// which side of alpha a score is on and leaves no line behind it.
     /// [`a_published_line_is_as_long_as_the_depth_it_claims`] and
-    /// [`the_shortest_mate_is_announced_not_the_first_found`] fire on the same
-    /// mutation.
+    /// [`a_mate_ends_the_deepening_only_once_its_depth_covers_it`] fire on the
+    /// same mutation.
     #[test]
     fn a_mate_by_checks_alone_is_found_short_of_its_length() {
         const PLIES: i64 = 9;
@@ -1469,35 +1465,35 @@ mod tests {
         }
     }
 
-    /// The mate announced is the shortest, not the first one found.
+    /// A mate ends the deepening only once an iteration's depth covers it, for
+    /// the side mating and for the side being mated alike.
     ///
-    /// **The fixture is what makes it able to fail**: its shortest mate has an
-    /// attacking move that does not check, which the replay asserts, while a
-    /// longer mate by checks alone is reached an iteration sooner.
+    /// **The fixtures are what make it able to fail, and the property is
+    /// asserted**: each has an iteration announce a mate longer than its own
+    /// depth. For the side mating, a later iteration then finds a shorter mate
+    /// — late-move reduction hides it at depth 5 — and that is the one
+    /// announced.
     ///
-    /// Sabotage: break the deepening loop on `score.is_mate()` and this
-    /// announces `mate 7` at depth 5.
+    /// Sabotage: break the deepening loop on `score.is_mate()` and the first
+    /// row announces `mate 7` at depth 5; drop the `abs()` and the second stops
+    /// at depth 3 on `mate -8`.
     #[test]
-    fn the_shortest_mate_is_announced_not_the_first_found() {
-        const PLIES: i64 = 5;
-        let args = "sfen k8/3S4l/9/9/9/9/9/9/K8 b BB 1";
-        let (_, lines) = run(args, depth(8));
-        let last = lines.last().expect("the search reported something");
-        assert_eq!(field(last, "mate"), PLIES, "{last}");
-        assert_mate_is_real(args, last, PLIES);
-
-        let mut replay = game(args);
-        let mut quiet = false;
-        for (i, token) in pv_of(last).into_iter().enumerate() {
-            replay
-                .push_usi_move(token)
-                .unwrap_or_else(|e| panic!("the pv is not playable: {e}"));
-            quiet |= i % 2 == 0 && !replay.in_check();
+    fn a_mate_ends_the_deepening_only_once_its_depth_covers_it() {
+        const MATING: &str = "sfen k8/3S4l/9/9/9/9/9/9/K8 b BB 1";
+        for (args, plies) in [(MATING, 5), ("sfen 8k/9/6N2/6NN1/9/8L/9/9/K8 w P4p 2", -8)] {
+            let (_, lines) = run(args, depth(8));
+            assert!(
+                lines.iter().any(|line| line.contains(" score mate ")
+                    && field(line, "mate").abs() > field(line, "depth")),
+                "no iteration announced a mate beyond its depth: {lines:?}"
+            );
+            let last = lines.last().expect("the search reported something");
+            assert_eq!(field(last, "mate"), plies, "{last}");
+            assert!(field(last, "depth") >= plies.abs(), "{last}");
+            if plies > 0 {
+                assert_mate_is_real(args, last, plies);
+            }
         }
-        assert!(
-            quiet,
-            "every attacking move checks, so nothing is isolated: {last}"
-        );
     }
 
     /// A mate delivered by a drop at the last interior ply is scored, and its
@@ -1505,9 +1501,10 @@ mod tests {
     /// position.
     ///
     /// **The fixture is what makes it able to fail**: the mating move is a
-    /// drop, which is asserted, so it is a check played by an interior node
-    /// with one ply left, and the extension hands its child to
-    /// [`Self::negamax`] rather than to quiescence.
+    /// drop by a side not in check, both asserted, so an interior node with
+    /// one ply left played it — quiescence drops only to evade — and the
+    /// extension hands its child to [`Self::negamax`] rather than to
+    /// quiescence.
     ///
     /// Sabotage, both red here: score [`Self::negamax`]'s mated node
     /// `mated_in(0)` and this announces `mate 0`; drop its
@@ -1520,41 +1517,53 @@ mod tests {
         let last = lines.last().expect("the search reported something");
         assert_eq!(field(last, "mate"), PLIES, "{last}");
         assert_mate_is_real(args, last, PLIES);
+        let pv = pv_of(last);
+        let (mating, before) = pv.split_last().expect("a mate has a move");
         assert!(
-            pv_of(last).last().is_some_and(|mv| mv.contains('*')),
-            "the mating move is not a drop, so the fixture proves nothing: {last}"
+            mating.contains('*'),
+            "the mating move is not a drop: {last}"
         );
+        let mut replay = game(args);
+        for token in before {
+            replay
+                .push_usi_move(token)
+                .unwrap_or_else(|e| panic!("the pv is not playable: {e}"));
+        }
+        assert!(!replay.in_check(), "the mating side was in check: {last}");
     }
 
-    /// A check answered by a check is not extended, so an interior line stays
-    /// within twice its iteration's depth.
+    /// A check answered by a check is not extended.
     ///
     /// ⚠️ **What goes red is the `debug_assert!` in [`Self::negamax`], not an
     /// assertion here**, so a release build of this test catches nothing.
     ///
-    /// **The fixture is what makes it able to fail**: with every kind of piece
-    /// in both hands, a check at the root can be answered by a check, which is
-    /// asserted.
+    /// **The fixture and the depth are what make it able to fail.** The root
+    /// extends nothing, so a line starts a ply inside the bound, and only a
+    /// check answered by a check after that ply is spent crosses it. Three
+    /// checks in a row from the root are such a line, and one is asserted to
+    /// exist here. Under the sabotage below depth 2 stays green and depth 3
+    /// does not.
     ///
     /// Sabotage: pass `false` for the node's own check at the extension's call
     /// site and the assertion fires here, and in no other test in this crate.
     #[test]
     fn a_check_answered_by_a_check_is_not_extended() {
+        /// Whether `n` checks in a row can be played from `board`.
+        fn checks_in_a_row(board: &mut Position, n: usize) -> bool {
+            n == 0
+                || board.legal_moves().into_iter().any(|mv| {
+                    let undo = board.do_move(mv);
+                    let more = board.in_check() && checks_in_a_row(board, n - 1);
+                    board.undo_move(mv, undo);
+                    more
+                })
+        }
+
         let args = "sfen 4k4/9/9/9/9/9/9/9/K8 b RBGSrbgs 1";
-        let mut board = game(args).search_board();
-        let answered = board.legal_moves().into_iter().any(|mv| {
-            let undo = board.do_move(mv);
-            let checks_back = board.in_check()
-                && board.legal_moves().into_iter().any(|reply| {
-                    let undo = board.do_move(reply);
-                    let check = board.in_check();
-                    board.undo_move(reply, undo);
-                    check
-                });
-            board.undo_move(mv, undo);
-            checks_back
-        });
-        assert!(answered, "no check here can be answered by a check");
+        assert!(
+            checks_in_a_row(&mut game(args).search_board(), 3),
+            "no line of three checks starts here"
+        );
 
         let (_, lines) = run(args, depth(3));
         assert!(!lines.is_empty(), "the search reported nothing");
@@ -2630,8 +2639,6 @@ mod tests {
     /// **The fixture and the depth are load-bearing**: they are where removing
     /// the reduction costs far more than breaking any ordering the tripwires
     /// above are for, so this ceiling does not fire on an ordering fault.
-    /// On the drop-heavy fixture the killers' ordering costs more than the
-    /// reduction at four plies, and nearly as much at five.
     ///
     /// Sabotage: make `reduction` return 0 and this goes from 60 712 nodes to
     /// 236 408, which is red on the ceiling below. Every ordering mutation the

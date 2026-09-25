@@ -50,8 +50,8 @@ impl Score {
     /// fourfold repetition and loses. Negated, the same repetition lost.
     ///
     /// It sits in a band of its own between the evaluations and the mates, so
-    /// [`Self::is_mate`] answers `false` and the deepening loop does not break
-    /// on it. Two consequences worth knowing:
+    /// [`Self::mate_plies`] answers `None` and the deepening loop does not
+    /// break on it. Two consequences worth knowing:
     ///
     /// * **`info` spells it `score cp`**, because USI has no vocabulary for
     ///   a win that is not a mate. Reporting it as `score mate` would announce
@@ -200,9 +200,9 @@ mod tests {
     /// the mates. Every rule that reads a score reads one of the boundaries, so
     /// they are asserted as one chain rather than one at a time.
     ///
-    /// Sabotage: raise `REPETITION` into the mate band and `is_mate` starts
-    /// answering `true` for it, which makes the deepening loop break on a
-    /// repetition as though it were a proof of mate.
+    /// Sabotage: raise `REPETITION` into the mate band and this goes red, on the
+    /// boundary that keeps `is_mate` and `mate_plies` from reading a repetition
+    /// as a mate.
     #[test]
     fn the_three_bands_do_not_overlap() {
         let repetition = Score::REPETITION;

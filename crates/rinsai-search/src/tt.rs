@@ -327,6 +327,7 @@ mod tests {
     use shogi_core::{Piece, Square};
 
     use super::*;
+    use crate::negamax::MAX_DEPTH;
     use crate::score::MAX_PLY;
 
     /// A 1 MiB table — what every test here wants, and what the rest of the
@@ -487,8 +488,7 @@ mod tests {
                 );
             }
         }
-        // `MAX_PLY - 1` is the deepest iteration `negamax.rs` will start.
-        assert!(i8::try_from(MAX_PLY as i32 - 1).is_ok());
+        assert!(i8::try_from(MAX_DEPTH).is_ok());
     }
 
     /// A deeper result must not be thrown away for a shallower one arriving

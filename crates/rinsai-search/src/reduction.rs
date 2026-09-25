@@ -103,7 +103,7 @@ mod tests {
     ///
     /// The bounds are the engine's own — a `go` is clamped to `MAX_DEPTH` and
     /// a ply holds at most `MAX_LEGAL_MOVES` moves — so the sweep follows
-    /// them if either moves. ⚠️ **It is currently one case wearing 74 000**:
+    /// them if either moves. ⚠️ **It is currently one case wearing a sweep**:
     /// the answer is flat in `played` and binding only at `depth == MIN_DEPTH`.
     /// It earns the sweep the day the reduction becomes a schedule.
     #[test]
