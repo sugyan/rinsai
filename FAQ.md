@@ -68,9 +68,10 @@ repetition rule already carries, differential test and all.
 ### Why is quiescence capped by *checked* plies rather than by plies?
 
 Because a bound is only sound if it is a bound on the thing that is actually
-unbounded. A capture chain is self-limiting — every capture moves a piece off
-the board and quiescence plays no drops, so occupancy strictly decreases. A
-check-evasion chain has no such argument: an evasion need not be a capture, and
+unbounded. A chain of captures and pawn promotions is self-limiting — every
+capture moves a piece off the board, a promotion cannot be undone while its
+piece stays on it, and quiescence plays no drops. A check-evasion chain has no
+such argument: an evasion need not be a capture, and
 an evasion list is *every* legal move including drops. A total-ply cap tight
 enough to save nodes cuts capture chains in the middle, which is the horizon
 effect reintroduced two plies down.
