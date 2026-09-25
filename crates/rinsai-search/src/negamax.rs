@@ -1406,21 +1406,10 @@ mod tests {
     ///
     /// Sabotage: score a mated node `Score::mated_in(0)` rather than
     /// `mated_in(ply)` **in [`Self::qsearch`]** — the **first** row fails, on
-    /// `mate 0` where 1 was expected, and the loop stops there.
-    ///
-    /// The same mutation in [`Self::negamax`] leaves this test green;
+    /// `mate 0` where 1 was expected, and the loop stops there. The same
+    /// mutation in [`Self::negamax`] reddens this too;
     /// [`a_mate_by_a_drop_at_the_horizon_is_scored_by_an_interior_node`] is
-    /// the one that catches it.
-    ///
-    /// **It is also what catches a scouted move being believed without being
-    /// searched again on the node's own window.** Dropping that search makes
-    /// the row asserting a five-ply mate announce `mate 5` behind a two-move
-    /// line, and [`assert_mate_is_real`]'s length check is what says so: a
-    /// scout answers which side of alpha a score is on and leaves no line
-    /// behind it, so a parent that raises alpha on one publishes the move and
-    /// then nothing. [`a_published_line_is_as_long_as_the_depth_it_claims`]
-    /// fires on the same mutation, from the other end — it reads the length
-    /// this one reads the distance.
+    /// the test that names it.
     #[test]
     fn finds_a_mate_at_every_distance_from_one_to_five() {
         for (moves, hand) in [(1, "-"), (2, "p"), (3, "2p"), (4, "3p"), (5, "4p")] {
@@ -1445,6 +1434,15 @@ mod tests {
     ///
     /// Sabotage: make `extension` return 0 and depth 5 reports `cp 2375`
     /// instead of the mate.
+    ///
+    /// **It is also what catches a scouted move being believed without being
+    /// searched again on the node's own window.** Dropping that search
+    /// announces `mate 9` behind a seven-move line, and
+    /// [`assert_mate_is_real`]'s length check is what says so: a scout answers
+    /// which side of alpha a score is on and leaves no line behind it.
+    /// [`a_published_line_is_as_long_as_the_depth_it_claims`] and
+    /// [`the_shortest_mate_is_announced_not_the_first_found`] fire on the same
+    /// mutation.
     #[test]
     fn a_mate_by_checks_alone_is_found_short_of_its_length() {
         const PLIES: i64 = 9;
@@ -2631,7 +2629,7 @@ mod tests {
     ///
     /// **The fixture and the depth are load-bearing**: they are where removing
     /// the reduction costs far more than breaking any ordering the tripwires
-    /// above are for, so a ceiling here names the reduction and nothing else.
+    /// above are for, so this ceiling does not fire on an ordering fault.
     /// On the drop-heavy fixture the killers' ordering costs more than the
     /// reduction at four plies, and nearly as much at five.
     ///

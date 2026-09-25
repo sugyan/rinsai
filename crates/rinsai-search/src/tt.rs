@@ -422,10 +422,7 @@ mod tests {
     /// from any node, each in its own frame.
     ///
     /// ⚠️ **It goes through [`Table::store`] and [`Table::probe`], not through
-    /// `to_table`/`from_table`.** Testing the two functions directly leaves the
-    /// *call sites* uncovered: deleting `from_table` from `probe` then passes
-    /// the whole suite, `bench` included, and the engine announces mate
-    /// distances it cannot play.
+    /// `to_table`/`from_table`**, so the *call sites* are what it covers.
     ///
     /// Sabotage: drop the `to_table` call from `store`, or the `from_table`
     /// call from `probe`.

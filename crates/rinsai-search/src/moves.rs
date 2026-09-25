@@ -884,7 +884,7 @@ mod tests {
     /// beside it, which still lands at the front.
     ///
     /// Sabotage: advance the front whether or not the killer was found. This
-    /// goes red, and so do seven tests in `negamax`.
+    /// goes red, and so do tests across `negamax`.
     #[test]
     fn a_killer_this_node_cannot_play_moves_nothing() {
         let (board, killers, _) = killer_fixture();
