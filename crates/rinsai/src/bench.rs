@@ -40,7 +40,7 @@ const EXPECTED: &[u64] = &[
     5_729,   // startpos moves 7g7f 3c3d
     3_333,   // startpos moves 2g2f 8c8d 2f2e 8d8e
     7_448,   // startpos moves 7g7f 3c3d 2g2f 4c4d 2f2e 2b3c
-    440_116, // matsuri, the drop-heavy middlegame
+    450_003, // matsuri, the drop-heavy middlegame
     166,     // two lone kings
     99,      // 頭金
 ];

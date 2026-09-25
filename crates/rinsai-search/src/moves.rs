@@ -3,7 +3,7 @@
 use core::mem::size_of;
 use core::ops::ControlFlow;
 
-use shogi_core::Move;
+use shogi_core::{Move, PieceKind};
 use shunsai::{MoveSet, Position};
 
 use crate::ordering::{self, HistoryTable};
@@ -87,25 +87,32 @@ impl MoveBuf {
         base
     }
 
-    /// Appends every legal move whose destination holds an enemy piece, and
-    /// returns the index the caller must [`truncate`](Self::truncate) back to.
+    /// Appends every legal move that takes a piece, and every pawn promotion
+    /// that does not, and returns the index the caller must
+    /// [`truncate`](Self::truncate) back to.
     ///
-    /// Quiescence's generator. shunsai has no captures-only generation, so the
-    /// full legal walk still runs; what does **not** run is materialisation,
-    /// since a [`MoveSet`] hands over its destinations as
-    /// [`Bitboard`](shunsai::Bitboard)s.
+    /// Quiescence's generator. A capture comes both ways where promotion is
+    /// optional; a pawn promotion that takes nothing comes **promoting only**,
+    /// because declining it moves no material. ⚠️ **Pawns only**, although
+    /// every promotion raises a material evaluation: an unpromoted bishop or
+    /// rook inside the zone can promote on every move it makes, and admitting
+    /// those multiplies quiescence wherever one stands.
+    ///
+    /// shunsai has no captures-only generation, so the full legal walk still
+    /// runs; what does **not** run is materialisation, since a [`MoveSet`]
+    /// hands over its destinations as [`Bitboard`](shunsai::Bitboard)s.
     ///
     /// The result is a subset of [`Self::generate`]'s, so one ply still cannot
     /// exceed [`MAX_LEGAL_MOVES`].
-    pub(crate) fn generate_captures(&mut self, position: &Position) -> usize {
+    pub(crate) fn generate_captures_and_pawn_promotions(&mut self, position: &Position) -> usize {
         let base = self.moves.len();
         // ⚠️ Read before any move is made: after `do_move` the side to move
         // has flipped, so `them` becomes *our* pieces including the one just
         // moved, and every move looks like a capture — quiescence would never
         // terminate. Intersecting with our own board fails the other way: a
-        // legal move never lands on our own piece, so nothing is generated and
-        // quiescence stands pat everywhere, silently restoring the horizon
-        // effect. Both are silent; neither is a crash.
+        // legal move never lands on our own piece, so every capture but a
+        // pawn's promoting one is lost and the horizon effect silently comes
+        // back. Both are silent; neither is a crash.
         let them = position.player_bb(position.side_to_move().flip());
         let moves = &mut self.moves;
         let _ = position.generate_moves(|set| {
@@ -115,21 +122,28 @@ impl MoveBuf {
             // compile error naming the place to decide.
             match set {
                 MoveSet::Normal {
+                    piece,
                     from,
                     promotions,
                     non_promotions,
-                    ..
                 } => {
-                    // The two boards overlap where promotion is optional, so a
-                    // capture that may promote is emitted both ways. Where it
-                    // is compulsory the square is in `promotions` alone.
-                    for to in promotions & them {
+                    // Where promotion is compulsory the square is in
+                    // `promotions` alone, so a pawn stepping onto the last
+                    // rank is found here too.
+                    let promoting = if piece.piece_kind() == PieceKind::Pawn {
+                        promotions
+                    } else {
+                        promotions & them
+                    };
+                    for to in promoting {
                         moves.push(Move::Normal {
                             from,
                             to,
                             promote: true,
                         });
                     }
+                    // The two boards overlap where promotion is optional, so a
+                    // capture that may promote is emitted both ways.
                     for to in non_promotions & them {
                         moves.push(Move::Normal {
                             from,
@@ -139,8 +153,9 @@ impl MoveBuf {
                     }
                 }
                 // A drop can never capture — shunsai masks drop targets with
-                // the empty squares — so the whole fan-out goes at once. That
-                // is most of what a shogi move list is.
+                // the empty squares — and never promotes, so the whole
+                // fan-out goes at once. That is most of what a shogi move list
+                // is.
                 MoveSet::Drop { .. } => {}
             }
             ControlFlow::Continue(())
@@ -377,10 +392,11 @@ pub fn is_legal(position: &Position, mv: Move) -> bool {
             // usually with the variants matching and the origin guard failing.
             //
             // ⚠️ **A `MoveSet` variant added upstream also lands here, and
-            // silently**, unlike `generate_captures`'s exhaustive `match` next
-            // door. Legal moves of that variant would be reported illegal, and
-            // `Game::push_move` is the only caller — the engine would refuse a
-            // GUI's `position` line with nothing failing to compile.
+            // silently**, unlike `generate_captures_and_pawn_promotions`'s
+            // exhaustive `match` next door. Legal moves of that variant would
+            // be reported illegal, and `Game::push_move` is the only caller —
+            // the engine would refuse a GUI's `position` line with nothing
+            // failing to compile.
             _ => ControlFlow::Continue(()),
         })
         .is_break()
@@ -562,46 +578,58 @@ mod tests {
         assert_eq!(slice(&buf, root_base..root_end), root);
     }
 
-    /// The capture generator against an oracle built the obvious way — every
-    /// legal move whose destination is occupied. A legal move never lands on
-    /// one of our own pieces, so "occupied" and "holds an enemy piece" are the
-    /// same question, and the oracle asks it without going near `player_bb`.
-    fn captures_agree_with_the_oracle(board: &Position) {
+    /// Quiescence's generator against an oracle built the obvious way — every
+    /// legal move whose destination is occupied, or that promotes a pawn. A
+    /// legal move never lands on one of our own pieces, so "occupied" and
+    /// "holds an enemy piece" are the same question, and the oracle asks it
+    /// without going near `player_bb`.
+    fn quiescence_moves_agree_with_the_oracle(board: &Position) {
         let mut buf = MoveBuf::new();
-        let base = buf.generate_captures(board);
+        let base = buf.generate_captures_and_pawn_promotions(board);
         let oracle: Vec<Move> = board
             .legal_moves()
             .into_iter()
-            .filter(|mv| board.piece_at(mv.to()).is_some())
+            .filter(|&mv| board.piece_at(mv.to()).is_some() || promotes_a_pawn(board, mv))
             .collect();
         same_moves(&slice(&buf, base..buf.len()), &oracle);
     }
 
-    /// Sabotage: intersect with `player_bb(side_to_move())` instead of its
-    /// flip and **zero** captures are generated (`left: 0, right: 3`) — a legal
-    /// move never lands on our own piece — so quiescence stands pat everywhere.
-    /// Drop the `promotions` board and every capture-promotion silently
-    /// disappears. Let `MoveSet::Drop` through and drops appear as captures.
+    fn promotes_a_pawn(board: &Position, mv: Move) -> bool {
+        mv.is_promoting()
+            && mv
+                .from()
+                .and_then(|from| board.piece_at(from))
+                .is_some_and(|piece| piece.piece_kind() == PieceKind::Pawn)
+    }
+
+    /// Sabotage, each red on the drop-heavy row, whose oracle holds three
+    /// moves: intersect with `player_bb(side_to_move())` instead of its flip
+    /// and none are generated — a legal move never lands on our own piece;
+    /// push nothing from the promoting loop and the capture-promotion goes,
+    /// leaving two; let `MoveSet::Drop` through and 170 come back.
     #[test]
-    fn the_capture_filter_is_exactly_the_captures() {
+    fn the_quiescence_filter_is_exactly_the_captures_and_the_pawn_promotions() {
         for sfen in [
             "sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
             "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
-            // In check: generation is restricted to evasions, so the captures
-            // are the capturing evasions and nothing else.
+            // In check: generation is restricted to evasions, so the answer is
+            // the evasions that capture or promote a pawn and nothing else.
             "sfen 4k4/9/4+R4/9/9/9/9/9/4K4 w - 1",
-            // A capture into the promotion zone, where promoting is optional.
+            // A capture into the promotion zone, where promoting is optional,
+            // beside two quiet silver moves into it.
             "sfen 4k4/9/6p2/6S2/9/9/9/9/4K4 b - 1",
-            // Two lone kings: no capture reachable, so the answer is empty.
+            // A pawn that may promote without taking anything.
+            "sfen 4k4/9/9/4P4/9/9/9/9/4K4 b - 1",
+            // Two lone kings: nothing to take and nothing to promote.
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b - 1",
         ] {
-            captures_agree_with_the_oracle(&position(sfen));
+            quiescence_moves_agree_with_the_oracle(&position(sfen));
         }
     }
 
-    /// Where promotion is optional, both forms are captures and both are
-    /// generated. `promotions` and `non_promotions` overlap on exactly these
-    /// squares, so pushing only one board loses half of them.
+    /// Where promotion is optional, both forms of a capture are generated.
+    /// `promotions` and `non_promotions` overlap on exactly these squares, so
+    /// pushing only one board loses half of them.
     #[test]
     fn an_optional_promotion_capture_is_generated_both_ways() {
         // A black silver on 3d taking on 3c enters the promotion zone, where a
@@ -609,16 +637,77 @@ mod tests {
         // real choice rather than a mistake.
         let board = position("sfen 4k4/9/6p2/6S2/9/9/9/9/4K4 b - 1");
         let mut buf = MoveBuf::new();
-        let base = buf.generate_captures(&board);
+        let base = buf.generate_captures_and_pawn_promotions(&board);
         let generated = slice(&buf, base..buf.len());
 
         let from = Square::new(3, 4).expect("3d");
         let to = Square::new(3, 3).expect("3c");
+        let onto_the_capture: Vec<Move> = generated
+            .iter()
+            .copied()
+            .filter(|mv| mv.to() == to)
+            .collect();
         for promote in [false, true] {
             let mv = Move::Normal { from, to, promote };
-            assert!(generated.contains(&mv), "{mv:?} was not generated");
+            assert!(onto_the_capture.contains(&mv), "{mv:?} was not generated");
         }
-        assert_eq!(generated.len(), 2, "{generated:?}");
+        assert_eq!(onto_the_capture.len(), 2, "{onto_the_capture:?}");
+    }
+
+    /// Where a pawn may promote onto an empty square, only the promotion is
+    /// generated: declining it moves no material, so it is a quiet move.
+    #[test]
+    fn a_pawn_promotion_that_takes_nothing_is_generated_promoting_only() {
+        let board = position("sfen 4k4/9/9/4P4/9/9/9/9/4K4 b - 1");
+        let mut buf = MoveBuf::new();
+        let base = buf.generate_captures_and_pawn_promotions(&board);
+        let generated = slice(&buf, base..buf.len());
+
+        let from = Square::new(5, 4).expect("5d");
+        let to = Square::new(5, 3).expect("5c");
+        let declined = Move::Normal {
+            from,
+            to,
+            promote: false,
+        };
+        assert!(
+            board.legal_moves().contains(&declined),
+            "{declined:?} is not legal here, so its absence proves nothing"
+        );
+        assert!(!generated.contains(&declined), "{generated:?}");
+        assert_eq!(
+            generated,
+            [Move::Normal {
+                from,
+                to,
+                promote: true
+            }]
+        );
+    }
+
+    /// Any other kind's promotion is generated only when it takes something.
+    #[test]
+    fn no_other_kind_promotes_without_taking() {
+        // The silver on 3d may step into the zone on 2c or 4c and promote
+        // there, taking nothing.
+        let board = position("sfen 4k4/9/6p2/6S2/9/9/9/9/4K4 b - 1");
+        let mut buf = MoveBuf::new();
+        let base = buf.generate_captures_and_pawn_promotions(&board);
+        let generated = slice(&buf, base..buf.len());
+
+        let from = Square::new(3, 4).expect("3d");
+        for to in [Square::new(2, 3), Square::new(4, 3)] {
+            let promotes = Move::Normal {
+                from,
+                to: to.expect("on the board"),
+                promote: true,
+            };
+            assert!(
+                board.legal_moves().contains(&promotes),
+                "{promotes:?} is not legal here, so its absence proves nothing"
+            );
+            assert!(!generated.contains(&promotes), "{generated:?}");
+        }
     }
 
     /// Where promotion is compulsory the square is in `promotions` alone, so
@@ -629,7 +718,7 @@ mod tests {
         // move for the rest of the game, so promotion is forced.
         let board = position("sfen 6p1k/6P2/9/9/9/9/9/9/4K4 b - 1");
         let mut buf = MoveBuf::new();
-        let base = buf.generate_captures(&board);
+        let base = buf.generate_captures_and_pawn_promotions(&board);
         let generated = slice(&buf, base..buf.len());
 
         let from = Square::new(3, 2).expect("3b");
@@ -644,7 +733,24 @@ mod tests {
             to,
             promote: false
         }));
-        captures_agree_with_the_oracle(&board);
+        quiescence_moves_agree_with_the_oracle(&board);
+    }
+
+    /// A compulsory promotion onto an empty square: a pawn stepping to rank 1.
+    #[test]
+    fn a_compulsory_promotion_that_takes_nothing_is_generated() {
+        let board = position("sfen 8k/4P4/9/9/9/9/9/9/4K4 b - 1");
+        let mut buf = MoveBuf::new();
+        let base = buf.generate_captures_and_pawn_promotions(&board);
+        let generated = slice(&buf, base..buf.len());
+
+        let promotes = Move::Normal {
+            from: Square::new(5, 2).expect("5b"),
+            to: Square::new(5, 1).expect("5a"),
+            promote: true,
+        };
+        assert!(generated.contains(&promotes), "{generated:?}");
+        quiescence_moves_agree_with_the_oracle(&board);
     }
 
     /// The base/truncate contract again, for the generator quiescence uses.
@@ -662,7 +768,7 @@ mod tests {
         let parent = slice(&buf, parent_base..parent_end);
 
         board.do_move(parent[0]);
-        let child_base = buf.generate_captures(&board);
+        let child_base = buf.generate_captures_and_pawn_promotions(&board);
         assert_eq!(
             child_base, parent_end,
             "the child started on top of the parent"
