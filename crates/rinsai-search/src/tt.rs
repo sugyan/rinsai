@@ -423,9 +423,9 @@ mod tests {
     ///
     /// ⚠️ **It goes through [`Table::store`] and [`Table::probe`], not through
     /// `to_table`/`from_table`.** Testing the two functions directly leaves the
-    /// *call sites* uncovered: deleting either one from the table's own methods
-    /// then passes the whole suite, `bench` included, and the engine announces
-    /// mate distances it cannot play.
+    /// *call sites* uncovered: deleting `from_table` from `probe` then passes
+    /// the whole suite, `bench` included, and the engine announces mate
+    /// distances it cannot play.
     ///
     /// Sabotage: drop the `to_table` call from `store`, or the `from_table`
     /// call from `probe`.

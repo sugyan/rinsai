@@ -77,11 +77,10 @@ effect reintroduced two plies down.
 
 ### Why is `QS_MAX_CHECK_PLIES` 2?
 
-Because E0 measured it as the cheapest cap that is also correct. ⚠️ **Which cap
-is cheapest is not a property of the cap**: every ordering, pruning and
-extension patch moves it, so the cost is no argument for the value.
+Because E0 measured it as the cheapest cap that is also correct, and nothing
+has re-decided it since.
 
-What survives is only this: **zero is wrong rather than cheap.** It evaluates
+What is known is only this: **zero is wrong rather than cheap.** It evaluates
 while in check and misses a mate one ply away, and no cost makes that a
 trade. Every cap above it resolves checks; which one is best is an open
 question.
@@ -89,8 +88,8 @@ question.
 E1's futility item owns settling it, with an SPRT rather than a node count.
 
 ⚠️ **Re-derive before quoting any ordering from this answer.** The counts are
-not written here because every ordering and pruning patch moves them — change
-the constant, run `bench`, read the drop-heavy position.
+not written here because every ordering, pruning and extension patch moves them
+— change the constant, run `bench`, read the drop-heavy position.
 
 ### Why did TT move ordering land with the table rather than at E1?
 
@@ -126,8 +125,8 @@ standard library.
 
 ### Why doesn't quiescence probe the transposition table?
 
-It should, and E1 owns it. The conventional expectation — quiescence is 91–99%
-of all nodes, so probing there thrashes the table and evicts the interior
+It should, and E1 owns it. The conventional expectation — quiescence is most
+of the tree, so probing there thrashes the table and evicts the interior
 entries that pay — is **refuted on every row measured**: patching it in halves
 the tree at roughly flat wall-clock (0.77× on the initial position, 0.50× and
 0.47× on a drop-heavy middlegame).
@@ -164,9 +163,9 @@ E1 or E3 adds a packed struct.
 ### Why is the root's returned value exact?
 
 β is `INFINITE` so the root never fails high, and its children enter with α at
-`-INFINITE` so they never fail low. That is what makes the early break on
-`score.is_mate()` a break on a proof rather than a guess, for a loss as much as
-for a win. **`pv[0]` can only ever be assembled from exact children.**
+`-INFINITE` so they never fail low. That is what makes the early break on a
+mate score a break on a proof rather than a guess, for a loss as much as for a
+win. **`pv[0]` can only ever be assembled from exact children.**
 
 ⚠️ That induction has one step that looks like a counterexample: a child that
 fails *low* does reach `update_pv` at its parent — it hands the parent a score at
@@ -271,15 +270,6 @@ structural. What replaced it is a copy of the game's own board, on a ground the
 rebuild never had: the search seeds its repetition path from entries taken from
 that board, so a second board agreeing only by assertion is two lineages compared
 against each other.
-
-### Why do some deliberately dead lines stay in the search?
-
-Because they are reachable and unfalsifiable, and a future "delete the dead line"
-needs something to check itself against. Deleting `negamax`'s own
-`pv[ply].clear()` reproduces `depth`, `seldepth`, `score` and `pv`
-byte-identically over 9 fixtures × depths 1–6, while `qsearch`'s copy is
-observable. Scoring `negamax`'s mated node `mated_in(0)` leaves the whole suite
-green, `bench` included, while `qsearch`'s copy fires three tests.
 
 ### Why is the move buffer one big allocation sliced per ply?
 

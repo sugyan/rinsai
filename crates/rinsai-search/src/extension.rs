@@ -40,26 +40,4 @@ mod tests {
     fn an_evasion_is_not_extended_even_when_it_checks_back() {
         assert_eq!(extension(true, true), 0);
     }
-
-    /// The property the in-check exemption is there for, over every pair of
-    /// consecutive moves: two plies never add more than one, so a line's depth
-    /// falls at least once every two plies.
-    ///
-    /// An extended move's child is in check, which is what the second
-    /// `extension` call is told.
-    #[test]
-    fn two_plies_never_extend_twice() {
-        for in_check in [false, true] {
-            for gives_check in [false, true] {
-                let first = extension(gives_check, in_check);
-                for reply_checks in [false, true] {
-                    let second = extension(reply_checks, gives_check);
-                    assert!(
-                        first + second <= 1,
-                        "in check {in_check}, gives check {gives_check}, reply checks {reply_checks}"
-                    );
-                }
-            }
-        }
-    }
 }

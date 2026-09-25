@@ -53,10 +53,8 @@ flight. They landed at +2.967, then +3.043, then a double loss at +2.945,
 against a bound of +2.944. The verdict is the decision that stopped the run,
 and the recomputation over all 585 pairs agrees with it only just.
 
-⚠️ **The tree doubled and the engine got stronger.** `bench` went from 231 423
-to 459 694, almost all of it in the drop-heavy middlegame. Over the first 30
-lines of `openings-v3` at this budget, the completed depth fell from a mean of
-7.37 to 7.10.
+⚠️ **The tree doubled and the engine got stronger** — the two `bench` counts
+above, almost all of the difference in the drop-heavy middlegame.
 
 ⚠️ **What a pass says: the true difference is positive at α = 0.05.** The +25.9
 is a point estimate from 585 pairs.
