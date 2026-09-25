@@ -1,5 +1,5 @@
 //! Iterative-deepening negamax with alpha-beta pruning, over a quiescence
-//! search that resolves captures.
+//! search that resolves captures and pawn promotions.
 //!
 //! Three things to know before reading:
 //!
@@ -88,11 +88,11 @@ pub(crate) const MAX_DEPTH: Depth = MAX_PLY as Depth / 2;
 /// and evaluates where it stands.
 ///
 /// **It counts checks, not plies, and the two kinds of quiescence ply are
-/// not alike.** A capture chain is self-limiting — every capture moves a piece
-/// off the board and quiescence plays no drops, so occupancy strictly decreases
-/// — and capping it is worse than unnecessary: a cap low enough to matter cuts
-/// exchanges off in the middle, which is the horizon effect reintroduced two
-/// plies down. A check-evasion chain has no such argument: an evasion may give
+/// not alike.** A chain of captures and pawn promotions is self-limiting — a
+/// capture moves a piece off the board, a promotion cannot be undone while its
+/// piece stays on it, and quiescence plays no drops — and capping it is worse
+/// than unnecessary: a cap low enough to matter cuts exchanges off in the
+/// middle, which is the horizon effect reintroduced two plies down. A check-evasion chain has no such argument: an evasion may give
 /// check back, need not be a capture, and its move list is *every* legal move
 /// including drops. Left uncounted those chains dominate the whole search.
 /// ⚠️ Evaluating a position that is still in check is a known lie, bounded by
@@ -377,9 +377,10 @@ pub struct NegamaxSearcher<C = RealClock> {
     /// make the hole narrow: the position a quiescence subtree *starts* from is
     /// one its interior parent already pushed, and a quiescence line cannot
     /// come back to that starting position — every ply but at most
-    /// [`QS_MAX_CHECK_PLIES`] of them is a capture, a capture takes a piece off
-    /// the board, and the only move quiescence has that puts one back is a drop
-    /// from an evasion.
+    /// [`QS_MAX_CHECK_PLIES`] of them is a capture or a pawn promotion, a
+    /// capture takes a piece off the board, a promotion cannot be undone while
+    /// its piece stays on it, and the only move quiescence has that puts a
+    /// piece back is a drop from an evasion.
     ///
     /// ⚠️ **What is left is a real gap, not a proof.** That argument bounds a
     /// quiescence line against its own entry; it says nothing about a
@@ -819,17 +820,18 @@ impl<C: Clock> NegamaxSearcher<C> {
     /// Without this a fixed-depth material search believes whatever the last
     /// ply happened to leave on the board — the horizon effect.
     ///
-    /// **Out of check it searches captures and nothing else, deliberately
-    /// unpruned**; in check it searches every evasion, captures first. ⚠️ It
-    /// is therefore blind to と金作り, a large material event.
+    /// **Out of check it searches captures and pawn promotions and nothing
+    /// else, deliberately unpruned**, the promotions that take nothing behind
+    /// every capture; in check it searches every evasion, captures first.
     ///
     /// ⚠️ **Two imprecisions kept, and neither is confined to one branch.**
     ///
     /// * A node **not in check** never claims mate, cutoff or not. It only ever
-    ///   generates captures, so an empty list means "no capture" and cannot be
-    ///   told from "no legal move" — and the stand-pat β cutoff does not even
-    ///   generate. Either way a position that is mate *without* check — legal in
-    ///   shogi, and vanishingly rare — reports material.
+    ///   generates captures and pawn promotions, so an empty list means
+    ///   "nothing to take or promote" and cannot be told from "no legal move" —
+    ///   and the stand-pat β cutoff does not even generate. Either way a
+    ///   position that is mate *without* check — legal in shogi, and vanishingly
+    ///   rare — reports material.
     /// * A node **in check** past [`QS_MAX_CHECK_PLIES`] evaluates without
     ///   generating either, so a real checkmate there reports material too. That
     ///   is the known lie [`QS_MAX_CHECK_PLIES`]'s own doc admits, and it fires
@@ -899,7 +901,7 @@ impl<C: Clock> NegamaxSearcher<C> {
                 window.alpha = stand_pat;
             }
             best = stand_pat;
-            base = self.buf.generate_captures(board);
+            base = self.buf.generate_captures_and_pawn_promotions(board);
         }
         // Both branches: the evasion list holds captures too, and they are
         // still the moves worth trying first.
@@ -1173,7 +1175,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use shogi_core::ToUsi;
+    use shogi_core::{PieceKind, ToUsi};
 
     use super::*;
     use crate::game::Game;
@@ -1918,19 +1920,23 @@ mod tests {
         );
     }
 
-    /// Whether any root move hands the opponent a capture.
+    /// Whether any root move hands the opponent a move quiescence searches —
+    /// a capture or a pawn promotion.
     ///
     /// Asserted rather than assumed: a fixture that quietly acquired one would
     /// leave the equation below looking like a passing test of a convention it
     /// had stopped measuring.
-    fn a_capture_is_reachable_in_one_ply(args: &str) -> bool {
+    fn a_quiescence_move_is_reachable_in_one_ply(args: &str) -> bool {
         let mut board = game(args).search_board();
         board.legal_moves().into_iter().any(|mv| {
             let undo = board.do_move(mv);
-            let reachable = board
-                .legal_moves()
-                .into_iter()
-                .any(|reply| board.piece_at(reply.to()).is_some());
+            let reachable = board.legal_moves().into_iter().any(|reply| {
+                let pawn = reply
+                    .from()
+                    .and_then(|from| board.piece_at(from))
+                    .is_some_and(|piece| piece.piece_kind() == PieceKind::Pawn);
+                board.piece_at(reply.to()).is_some() || (pawn && reply.is_promoting())
+            });
             board.undo_move(mv, undo);
             reachable
         })
@@ -1939,8 +1945,8 @@ mod tests {
     /// The frozen node-counting convention as an equation: one node for the
     /// root plus one for each move it tries.
     ///
-    /// Both fixtures are capture-free one ply in, so every child stands pat
-    /// immediately and the equation is exactly `1 + N`. The initial
+    /// Neither fixture offers anything to take or promote one ply in, so every
+    /// child stands pat immediately and the equation is exactly `1 + N`. The initial
     /// position qualifies for a non-obvious reason: `7g7f` opens *Black's*
     /// bishop diagonal, and White's own pawn on 3c blocks the bishop on 2b, so
     /// `2b8h+` is not available.
@@ -1952,13 +1958,13 @@ mod tests {
     fn the_root_and_every_leaf_count_as_one_node() {
         for args in [
             "startpos",
-            // Two lone kings: the one fixture whose capture-free-ness is
-            // structural rather than incidental.
+            // Two lone kings: the one fixture whose quietness is structural
+            // rather than incidental.
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b - 1",
         ] {
             assert!(
-                !a_capture_is_reachable_in_one_ply(args),
-                "the fixture stopped being capture-free, so this no longer measures the convention: {args}"
+                !a_quiescence_move_is_reachable_in_one_ply(args),
+                "the fixture stopped being quiet, so this no longer measures the convention: {args}"
             );
             let expected = 1 + game(args).position().legal_moves().len() as i64;
             let (_, lines) = run(args, depth(1));
@@ -1972,21 +1978,45 @@ mod tests {
     ///
     /// Sabotage: have `child` evaluate instead of dispatching to `qsearch`.
     ///
-    /// ⚠️ **Making `generate_captures` return nothing does *not* fire it**,
-    /// though it reads as the more direct mutation. A check is reachable one
-    /// ply into this fixture, and a quiescence node in check takes the evasion
-    /// branch — which generates every legal move and recurses whatever the
-    /// capture filter does. So the count stays above `1 + N`.
+    /// ⚠️ **Making `generate_captures_and_pawn_promotions` return nothing does
+    /// *not* fire it**, though it reads as the more direct mutation. A check is
+    /// reachable one ply into this fixture, and a quiescence node in check
+    /// takes the evasion branch — which generates every legal move and
+    /// recurses whatever the capture filter does. So the count stays above
+    /// `1 + N`.
     #[test]
     fn quiescence_resolves_captures_the_horizon_would_have_hidden() {
         let args = "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
-        assert!(a_capture_is_reachable_in_one_ply(args));
+        assert!(a_quiescence_move_is_reachable_in_one_ply(args));
         let flat = 1 + game(args).position().legal_moves().len() as i64;
         let (_, lines) = run(args, depth(1));
         assert!(
             field(&lines[0], "nodes") > flat,
             "quiescence searched nothing: {}",
             lines[0]
+        );
+    }
+
+    /// A promotion the side to move cannot stop, one ply past the horizon: the
+    /// White pawn on 5f becomes a と on 5g whatever Black plays, and nothing
+    /// Black has can reach it.
+    ///
+    /// **Depth 1 is what makes it able to fail**: every root move hands White
+    /// a quiescence node, so the promotion is found there or nowhere. At depth
+    /// 2 White's reply is an interior node and plays it whatever quiescence
+    /// generates.
+    ///
+    /// Sabotage: generate a pawn's promotion only where it takes something, as
+    /// every other kind's is, and this reports `cp -100`.
+    #[test]
+    fn quiescence_sees_a_promotion_the_horizon_would_have_hidden() {
+        let args = "sfen 8k/9/9/9/9/4p4/9/9/K8 b - 1";
+        let (_, lines) = run(args, depth(1));
+        let last = lines.last().expect("an iteration finished");
+        assert_eq!(
+            field(last, "cp"),
+            -i64::from(eval::board_value(PieceKind::ProPawn)),
+            "quiescence did not see the と: {last}"
         );
     }
 
