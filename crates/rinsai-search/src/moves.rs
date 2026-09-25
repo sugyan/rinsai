@@ -602,6 +602,11 @@ mod tests {
                 .is_some_and(|piece| piece.piece_kind() == PieceKind::Pawn)
     }
 
+    /// Sabotage, each red on the drop-heavy row, whose oracle holds three
+    /// moves: intersect with `player_bb(side_to_move())` instead of its flip
+    /// and none are generated — a legal move never lands on our own piece;
+    /// push nothing from the promoting loop and the capture-promotion goes,
+    /// leaving two; let `MoveSet::Drop` through and 170 come back.
     #[test]
     fn the_quiescence_filter_is_exactly_the_captures_and_the_pawn_promotions() {
         for sfen in [

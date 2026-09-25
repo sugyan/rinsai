@@ -2415,7 +2415,9 @@ mod tests {
     /// The search has to give the shared buffer back. ⚠️ Forgetting `truncate`
     /// is a leak rather than a wrong answer, which is why the buffer's own
     /// tests cannot catch it. Sabotage: delete `self.buf.truncate(base)` from
-    /// `negamax` and the buffer comes back holding thousands of moves.
+    /// `negamax`. Under `cargo test` this goes red on `child`'s own assertion,
+    /// "a child left 30 moves in the buffer", before its own is reached; under
+    /// `cargo test --release` it goes red here, on 3 591 moves left.
     #[test]
     fn the_move_buffer_comes_back_empty() {
         let mut searcher = searcher();
@@ -2602,10 +2604,10 @@ mod tests {
     /// of the mutations below.
     ///
     /// Sabotage, from a baseline of 207 613 nodes: deleting the whole `hit.mv`
-    /// block gives 424 138, and dropping only the `buf.swap` while leaving
-    /// `order_from` at `base + 1` gives 633 818. Both go red on the ceiling
+    /// block gives 424 139, and dropping only the `buf.swap` while leaving
+    /// `order_from` at `base + 1` gives 634 295. Both go red on the ceiling
     /// below. Demoting the stored move rather than removing it — ordering
-    /// captures from `base` — gives 423 892 and goes red too.
+    /// captures from `base` — gives 423 893 and goes red too.
     ///
     /// ⚠️ **A ceiling only catches a mutation that makes the tree bigger**, and
     /// this fixture's baseline moves with every search feature that lands, so
@@ -2641,10 +2643,10 @@ mod tests {
     ///
     /// Sabotage, either way of removing the feature — delete the
     /// `order_killers` call and leave the table filling up unread, or drop
-    /// `remember_cutoff`'s killer half: both take this fixture from 446 250
-    /// nodes to 590 027, and both go red on the ceiling below. ⚠️ **Ordering
-    /// by history after the killers rather than before gives 593 482** and
-    /// goes red here too. Removing history instead stays green at 446 244,
+    /// `remember_cutoff`'s killer half: both take this fixture from 457 023
+    /// nodes to 615 549, and both go red on the ceiling below. ⚠️ **Ordering
+    /// by history after the killers rather than before gives 664 407** and
+    /// goes red here too. Removing history instead stays green at 463 237,
     /// from either site — the `order_history` call, or `remember_cutoff`'s
     /// `history.record`. ⚠️ **The two give the identical count**, so this
     /// tripwire is blind to history being recorded as well as to its being
@@ -2673,7 +2675,7 @@ mod tests {
     /// Sabotage: make `reduction` return 0 and this goes from 60 712 nodes to
     /// 236 408, which is red on the ceiling below. Every ordering mutation the
     /// tripwires above name stays under it: 61 223 without the killers'
-    /// ordering, 64 999 without history's, 63 571 without the transposition
+    /// ordering, 64 999 without history's, 63 578 without the transposition
     /// move's swap.
     ///
     /// ⚠️ **A ceiling can only catch a reduction that stopped happening.**
@@ -2705,12 +2707,12 @@ mod tests {
     /// them.
     ///
     /// ⚠️ **The reduction is not what finds the win here** — an engine with no
-    /// reduction at all reports the same score, from 251 104 nodes against
-    /// 78 077. What the reduction does is find it three times cheaper, and
+    /// reduction at all reports the same score, from 251 179 nodes against
+    /// 78 103. What the reduction does is find it three times cheaper, and
     /// what the verification search does is keep it found.
     ///
     /// Sabotage: drop the verification search and this reports `cp 15` from
-    /// 74 434 nodes.
+    /// 74 455 nodes.
     #[test]
     fn a_reduced_move_is_believed_only_after_a_full_depth_search() {
         let (_, lines) = run(RESEARCH_FIXTURE, depth(6));
@@ -2873,9 +2875,7 @@ mod tests {
     /// Sabotage, both red here: `Bound::Exact => true` in [`cuts`] takes the two
     /// lone kings at depth eight from eight published moves to seven; scouting
     /// [`negamax_root`]'s own move list publishes one move for a depth-4
-    /// search. ⚠️ **The second is the whole reason the root does not scout**,
-    /// and before this test only `a_reduced_move_is_believed_only_after_a_full_depth_search`
-    /// caught it — by one centipawn, on an assertion about something else.
+    /// search. ⚠️ **The second is the whole reason the root does not scout.**
     ///
     /// [`negamax_root`]: NegamaxSearcher::negamax_root
     #[test]
@@ -3024,8 +3024,9 @@ mod tests {
     /// Sabotage: test `limits.btime.is_none() && limits.wtime.is_none()` instead
     /// of the mover's own field. The allowance becomes `Some(ZERO)` rather than
     /// `None` — which is not "nothing named" but "no time left", and because a
-    /// deadline exists it also lifts the ceiling off `DEFAULT_DEPTH`, so the
-    /// engine answers from one root move where it used to search four plies.
+    /// deadline exists it also lifts the ceiling off `DEFAULT_DEPTH`, so from
+    /// the initial position the engine answers from depth 1 where it used to
+    /// search four plies.
     /// ⚠️ Reachable from a conforming GUI: `parse_go` leaves an unparseable
     /// field unset rather than refusing the `go`.
     #[test]
@@ -3055,8 +3056,10 @@ mod tests {
 
     /// When the margin binds, and the two ways it must not.
     ///
-    /// The main-time case is what pins the margin to the *cap*: take it off
-    /// the spend instead and only that assertion moves.
+    /// The main-time and increment cases are what pin the margin to the
+    /// *cap*: take it off the spend instead and both move — the first to 30 ms
+    /// less, the second to `Some(100ms)` — while the byoyomi and `movetime`
+    /// cases do not.
     #[test]
     fn the_margin_comes_off_a_derived_allowance_and_not_off_movetime() {
         let margin = Duration::from_millis(30);
