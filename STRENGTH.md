@@ -27,6 +27,43 @@ it like any other.
 
 ## E1 — classical search, one feature at a time
 
+### Item 6 — check extension, a node in check extending nothing — **pass**
+
+H1 accepted at elo0 = 0 / elo1 = 10.
+
+```
+pairs 585 | games 1170 | candidate W-D-L 475-307-388
+pent [76, 15, 361, 12, 121] | llr +2.945 | score 53.72% (elo +25.9 est)
+```
+
+| | |
+|---|---|
+| candidate | `a18feff` |
+| baseline | `c2f139b` |
+| `bench` | candidate 459 694, baseline 231 423 — both read off the binaries that played, before the run |
+| control | `--nodes 300000 --gain` (elo0 = 0 / elo1 = 10), α = β = 0.05, concurrency 3, `--max-pairs 3000` |
+| openings | `openings-v3.sfen`, seed 1, 585 distinct openings for 585 pairs |
+| endings | 861 checkmates, 301 千日手, 6 at the 512-ply move limit, 2 入玉宣言 |
+
+The counts above were recomputed from `run.jsonl` rather than read off the
+harness's summary, and agree to the digit, LLR included.
+
+⚠️ **It passed by 0.001.** The bound was crossed at +2.964 with pairs still in
+flight. They landed at +2.967, then +3.043, then a double loss at +2.945,
+against a bound of +2.944. The verdict is the decision that stopped the run,
+and the recomputation over all 585 pairs agrees with it only just.
+
+⚠️ **The tree doubled and the engine got stronger** — the two `bench` counts
+above, almost all of the difference in the drop-heavy middlegame.
+
+⚠️ **What a pass says: the true difference is positive at α = 0.05.** The +25.9
+is a point estimate from 585 pairs.
+
+It ran on a cloud container beside the branch's test and sabotage runs. A
+fixed-node game between deterministic engines is decided by the openings and
+the budgets, so that is permitted by CLAUDE.md. The run was supervised by the
+session throughout and was not interrupted.
+
 ### Item 5b — principal variation search at interior nodes — **pass**
 
 H1 accepted at elo0 = 0 / elo1 = 10.

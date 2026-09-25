@@ -327,6 +327,7 @@ mod tests {
     use shogi_core::{Piece, Square};
 
     use super::*;
+    use crate::negamax::MAX_DEPTH;
     use crate::score::MAX_PLY;
 
     /// A 1 MiB table — what every test here wants, and what the rest of the
@@ -422,10 +423,7 @@ mod tests {
     /// from any node, each in its own frame.
     ///
     /// ⚠️ **It goes through [`Table::store`] and [`Table::probe`], not through
-    /// `to_table`/`from_table`.** Testing the two functions directly leaves the
-    /// *call sites* uncovered: deleting either one from the table's own methods
-    /// then passes the whole suite, `bench` included, and the engine announces
-    /// mate distances it cannot play.
+    /// `to_table`/`from_table`**, so the *call sites* are what it covers.
     ///
     /// Sabotage: drop the `to_table` call from `store`, or the `from_table`
     /// call from `probe`.
@@ -490,8 +488,7 @@ mod tests {
                 );
             }
         }
-        // `MAX_PLY - 1` is the deepest iteration `negamax.rs` will start.
-        assert!(i8::try_from(MAX_PLY as i32 - 1).is_ok());
+        assert!(i8::try_from(MAX_DEPTH).is_ok());
     }
 
     /// A deeper result must not be thrown away for a shallower one arriving

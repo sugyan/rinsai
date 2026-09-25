@@ -544,9 +544,9 @@ mod tests {
     /// Sabotage: add `index`'s two piece factors rather than scaling by
     /// `PieceKind::NUM`, or add the destination rather than scaling by
     /// `Square::NUM` — this goes red alone on either. ⚠️ Dropping the
-    /// piece-kind factor from the length `new` allocates reddens forty-two
-    /// tests in this crate instead, this one among them, because the index
-    /// then runs off the end of the table rather than colliding inside it.
+    /// piece-kind factor from the length `new` allocates reddens tests across
+    /// this crate instead, this one among them, because the index then runs off
+    /// the end of the table rather than colliding inside it.
     #[test]
     fn every_side_kind_and_destination_has_an_entry_of_its_own() {
         let from = Square::new(5, 5).expect("5e");

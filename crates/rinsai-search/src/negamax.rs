@@ -28,6 +28,7 @@ use shunsai::Position;
 use crate::clock::{Clock, RealClock};
 use crate::declaration;
 use crate::eval;
+use crate::extension;
 use crate::game::HistoryEntry;
 use crate::info::SearchInfo;
 use crate::moves::{MAX_LEGAL_MOVES, MoveBuf};
@@ -77,11 +78,11 @@ const POLL_INTERVAL_NODES: u64 = 1024;
 
 /// The deepest iteration any search will start.
 ///
-/// One below [`MAX_PLY`] so that a line reaching the last iteration's nominal
-/// depth still has a ply to sit at. Quiescence then runs *past* that depth, and
-/// what stops it is the `ply >= MAX_PLY` guard both searches share — the spare
-/// ply here is not what bounds it.
-pub(crate) const MAX_DEPTH: Depth = MAX_PLY as Depth - 1;
+/// Half of [`MAX_PLY`], because an interior line can be twice as long as its
+/// iteration's depth, and [`NegamaxSearcher::negamax`] asserts as much.
+/// Quiescence then runs *past* that line, and what stops it is the
+/// `ply >= MAX_PLY` guard both searches share.
+pub(crate) const MAX_DEPTH: Depth = MAX_PLY as Depth / 2;
 
 /// How many **checked** plies one quiescence line may spend before it gives up
 /// and evaluates where it stands.
@@ -94,11 +95,6 @@ pub(crate) const MAX_DEPTH: Depth = MAX_PLY as Depth - 1;
 /// plies down. A check-evasion chain has no such argument: an evasion may give
 /// check back, need not be a capture, and its move list is *every* legal move
 /// including drops. Left uncounted those chains dominate the whole search.
-/// ⚠️ **Two was E0's cheapest-and-correct, and re-measuring says it is not any
-/// more** — once the interior nodes and quiescence gained ordering, the cost
-/// went monotone in the cap and one checked ply became cheaper than two.
-/// E1's futility item owns re-deciding it.
-///
 /// ⚠️ Evaluating a position that is still in check is a known lie, bounded by
 /// how many times a line may be checked rather than by how long it is.
 const QS_MAX_CHECK_PLIES: Depth = 2;
@@ -376,9 +372,8 @@ pub struct NegamaxSearcher<C = RealClock> {
     /// [`repetition::verdict`] reads.
     ///
     /// ⚠️ **Extended at interior nodes only, and [`Self::qsearch`] is a hole in
-    /// it on purpose.** Quiescence is the overwhelming majority of all nodes,
-    /// so keeping the push and the scan out of it is most of what the feature
-    /// costs — quiescence is 91–99% of all nodes. Two things
+    /// it on purpose.** Quiescence is most of the tree, so keeping the push
+    /// and the scan out of it is most of what the feature costs. Two things
     /// make the hole narrow: the position a quiescence subtree *starts* from is
     /// one its interior parent already pushed, and a quiescence line cannot
     /// come back to that starting position — every ply but at most
@@ -392,6 +387,9 @@ pub struct NegamaxSearcher<C = RealClock> {
     /// would be a fourth occurrence this search does not see. It is the same
     /// family as the imprecisions [`Self::qsearch`]'s own doc lists.
     path: Vec<HistoryEntry>,
+    /// The depth the current iteration started at, read only by
+    /// [`Self::negamax`]'s assertion of the extension's bound.
+    iteration: Depth,
     nodes: u64,
     /// The deepest ply reached, quiescence included. Reset **per iteration**,
     /// unlike [`Self::nodes`], which accumulates across them. The asymmetry is
@@ -446,6 +444,7 @@ impl<C: Clock> NegamaxSearcher<C> {
             history: HistoryTable::new(),
             tt: Table::new(mb),
             path: Vec::with_capacity(MAX_PLY),
+            iteration: 0,
             nodes: 0,
             seldepth: 0,
             stopped: false,
@@ -497,6 +496,7 @@ impl<C: Clock> NegamaxSearcher<C> {
             "negamax_root cannot tell a fail-low from an abandoned iteration"
         );
         self.nodes += 1;
+        self.iteration = depth;
 
         let mut best = -Score::INFINITE;
         let mut improved = false;
@@ -619,6 +619,13 @@ impl<C: Clock> NegamaxSearcher<C> {
         // `child` dispatches everything else to `qsearch`, so arriving here at
         // all means there is a ply to sit at and a depth left to spend.
         debug_assert!(depth > 0 && ply < MAX_PLY);
+        // ⚠️ **`crate::extension`'s bound, with the root's own move spending
+        // a ply.** Nothing else checks the in-check exemption where it is
+        // applied.
+        debug_assert!(
+            2 * depth + ply as Depth <= 2 * self.iteration,
+            "an interior line outran twice its iteration's depth"
+        );
 
         if self.stopped {
             return Score::ZERO;
@@ -675,10 +682,11 @@ impl<C: Clock> NegamaxSearcher<C> {
         self.buf.order_killers(quiets_from, self.stack[ply].killers);
 
         // Whether *this* node's side to move is in check, for the reduction
-        // below. ⚠️ **Read off the path rather than from the board**: `child`
-        // is the only way into this function, and no move is dispatched through
-        // it without its own entry having been pushed first, so the answer is
-        // already computed and paid for. `board.in_check()` would buy it twice.
+        // and the extension below. ⚠️ **Read off the path rather than from the
+        // board**: `child` is the only way into this function, and no move is
+        // dispatched through it without its own entry having been pushed first,
+        // so the answer is already computed and paid for. `board.in_check()`
+        // would buy it twice.
         //
         // ⚠️ **The invariant is "the top of the path is this node", not "every
         // call site pushes".** The two searches below dispatch again on the
@@ -705,8 +713,9 @@ impl<C: Clock> NegamaxSearcher<C> {
             let quiet = i >= quiets_from && !mv.is_promoting();
             let undo = board.do_move(mv);
             // The entry about to be pushed is the *child's*, so its `in_check`
-            // is whether `mv` gave check — the second thing the reduction needs,
-            // and the second one the push has already paid for.
+            // is whether `mv` gave check — the other thing the reduction and
+            // the extension need, and the other one the push has already paid
+            // for.
             let entry = HistoryEntry::of(board);
             let gives_check = entry.in_check;
             self.path.push(entry);
@@ -719,8 +728,10 @@ impl<C: Clock> NegamaxSearcher<C> {
             } else {
                 window
             };
+            // What every search of `mv` below runs at, the reduced one aside.
+            let full = depth - 1 + extension::extension(gives_check, in_check);
             let taken = reduction::reduction(depth, i - base, quiet, gives_check, in_check);
-            let mut score = self.child(board, probe, depth - 1 - taken, ply + 1, budget);
+            let mut score = self.child(board, probe, full - taken, ply + 1, budget);
             // ⚠️ **A reduced score may raise alpha only after a full-depth
             // search agrees with it.** The saving is in the moves that stay
             // below alpha; believing one that does not is how a reduction
@@ -738,7 +749,7 @@ impl<C: Clock> NegamaxSearcher<C> {
             // reduction carries, in the same family as the repetition verdict
             // reaching the table through a parent.
             if taken > 0 && !self.stopped && score > window.alpha {
-                score = self.child(board, probe, depth - 1, ply + 1, budget);
+                score = self.child(board, probe, full, ply + 1, budget);
             }
             // ⚠️ **A scout answers where a score is, not what it is**, so one
             // that landed inside this node's window is searched again on that
@@ -748,7 +759,7 @@ impl<C: Clock> NegamaxSearcher<C> {
             // this condition empty, which is what keeps a scout from
             // re-searching itself.
             if scouted && !self.stopped && score > window.alpha && score < window.beta {
-                score = self.child(board, window, depth - 1, ply + 1, budget);
+                score = self.child(board, window, full, ply + 1, budget);
             }
             // Both of these come before every `break` below, without exception.
             self.path.pop();
@@ -1112,8 +1123,13 @@ impl<C: Clock> Searcher for NegamaxSearcher<C> {
                 self.root_moves.swap(0, index);
             }
 
-            // A proven mate does not get better with depth.
-            if score.is_mate() || self.stopped || budget.expired(self.nodes, &self.clock) {
+            // ⚠️ **A mate ends the deepening only once its distance is within
+            // the iteration's depth.** An iteration sees further than its depth
+            // along checks and less far along reduced moves, so a mate it
+            // announces can be longer than one a later iteration finds. It is
+            // still no proof of the shortest: a reduced move can hide one.
+            let settled = score.mate_plies().is_some_and(|plies| plies.abs() <= depth);
+            if settled || self.stopped || budget.expired(self.nodes, &self.clock) {
                 break;
             }
         }
@@ -1380,34 +1396,16 @@ mod tests {
         );
     }
 
-    /// A mate at every distance from one move to five, each found at exactly
-    /// the depth it needs and each proved by replay.
+    /// A mate at every distance from one move to five, each proved by replay.
     ///
-    /// **The distance is asserted, not merely reported.** The deepening
-    /// loop stops at the first iteration that returns a mate score, so a
-    /// fixture holding a shorter mate than its row claims announces the
-    /// shorter number and fails the equality below. The depth each row is
-    /// searched at is the depth it needs, not what makes the assertion bite.
+    /// **The distance is asserted, not merely reported.**
     ///
     /// Sabotage: score a mated node `Score::mated_in(0)` rather than
     /// `mated_in(ply)` **in [`Self::qsearch`]** — the **first** row fails, on
-    /// `mate 0` where 1 was expected, and the loop stops there.
-    ///
-    /// ⚠️ **The same mutation in [`Self::negamax`] leaves the whole suite
-    /// green, `bench` included** — no test here or anywhere reaches it. A mate
-    /// that surfaces in a reported line is always resolved in quiescence
-    /// first, because quiescence runs past the nominal depth and the deepening
-    /// loop stops at the first iteration that returns a mate score.
-    ///
-    /// **It is also what catches a scouted move being believed without being
-    /// searched again on the node's own window.** Dropping that search makes
-    /// the row asserting a five-ply mate announce `mate 5` behind a two-move
-    /// line, and [`assert_mate_is_real`]'s length check is what says so: a
-    /// scout answers which side of alpha a score is on and leaves no line
-    /// behind it, so a parent that raises alpha on one publishes the move and
-    /// then nothing. [`a_published_line_is_as_long_as_the_depth_it_claims`]
-    /// fires on the same mutation, from the other end — it reads the length
-    /// this one reads the distance.
+    /// `mate 0` where 1 was expected, and the loop stops there. The same
+    /// mutation in [`Self::negamax`] reddens this too;
+    /// [`a_mate_by_a_drop_at_the_horizon_is_scored_by_an_interior_node`] is
+    /// the test that names it.
     #[test]
     fn finds_a_mate_at_every_distance_from_one_to_five() {
         for (moves, hand) in [(1, "-"), (2, "p"), (3, "2p"), (4, "3p"), (5, "4p")] {
@@ -1418,6 +1416,157 @@ mod tests {
             );
             assert_mate_in(&args, 2 * moves - 1);
         }
+    }
+
+    /// A mate given by checks alone is announced by an iteration shallower
+    /// than the line, because the checks the interior plays are searched a ply
+    /// deeper.
+    ///
+    /// **Two properties make it able to fail, and both are asserted.** Every
+    /// attacking move of the ladder checks, which the replay checks. And
+    /// quiescence must not reach the mate from depth 5 on its own: it sees this
+    /// ladder's mate at most `2 * QS_MAX_CHECK_PLIES - 1` plies past the
+    /// horizon, measured at caps of two and three.
+    ///
+    /// Sabotage: make `extension` return 0 and depth 5 reports `cp 2375`
+    /// instead of the mate.
+    ///
+    /// **It is also what catches a scouted move being believed without being
+    /// searched again on the node's own window.** Dropping that search
+    /// announces `mate 9` behind a seven-move line, and
+    /// [`assert_mate_is_real`]'s length check is what says so: a scout answers
+    /// which side of alpha a score is on and leaves no line behind it.
+    /// [`a_published_line_is_as_long_as_the_depth_it_claims`] and
+    /// [`a_mate_ends_the_deepening_only_once_its_depth_covers_it`] fire on the
+    /// same mutation.
+    #[test]
+    fn a_mate_by_checks_alone_is_found_short_of_its_length() {
+        const PLIES: i64 = 9;
+        const DEPTH: i64 = 5;
+        assert!(
+            PLIES > DEPTH + 2 * i64::from(QS_MAX_CHECK_PLIES) - 1,
+            "quiescence reaches this mate from depth {DEPTH} on its own"
+        );
+        let args = format!("{MATE_LADDER} 4p 1");
+        let (_, lines) = run(&args, depth(5));
+        let last = lines.last().expect("the search reported something");
+        assert!(last.contains(" score mate "), "no mate at depth 5: {last}");
+        assert_eq!(field(last, "mate"), PLIES, "{last}");
+        assert_mate_is_real(&args, last, PLIES);
+
+        let mut replay = game(&args);
+        for (i, token) in pv_of(last).into_iter().enumerate() {
+            replay
+                .push_usi_move(token)
+                .unwrap_or_else(|e| panic!("the pv is not playable: {e}"));
+            if i % 2 == 0 {
+                assert!(replay.in_check(), "move {i} does not check: {last}");
+            }
+        }
+    }
+
+    /// A mate ends the deepening only once an iteration's depth covers it, for
+    /// the side mating and for the side being mated alike.
+    ///
+    /// **The fixtures are what make it able to fail, and the property is
+    /// asserted**: each has an iteration announce a mate longer than its own
+    /// depth. For the side mating, a later iteration then finds a shorter mate
+    /// — late-move reduction hides it at depth 5 — and that is the one
+    /// announced.
+    ///
+    /// Sabotage: break the deepening loop on `score.is_mate()` and the first
+    /// row announces `mate 7` at depth 5; drop the `abs()` and the second stops
+    /// at depth 3 on `mate -8`.
+    #[test]
+    fn a_mate_ends_the_deepening_only_once_its_depth_covers_it() {
+        const MATING: &str = "sfen k8/3S4l/9/9/9/9/9/9/K8 b BB 1";
+        for (args, plies) in [(MATING, 5), ("sfen 8k/9/6N2/6NN1/9/8L/9/9/K8 w P4p 2", -8)] {
+            let (_, lines) = run(args, depth(8));
+            assert!(
+                lines.iter().any(|line| line.contains(" score mate ")
+                    && field(line, "mate").abs() > field(line, "depth")),
+                "no iteration announced a mate beyond its depth: {lines:?}"
+            );
+            let last = lines.last().expect("the search reported something");
+            assert_eq!(field(last, "mate"), plies, "{last}");
+            assert!(field(last, "depth") >= plies.abs(), "{last}");
+            if plies > 0 {
+                assert_mate_is_real(args, last, plies);
+            }
+        }
+    }
+
+    /// A mate delivered by a drop at the last interior ply is scored, and its
+    /// line ended, by the interior node the extension makes of the mated
+    /// position.
+    ///
+    /// **The fixture is what makes it able to fail**: the mating move is a
+    /// drop by a side not in check, both asserted, so an interior node with
+    /// one ply left played it — quiescence drops only to evade — and the
+    /// extension hands its child to [`Self::negamax`] rather than to
+    /// quiescence.
+    ///
+    /// Sabotage, both red here: score [`Self::negamax`]'s mated node
+    /// `mated_in(0)` and this announces `mate 0`; drop its
+    /// `stack[ply].pv.clear()` and the line carries a move after the mate.
+    #[test]
+    fn a_mate_by_a_drop_at_the_horizon_is_scored_by_an_interior_node() {
+        const PLIES: i64 = 3;
+        let args = "sfen 8k/9/9/7Gg/9/9/9/9/K8 b 2G 1";
+        let (_, lines) = run(args, depth(3));
+        let last = lines.last().expect("the search reported something");
+        assert_eq!(field(last, "mate"), PLIES, "{last}");
+        assert_mate_is_real(args, last, PLIES);
+        let pv = pv_of(last);
+        let (mating, before) = pv.split_last().expect("a mate has a move");
+        assert!(
+            mating.contains('*'),
+            "the mating move is not a drop: {last}"
+        );
+        let mut replay = game(args);
+        for token in before {
+            replay
+                .push_usi_move(token)
+                .unwrap_or_else(|e| panic!("the pv is not playable: {e}"));
+        }
+        assert!(!replay.in_check(), "the mating side was in check: {last}");
+    }
+
+    /// A check answered by a check is not extended.
+    ///
+    /// ⚠️ **What goes red is the `debug_assert!` in [`Self::negamax`], not an
+    /// assertion here**, so a release build of this test catches nothing.
+    ///
+    /// **The fixture and the depth are what make it able to fail.** The root
+    /// extends nothing, so a line starts a ply inside the bound, and only a
+    /// check answered by a check after that ply is spent crosses it. Three
+    /// checks in a row from the root are such a line, and one is asserted to
+    /// exist here. Under the sabotage below depth 2 stays green and depth 3
+    /// does not.
+    ///
+    /// Sabotage: pass `false` for the node's own check at the extension's call
+    /// site and the assertion fires here, and in no other test in this crate.
+    #[test]
+    fn a_check_answered_by_a_check_is_not_extended() {
+        /// Whether `n` checks in a row can be played from `board`.
+        fn checks_in_a_row(board: &mut Position, n: usize) -> bool {
+            n == 0
+                || board.legal_moves().into_iter().any(|mv| {
+                    let undo = board.do_move(mv);
+                    let more = board.in_check() && checks_in_a_row(board, n - 1);
+                    board.undo_move(mv, undo);
+                    more
+                })
+        }
+
+        let args = "sfen 4k4/9/9/9/9/9/9/9/K8 b RBGSrbgs 1";
+        assert!(
+            checks_in_a_row(&mut game(args).search_board(), 3),
+            "no line of three checks starts here"
+        );
+
+        let (_, lines) = run(args, depth(3));
+        assert!(!lines.is_empty(), "the search reported nothing");
     }
 
     /// A four-fold repetition reached by shuffling a rook and a king, with
@@ -1827,8 +1976,7 @@ mod tests {
     /// though it reads as the more direct mutation. A check is reachable one
     /// ply into this fixture, and a quiescence node in check takes the evasion
     /// branch — which generates every legal move and recurses whatever the
-    /// capture filter does. So the count stays above `1 + N` and only the
-    /// frozen `bench` counts move.
+    /// capture filter does. So the count stays above `1 + N`.
     #[test]
     fn quiescence_resolves_captures_the_horizon_would_have_hidden() {
         let args = "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
@@ -1850,14 +1998,31 @@ mod tests {
     /// at the same depths. ⚠️ An upper bound and nothing more: a search that
     /// broke some new way and reported ±90 passes.
     ///
-    /// Sabotage: evaluate in `child` instead of dispatching to `qsearch`.
+    /// **The fixture is what makes it able to fail**: a root move on the
+    /// opened bishop diagonals captures and can be taken back, which is
+    /// asserted, so a search that evaluates where quiescence should run counts
+    /// the capture and not the recapture. ⚠️ The initial position no longer
+    /// shows the fingerprint with quiescence removed, and is not searched here.
+    ///
+    /// Sabotage: evaluate in `child` instead of dispatching to `qsearch` and
+    /// this reports `cp 2100` at depth 1.
     #[test]
     fn the_horizon_effect_fingerprint_is_gone() {
         // 215 = a pawn on the board plus a pawn in hand, the two values the
         // fingerprint was made of.
         const FINGERPRINT: i64 = 215;
+        const OPENED_DIAGONALS: &str = "startpos moves 7g7f 3c3d";
+        let mut board = game(OPENED_DIAGONALS).search_board();
+        let taken_back = board.legal_moves().into_iter().any(|mv| {
+            let captures = board.piece_at(mv.to()).is_some();
+            let undo = board.do_move(mv);
+            let back = captures && board.legal_moves().into_iter().any(|r| r.to() == mv.to());
+            board.undo_move(mv, undo);
+            back
+        });
+        assert!(taken_back, "no root capture can be taken back here");
         for d in 1..=6 {
-            let (_, lines) = run("startpos", depth(d));
+            let (_, lines) = run(OPENED_DIAGONALS, depth(d));
             let last = lines.last().expect("an iteration finished");
             assert!(
                 field(last, "cp").abs() < FINGERPRINT,
@@ -1875,7 +2040,10 @@ mod tests {
     #[test]
     fn quiescence_does_not_stand_pat_in_check() {
         // 頭金 again, but searched at depth 1 so that the mate has to be found
-        // *inside* a quiescence node rather than at an interior one.
+        // *inside* a quiescence node rather than at an interior one. ⚠️ Only
+        // because the root extends nothing: the mating drop checks, and an
+        // extended root would hand its child to an interior node, where this
+        // test's own sabotage does not reach.
         let (_, lines) = run("sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1", depth(1));
         let last = lines.last().expect("an iteration finished");
         assert_eq!(field(last, "mate"), 1, "{last}");
@@ -1900,11 +2068,12 @@ mod tests {
     }
 
     /// `seldepth` is the deepest ply an iteration reached. Where captures exist
-    /// it must exceed the nominal depth, and where none do it must equal it —
-    /// which is what makes it data rather than a copy of `depth`.
+    /// it must exceed the nominal depth, and on two lone kings it must equal
+    /// it — which is what makes it data rather than a copy of `depth`.
     ///
-    /// Sabotage: feed `seldepth` from `depth`, or never update it in `qsearch`,
-    /// and the tactical half fails.
+    /// Sabotage: report `depth` as `seldepth` and the tactical half fails;
+    /// never update it in `qsearch` and the lone-kings half fails first, on
+    /// `seldepth 2` at depth 3.
     #[test]
     fn seldepth_reaches_past_the_nominal_depth_where_captures_exist() {
         let (_, quiet) = run("sfen 4k4/9/9/9/9/9/9/9/4K4 b - 1", depth(3));
@@ -2062,7 +2231,9 @@ mod tests {
     /// `Score::mated_in(0)` instead of `mated_in(ply)` and the announced
     /// distance is wrong, or drop its `stack[ply].pv.clear()` and a stale line from
     /// an earlier subtree hangs off the mate. Making *either* mutation in
-    /// [`Self::negamax`] instead changes nothing here or anywhere.
+    /// [`Self::negamax`] instead changes nothing here;
+    /// [`a_mate_by_a_drop_at_the_horizon_is_scored_by_an_interior_node`]
+    /// catches both.
     #[test]
     fn finds_the_mate_in_one() {
         let (_, lines) = run("sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1", depth(4));
@@ -2081,8 +2252,9 @@ mod tests {
     /// because no dialogue there gets past depth 1.
     ///
     /// Sabotage: append the child line before the move in `update_pv`, or drop
-    /// **[`Self::qsearch`]'s** `stack[ply].pv.clear()`. Not [`Self::negamax`]'s —
-    /// that copy has no observable effect.
+    /// **[`Self::qsearch`]'s** `stack[ply].pv.clear()`. Not [`Self::negamax`]'s,
+    /// which [`a_mate_by_a_drop_at_the_horizon_is_scored_by_an_interior_node`]
+    /// catches.
     ///
     /// **The replay is the part with teeth; the head comparison at the end
     /// is nearly free.** `best` is `self.stack[0].pv[0]` and the printed line is
@@ -2117,8 +2289,9 @@ mod tests {
     ///
     /// Sabotage: score a mated node `Score::mated_in(0)` instead of
     /// `mated_in(ply)` **in [`Self::qsearch`]** and the announced distance
-    /// stops matching the line. ⚠️ Not [`Self::negamax`]'s copy, which no test
-    /// reaches.
+    /// stops matching the line. Not [`Self::negamax`]'s copy, which
+    /// [`a_mate_by_a_drop_at_the_horizon_is_scored_by_an_interior_node`]
+    /// catches.
     #[test]
     fn a_reported_mate_is_a_real_mate() {
         let args = "sfen 4k4/9/4G4/9/9/9/9/9/4K4 b G 1";
@@ -2163,9 +2336,7 @@ mod tests {
     /// per frame on the way out is the guarantee, not exactness.
     ///
     /// Sabotage: drop the node-limit arm from `Budget::expired` and this times
-    /// out rather than failing on the bound. Replacing
-    /// [`Self::qsearch`]'s poll condition with `false` fails it on the bound
-    /// instead — which is what makes quiescence's poll load-bearing.
+    /// out rather than failing on the bound.
     #[test]
     fn a_deep_search_still_answers_a_node_limit() {
         let limits = Limits {
@@ -2400,11 +2571,11 @@ mod tests {
     /// smaller. This is a position measured where it still costs, on all three
     /// of the mutations below.
     ///
-    /// Sabotage, from a baseline of 172 303 nodes: deleting the whole `hit.mv`
-    /// block gives 209 687, and dropping only the `buf.swap` while leaving
-    /// `order_from` at `base + 1` gives 374 860. Both go red on the ceiling
+    /// Sabotage, from a baseline of 207 613 nodes: deleting the whole `hit.mv`
+    /// block gives 424 138, and dropping only the `buf.swap` while leaving
+    /// `order_from` at `base + 1` gives 633 818. Both go red on the ceiling
     /// below. Demoting the stored move rather than removing it — ordering
-    /// captures from `base` — gives 210 738 and goes red too.
+    /// captures from `base` — gives 423 892 and goes red too.
     ///
     /// ⚠️ **A ceiling only catches a mutation that makes the tree bigger**, and
     /// this fixture's baseline moves with every search feature that lands, so
@@ -2419,14 +2590,14 @@ mod tests {
         let (_, lines) = run("startpos moves 7g7f 3c3d", depth(7));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 190_000,
+            field(last, "nodes") < 300_000,
             "the transposition move is not being tried first: {last}"
         );
     }
 
     /// The drop-heavy middlegame: a node here carries far more quiet moves than
     /// the front of a list any heuristic ranks confidently, which is the input
-    /// both tripwires below are chosen for.
+    /// the killer tripwire below is chosen for.
     const DROP_HEAVY_FIXTURE: &str =
         "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1";
 
@@ -2440,20 +2611,21 @@ mod tests {
     ///
     /// Sabotage, either way of removing the feature — delete the
     /// `order_killers` call and leave the table filling up unread, or drop
-    /// `remember_cutoff`'s killer half: both take this fixture from 212 442
-    /// nodes to 340 357, and both go red on the ceiling below. ⚠️ **Ordering
-    /// by history after the killers rather than before gives 342 203** and
-    /// goes red here too. Removing history instead stays green at 217 927,
+    /// `remember_cutoff`'s killer half: both take this fixture from 446 250
+    /// nodes to 590 027, and both go red on the ceiling below. ⚠️ **Ordering
+    /// by history after the killers rather than before gives 593 482** and
+    /// goes red here too. Removing history instead stays green at 446 244,
     /// from either site — the `order_history` call, or `remember_cutoff`'s
     /// `history.record`. ⚠️ **The two give the identical count**, so this
     /// tripwire is blind to history being recorded as well as to its being
-    /// read, and a patch that stops doing either shows up only as Elo.
+    /// read, and a patch that stops doing either shows up in `bench`'s frozen
+    /// counts rather than here.
     #[test]
     fn a_killer_is_searched_before_the_quiet_moves_around_it() {
         let (_, lines) = run(DROP_HEAVY_FIXTURE, depth(4));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 260_000,
+            field(last, "nodes") < 520_000,
             "the killers are not being tried early: {last}"
         );
     }
@@ -2464,27 +2636,27 @@ mod tests {
 
     /// Late quiet moves are searched a ply shallower, as a node-count tripwire.
     ///
-    /// **The depth is load-bearing.** At the four plies the killer tripwire
-    /// above uses, removing the reduction costs 248 084 nodes against 212 442
-    /// — a 17% gap that leaves no room between the two ceilings. At five it is
-    /// 3 629 608 against 789 707, so the ceiling below sits with room on both
-    /// sides and the two tests stop measuring one search.
+    /// **The fixture and the depth are load-bearing**: they are where removing
+    /// the reduction costs far more than breaking any ordering the tripwires
+    /// above are for, so this ceiling does not fire on an ordering fault.
     ///
-    /// Sabotage: make `reduction` return 0 and this fixture goes from 789 707
-    /// nodes to 3 629 608, which is red on the ceiling below.
+    /// Sabotage: make `reduction` return 0 and this goes from 60 712 nodes to
+    /// 236 408, which is red on the ceiling below. Every ordering mutation the
+    /// tripwires above name stays under it: 61 223 without the killers'
+    /// ordering, 64 999 without history's, 63 571 without the transposition
+    /// move's swap.
     ///
     /// ⚠️ **A ceiling can only catch a reduction that stopped happening.**
-    /// Every other way of breaking this feature makes the tree *smaller* —
-    /// deleting the verification search gives 788 142, dropping the promotion
-    /// exemption 646 575, dropping the check exemption 660 563 — and none of
-    /// them is red here. The frozen `bench` counts catch all three; the test
+    /// Deleting the verification search, dropping the promotion exemption and
+    /// dropping the check exemption each leave this count at 60 712, and none
+    /// of them is red here. The frozen `bench` counts catch all three; the test
     /// below catches the first.
     #[test]
     fn late_quiet_moves_are_searched_a_ply_shallower() {
-        let (_, lines) = run(DROP_HEAVY_FIXTURE, depth(5));
+        let (_, lines) = run("startpos", depth(7));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 1_500_000,
+            field(last, "nodes") < 120_000,
             "late quiet moves are not being reduced: {last}"
         );
     }
@@ -2503,12 +2675,12 @@ mod tests {
     /// them.
     ///
     /// ⚠️ **The reduction is not what finds the win here** — an engine with no
-    /// reduction at all reports the same score, from 244 361 nodes against
-    /// 76 976. What the reduction does is find it three times cheaper, and
+    /// reduction at all reports the same score, from 251 104 nodes against
+    /// 78 077. What the reduction does is find it three times cheaper, and
     /// what the verification search does is keep it found.
     ///
     /// Sabotage: drop the verification search and this reports `cp 15` from
-    /// 73 475 nodes.
+    /// 74 434 nodes.
     #[test]
     fn a_reduced_move_is_believed_only_after_a_full_depth_search() {
         let (_, lines) = run(RESEARCH_FIXTURE, depth(6));
@@ -2536,10 +2708,10 @@ mod tests {
     /// lines of `openings-v3` at depth 6. **One position disagreed** — every
     /// other line matched on move and score — and this is it.
     ///
-    /// Sabotage: give the third search `depth - 1 - taken` and this reports
+    /// Sabotage: give the third search `full - taken` and this reports
     /// `cp 50` against `cp 130`. ⚠️ **Nothing else in this crate went red on
     /// that before this test existed**, and the frozen `bench` counts move by
-    /// 0.22%, which is inside what an ordinary rebaseline absorbs.
+    /// 1.5%, which is inside what an ordinary rebaseline absorbs.
     ///
     /// ⚠️ **Every move of the line is load-bearing, including the last two.**
     /// Cut `6a7b 3i3h` off the end and the fixture reports `cp 30` under both
