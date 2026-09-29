@@ -27,6 +27,40 @@ it like any other.
 
 ## E1 — classical search, one feature at a time
 
+### Item 7a — a pawn's promotion that takes nothing, in quiescence — **inconclusive at the cap, not adopted**
+
+Neither bound was crossed at elo0 = 0 / elo1 = 10.
+
+```
+pairs 3000 | games 6000 | candidate W-D-L 2219-1641-2140
+pent [405, 63, 2017, 78, 437] | llr -0.361 | score 50.66% (elo +4.6 est)
+```
+
+| | |
+|---|---|
+| candidate | `6333dfc` |
+| baseline | `0a6a037` |
+| `bench` | candidate 469 581, baseline 459 694 — both read off the binaries that played, before the run |
+| control | `--nodes 300000 --gain` (elo0 = 0 / elo1 = 10), α = β = 0.05, concurrency 3, `--max-pairs 3000` |
+| openings | `openings-v3.sfen`, seed 1, 3000 distinct openings for 3000 pairs |
+| endings | 4334 checkmates, 1612 千日手, 29 at the 512-ply move limit, 25 入玉宣言 |
+
+The counts above were recomputed from `run.jsonl` rather than read off the
+harness's summary, and agree to the digit, LLR included.
+
+⚠️ **What an inconclusive run says: nothing about the sign.** It rules out
+neither no effect nor +10. The +4.6 is a point estimate from 3000 pairs.
+
+⚠️ **The run cannot be extended.** It used every line of `openings-v3`, and a
+fixed-node run may not outrun its opening set.
+
+The LLR never came near either bound. It reached −2.194 at the 848th pair to
+land and +1.601 at the 1728th, then settled at −0.361.
+
+It ran on a cloud container beside the branch's test and sabotage runs, which
+CLAUDE.md permits for a fixed-node queue. The session supervised it
+throughout, and it was not interrupted.
+
 ### Item 6 — check extension, a node in check extending nothing — **pass**
 
 H1 accepted at elo0 = 0 / elo1 = 10.
