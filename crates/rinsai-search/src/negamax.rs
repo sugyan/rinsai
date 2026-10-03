@@ -2385,7 +2385,9 @@ mod tests {
     /// The search has to give the shared buffer back. ⚠️ Forgetting `truncate`
     /// is a leak rather than a wrong answer, which is why the buffer's own
     /// tests cannot catch it. Sabotage: delete `self.buf.truncate(base)` from
-    /// `negamax` and the buffer comes back holding thousands of moves.
+    /// `negamax`. Under `cargo test` this goes red on `child`'s own assertion,
+    /// "a child left 30 moves in the buffer", before its own is reached; under
+    /// `cargo test --release` it goes red here, on 3 591 moves left.
     #[test]
     fn the_move_buffer_comes_back_empty() {
         let mut searcher = searcher();
@@ -2843,9 +2845,7 @@ mod tests {
     /// Sabotage, both red here: `Bound::Exact => true` in [`cuts`] takes the two
     /// lone kings at depth eight from eight published moves to seven; scouting
     /// [`negamax_root`]'s own move list publishes one move for a depth-4
-    /// search. ⚠️ **The second is the whole reason the root does not scout**,
-    /// and before this test only `a_reduced_move_is_believed_only_after_a_full_depth_search`
-    /// caught it — by one centipawn, on an assertion about something else.
+    /// search. ⚠️ **The second is the whole reason the root does not scout.**
     ///
     /// [`negamax_root`]: NegamaxSearcher::negamax_root
     #[test]
@@ -2994,8 +2994,9 @@ mod tests {
     /// Sabotage: test `limits.btime.is_none() && limits.wtime.is_none()` instead
     /// of the mover's own field. The allowance becomes `Some(ZERO)` rather than
     /// `None` — which is not "nothing named" but "no time left", and because a
-    /// deadline exists it also lifts the ceiling off `DEFAULT_DEPTH`, so the
-    /// engine answers from one root move where it used to search four plies.
+    /// deadline exists it also lifts the ceiling off `DEFAULT_DEPTH`, so from
+    /// the initial position the engine answers from depth 1 where it used to
+    /// search four plies.
     /// ⚠️ Reachable from a conforming GUI: `parse_go` leaves an unparseable
     /// field unset rather than refusing the `go`.
     #[test]
@@ -3025,8 +3026,10 @@ mod tests {
 
     /// When the margin binds, and the two ways it must not.
     ///
-    /// The main-time case is what pins the margin to the *cap*: take it off
-    /// the spend instead and only that assertion moves.
+    /// The main-time and increment cases are what pin the margin to the
+    /// *cap*: take it off the spend instead and both move — the first to 30 ms
+    /// less, the second to `Some(100ms)` — while the byoyomi and `movetime`
+    /// cases do not.
     #[test]
     fn the_margin_comes_off_a_derived_allowance_and_not_off_movetime() {
         let margin = Duration::from_millis(30);
