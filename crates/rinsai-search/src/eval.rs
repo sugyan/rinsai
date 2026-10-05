@@ -68,7 +68,7 @@ pub(crate) fn board_value(kind: PieceKind) -> i32 {
 /// captor's hand — **a promoted piece unpromotes when it is taken**, so a と金
 /// is won at a gold's board value and a pawn's hand value.
 ///
-/// Caller: [`crate::ordering`].
+/// Callers: [`crate::ordering`], and [`crate::futility`]'s depth-2 margin.
 pub(crate) fn capture_gain(kind: PieceKind) -> i32 {
     BOARD[kind.array_index()] + HAND[kind.unpromote().unwrap_or(kind).array_index()]
 }
