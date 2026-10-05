@@ -29,6 +29,7 @@ use crate::clock::{Clock, RealClock};
 use crate::declaration;
 use crate::eval;
 use crate::extension;
+use crate::futility;
 use crate::game::HistoryEntry;
 use crate::info::SearchInfo;
 use crate::moves::{MAX_LEGAL_MOVES, MoveBuf};
@@ -700,6 +701,7 @@ impl<C: Clock> NegamaxSearcher<C> {
             board.in_check(),
             "the last entry on the repetition path is not this node's"
         );
+        let futility = futility::bound(depth, in_check, || eval::evaluate(board));
 
         let mut best = -Score::INFINITE;
         // Only a move that raised alpha, because only such a move was proved
@@ -718,6 +720,20 @@ impl<C: Clock> NegamaxSearcher<C> {
             // for.
             let entry = HistoryEntry::of(board);
             let gives_check = entry.in_check;
+            // ⚠️ **A skipped move never reaches `child`, so 千日手 is never
+            // asked about it**: a quiet move into a drawn repetition is skipped
+            // like any other, and a node that is losing cannot see the draw
+            // that would save it.
+            if let Some(bound) = futility
+                && futility::prunes(bound, window.alpha, quiet, gives_check)
+            {
+                board.undo_move(mv, undo);
+                // What the move could have scored at most, so `best` stays an
+                // upper bound the table may file, and a node that had moves
+                // never returns `-INFINITE`.
+                best = best.max(bound);
+                continue;
+            }
             self.path.push(entry);
             // The first move of the list takes the node's own window; every
             // move behind it is scouted, and widens back only by proving it
@@ -790,6 +806,10 @@ impl<C: Clock> NegamaxSearcher<C> {
         // a right-looking key; this catches a *missing* or *extra* unmake, which
         // is what an early return added below the `do_move` would produce.
         debug_assert_eq!(board.key(), key, "the node loop left the board unbalanced");
+        debug_assert!(
+            self.stopped || best > -Score::INFINITE,
+            "a node with moves to play came back with no score"
+        );
 
         // ⚠️ **Nothing is stored from an abandoned search**, and not because
         // `best` is a placeholder — the `break` above discards those. It is that
