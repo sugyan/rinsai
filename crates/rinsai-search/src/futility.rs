@@ -1,9 +1,10 @@
 //! Which quiet moves a shallow node may skip without searching them.
 //!
-//! A node close to the horizon whose static evaluation, plus the most a quiet
-//! move could add to it, still does not reach alpha has nothing to gain from
-//! those moves: each would come back at or below alpha, and searching it only
-//! proves so. Skipping them is what buys the tree back.
+//! A node close to the horizon whose static evaluation, plus what a quiet
+//! move is taken to add to it, still does not reach alpha is assumed to have
+//! nothing to gain from those moves: each would come back at or below alpha,
+//! and searching it would only prove so. Skipping them is what buys the tree
+//! back.
 //!
 //! ⚠️ **The margin is a claim about the evaluation**, not about the search. The
 //! depth-1 margin is zero because a material balance cannot be raised by a
@@ -22,11 +23,11 @@ const MAX_FUTILE_DEPTH: Depth = 2;
 /// What a quiet move at a node of `depth` is assumed able to add to the
 /// static evaluation by the time its search reaches the horizon.
 ///
-/// * **Depth 1: nothing, and that is exact rather than assumed.** The child is
-///   a quiescence node that is not in check, so it stands pat; and a quiet
-///   move that neither checks nor promotes leaves a material balance where it
-///   was, or — a drop — lowers it, since a piece in hand is worth more than
-///   the same piece on the board.
+/// * **Depth 1: nothing, and that is exact rather than assumed**, 千日手
+///   aside. The child is a quiescence node that is not in check, so it stands
+///   pat; and a quiet move that neither checks nor promotes leaves a material
+///   balance where it was, or — a drop — lowers it, since a piece in hand is
+///   worth more than the same piece on the board.
 /// * **Depth 2: a silver won**, board and hand together. The move has one
 ///   reply to get through before quiescence, and a threat it makes good on is
 ///   worth what a capture is worth, which in shogi includes the hand. **A
@@ -38,8 +39,8 @@ fn margin(depth: Depth) -> i32 {
     }
 }
 
-/// The most a quiet move searched at this node can score, or `None` at a node
-/// that prunes nothing.
+/// What a quiet move searched at this node is taken to score at most, or
+/// `None` at a node that prunes nothing.
 ///
 /// `evaluate` is called only at a node that can prune, so a node that cannot
 /// does not pay for a static evaluation it would never read.
@@ -158,8 +159,8 @@ mod tests {
         for alpha in [Score::mate_in(5), Score::REPETITION] {
             assert!(!quiet_at(alpha), "{alpha:?}");
         }
-        // The highest evaluation still prunes, so the guard is the band and
-        // not something narrower.
+        // The top of the evaluation band still prunes, so the guard is the
+        // band and not something narrower.
         assert!(quiet_at(Score::REPETITION - 1));
     }
 
