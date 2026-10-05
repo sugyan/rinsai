@@ -85,7 +85,7 @@ while in check and misses a mate one ply away, and no cost makes that a
 trade. Every cap above it resolves checks; which one is best is an open
 question.
 
-E1's futility item owns settling it, with an SPRT rather than a node count.
+E1's item 8d owns settling it, with an SPRT rather than a node count.
 
 ⚠️ **Re-derive before quoting any ordering from this answer.** The counts are
 not written here because every ordering, pruning and extension patch moves them

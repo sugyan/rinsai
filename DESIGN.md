@@ -130,7 +130,11 @@ move ordering is absent because it landed with the table at E0.
    - **7a. A pawn's promotion that takes nothing — gated, and not adopted.** 歩→と is a 500 cp event in rinsai's own table, so a capture-only quiescence is blind to と金作り — a shogi-specific gap with no chess analogue. Pawns only, because an unpromoted bishop or rook inside the zone can promote on every move it makes. The gate came out inconclusive at the 3000-pair cap; STRENGTH.md has the numbers. ⚠️ **Reopens when 7b, or ranking a promotion among the captures, lands** — each cuts what searching one costs.
    - **7b. SEE in qsearch**, which needs shunsai to expose `attackers_to`.
    - **7c. Checks in qsearch**, which want `gives_check`. ⚠️ **This sub-item owns extending the repetition path into quiescence.** The exclusion rests on every non-evasion ply being irreversible. A promotion would keep that, since it cannot be undone on the board; a quiet check does not. CONVENTIONS.md carries the rule and the condition.
-8. Futility / razoring — hand value belongs in the margin. **Baseline: E0's quiescence is deliberately unpruned.** Also owns `QS_MAX_CHECK_PLIES`, which E0 set by measurement and without an instrument.
+8. Futility / razoring, split four ways because each is its own SPRT. Hand value belongs in every margin: a capture in shogi wins the piece twice, off the board and into the hand.
+   - **8a. Futility pruning of quiet moves at depth 1 and 2.** A quiet move that neither checks nor promotes is skipped when the static evaluation plus a margin does not reach alpha.
+   - **8b. Razoring.**
+   - **8c. Delta pruning in quiescence.** **Baseline: E0's quiescence is deliberately unpruned.**
+   - **8d. `QS_MAX_CHECK_PLIES`**, which E0 set by measurement and without an instrument.
 9. Aspiration windows. ⚠️ This item owes `negamax_root` the ability to tell a fail-low from an abandoned iteration; the FAQ carries why it cannot today.
 10. **Quiescence probes and stores in the transposition table.** Measured at E0 and **not** shipped there: it halves the tree on every fixture tried, which is the opposite of what the conventional argument predicts, and node count is not an instrument for strength. ⚠️ It rebaselines every `bench` count, so it wants a pull request of its own.
 11. **Scoring the first repetition on the search path as a draw**, rather than the fourth occurrence the rule names. Standard practice, it prunes cycles, and it is a search heuristic rather than the rule. ⚠️ It rebaselines every `bench` count, unlike E0's version, which moved none.

@@ -2736,7 +2736,7 @@ mod tests {
     /// Sabotage: give the third search `full - taken` and this reports
     /// `cp 50` against `cp 130`. ⚠️ **Nothing else in this crate went red on
     /// that before this test existed**, and the frozen `bench` counts move by
-    /// 1.5%, which is inside what an ordinary rebaseline absorbs.
+    /// 3.3%, which is inside what an ordinary rebaseline absorbs.
     ///
     /// ⚠️ **Every move of the line is load-bearing, including the last two.**
     /// Cut `6a7b 3i3h` off the end and the fixture reports `cp 30` under both
@@ -2771,11 +2771,11 @@ mod tests {
     /// Sabotage: make `futility::bound` return `None` and this goes from 33 724
     /// nodes to 72 389, which is red on the ceiling below. Every mutation the
     /// tripwires above name stays under it, the highest at 37 968, without
-    /// history's ordering.
+    /// history.
     ///
     /// ⚠️ **It cannot see the depth-2 half.** Taking futility back to depth 1
-    /// gives 39 947, inside what an ordering fault costs here; the frozen
-    /// `bench` counts catch it, and so does
+    /// gives 39 947, too close to what losing history costs here for a ceiling
+    /// to sit between them; the frozen `bench` counts catch it, and so does
     /// [`a_killer_is_searched_before_the_quiet_moves_around_it`].
     #[test]
     fn quiet_moves_that_cannot_reach_alpha_are_skipped() {
