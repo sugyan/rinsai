@@ -27,6 +27,42 @@ it like any other.
 
 ## E1 — classical search, one feature at a time
 
+### Item 8a — futility pruning of quiet moves at depths 1 and 2 — **pass at fixed nodes, which is not the measurement it needs**
+
+H1 accepted at elo0 = 0 / elo1 = 10.
+
+```
+pairs 116 | games 232 | candidate W-D-L 118-62-52
+pent [4, 5, 65, 5, 37] | llr +3.066 | score 64.22% (elo +101.6 est)
+```
+
+| | |
+|---|---|
+| candidate | `1dbbe29` |
+| baseline | `81f5dcf` |
+| `bench` | candidate 208 270, baseline 459 694 — both read off the binaries that played, before the run |
+| control | `--nodes 300000 --gain` (elo0 = 0 / elo1 = 10), α = β = 0.05, concurrency 3, `--max-pairs 3000` |
+| openings | `openings-v3.sfen`, seed 1, 116 distinct openings for 116 pairs |
+| endings | 169 checkmates, 62 千日手, 1 入玉宣言 |
+
+The counts above were recomputed from `run.jsonl` rather than read off the
+harness's summary, and agree to the digit, LLR included.
+
+⚠️ **What this pass says: more depth per counted node wins.** A skipped
+move still pays `do_move`, the check test and `undo_move`, and counts no node,
+so the candidate was given work the baseline paid for out of its budget. At
+depth 1 the skip is the child's own stand-pat cutoff moved up a ply. Whether
+the gain survives that bill is a question for a real-time gate, and none has
+run.
+
+⚠️ **The rev that played hid a 千日手 draw** behind a skipped quiet move at a
+losing node. The engine that merges asks the repetition question before
+skipping, and moves no `bench` count doing so.
+
+It ran on a cloud container beside the branch's test runs, which CLAUDE.md
+permits for a fixed-node queue. The session supervised it throughout, and it
+was not interrupted.
+
 ### Item 7a — a pawn's promotion that takes nothing, in quiescence — **inconclusive at the cap, not adopted**
 
 Neither bound was crossed at elo0 = 0 / elo1 = 10.

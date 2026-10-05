@@ -212,6 +212,17 @@ impl MoveBuf {
         from + captures
     }
 
+    /// Whether the move at `index` is quiet for the reduction and for
+    /// futility: behind the captures, where `quiets_from` is
+    /// [`Self::order_captures`]'s return value, and not a promotion.
+    ///
+    /// ⚠️ **A promotion that takes nothing is ranked among the non-captures
+    /// and is not quiet here.** 歩→と lands on an empty square, and the
+    /// evaluation prices it above a pawn capture.
+    pub(crate) fn is_quiet(&self, index: usize, quiets_from: usize) -> bool {
+        index >= quiets_from && !self.moves[index].is_promoting()
+    }
+
     /// Puts the moves at or after `from` in [`HistoryTable`] order, best
     /// first.
     ///
@@ -742,8 +753,8 @@ mod tests {
     /// The sort: what wins most is tried first.
     ///
     /// Sabotage: drop the `sort_by` and keep the partition;
-    /// `negamax`'s `the_transposition_move_is_searched_first` goes red with
-    /// it.
+    /// `negamax`'s `the_transposition_move_is_searched_first` and
+    /// `quiet_moves_that_cannot_reach_alpha_are_skipped` go red with it.
     #[test]
     fn the_captures_come_out_best_first() {
         let board = ordering_fixture();
