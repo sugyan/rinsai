@@ -108,7 +108,7 @@ mod tests {
         }
     }
 
-    /// Sabotage: call `evaluate` before the guard, and both rows panic.
+    /// Sabotage: call `evaluate` before the guard, and the first row panics.
     #[test]
     fn a_node_that_prunes_nothing_does_not_evaluate() {
         let unreachable = || -> Score { panic!("evaluated at a node that prunes nothing") };
@@ -167,8 +167,8 @@ mod tests {
     /// that neither checks nor promotes, from positions with drops on offer
     /// and without.
     ///
-    /// Sabotage: price a pawn in hand at 85 instead of 115, and every pawn drop
-    /// on the drop-heavy row raises the balance.
+    /// Sabotage: price a pawn in hand at 85 instead of 115, and this fails on a
+    /// pawn drop from the drop-heavy row.
     #[test]
     fn a_quiet_move_never_raises_the_material_balance() {
         let fixtures = [

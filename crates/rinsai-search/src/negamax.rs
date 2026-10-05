@@ -2593,11 +2593,13 @@ mod tests {
     /// smaller. This is a position measured where it still costs, on all three
     /// of the mutations below.
     ///
-    /// Sabotage, from a baseline of 207 613 nodes: deleting the whole `hit.mv`
-    /// block gives 424 138, and dropping only the `buf.swap` while leaving
-    /// `order_from` at `base + 1` gives 633 818. Both go red on the ceiling
+    /// Sabotage, from a baseline of 83 725 nodes: deleting the whole `hit.mv`
+    /// block gives 201 711, and dropping only the `buf.swap` while leaving
+    /// `order_from` at `base + 1` gives 304 334. Both go red on the ceiling
     /// below. Demoting the stored move rather than removing it — ordering
-    /// captures from `base` — gives 423 892 and goes red too.
+    /// captures from `base` — gives 201 531 and goes red too. ⚠️ **So does
+    /// removing the reduction (224 771) or futility (207 613)**: on this
+    /// fixture no ceiling separates them from the three above.
     ///
     /// ⚠️ **A ceiling only catches a mutation that makes the tree bigger**, and
     /// this fixture's baseline moves with every search feature that lands, so
@@ -2612,7 +2614,7 @@ mod tests {
         let (_, lines) = run("startpos moves 7g7f 3c3d", depth(7));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 300_000,
+            field(last, "nodes") < 150_000,
             "the transposition move is not being tried first: {last}"
         );
     }
@@ -2633,21 +2635,22 @@ mod tests {
     ///
     /// Sabotage, either way of removing the feature — delete the
     /// `order_killers` call and leave the table filling up unread, or drop
-    /// `remember_cutoff`'s killer half: both take this fixture from 446 250
-    /// nodes to 590 027, and both go red on the ceiling below. ⚠️ **Ordering
-    /// by history after the killers rather than before gives 593 482** and
-    /// goes red here too. Removing history instead stays green at 446 244,
+    /// `remember_cutoff`'s killer half: both take this fixture from 197 664
+    /// nodes to 305 197, and both go red on the ceiling below. ⚠️ **Ordering
+    /// by history after the killers rather than before gives 307 289** and
+    /// goes red here too. Removing history instead stays green at 204 045,
     /// from either site — the `order_history` call, or `remember_cutoff`'s
     /// `history.record`. ⚠️ **The two give the identical count**, so this
     /// tripwire is blind to history being recorded as well as to its being
     /// read, and a patch that stops doing either shows up in `bench`'s frozen
-    /// counts rather than here.
+    /// counts rather than here. ⚠️ **Taking futility back to depth 1 gives
+    /// 274 622 and goes red here as well.**
     #[test]
     fn a_killer_is_searched_before_the_quiet_moves_around_it() {
         let (_, lines) = run(DROP_HEAVY_FIXTURE, depth(4));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 520_000,
+            field(last, "nodes") < 250_000,
             "the killers are not being tried early: {last}"
         );
     }
@@ -2662,15 +2665,15 @@ mod tests {
     /// the reduction costs far more than breaking any ordering the tripwires
     /// above are for, so this ceiling does not fire on an ordering fault.
     ///
-    /// Sabotage: make `reduction` return 0 and this goes from 60 712 nodes to
-    /// 236 408, which is red on the ceiling below. Every ordering mutation the
-    /// tripwires above name stays under it: 61 223 without the killers'
-    /// ordering, 64 999 without history's, 63 571 without the transposition
-    /// move's swap.
+    /// Sabotage: make `reduction` return 0 and this goes from 33 501 nodes to
+    /// 73 805, which is red on the ceiling below. Every ordering mutation the
+    /// tripwires above name stays under it: 33 308 without the killers'
+    /// ordering, 34 867 without history's, 34 650 without the transposition
+    /// move's swap. So does removing futility, at 60 712.
     ///
     /// ⚠️ **A ceiling can only catch a reduction that stopped happening.**
     /// Deleting the verification search, dropping the promotion exemption and
-    /// dropping the check exemption each leave this count at 60 712, and none
+    /// dropping the check exemption each leave this count at 33 501, and none
     /// of them is red here. The frozen `bench` counts catch all three; the test
     /// below catches the first.
     #[test]
@@ -2678,7 +2681,7 @@ mod tests {
         let (_, lines) = run("startpos", depth(7));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 120_000,
+            field(last, "nodes") < 67_000,
             "late quiet moves are not being reduced: {last}"
         );
     }
@@ -2697,12 +2700,12 @@ mod tests {
     /// them.
     ///
     /// ⚠️ **The reduction is not what finds the win here** — an engine with no
-    /// reduction at all reports the same score, from 251 104 nodes against
-    /// 78 077. What the reduction does is find it three times cheaper, and
+    /// reduction at all reports the same score, from 171 166 nodes against
+    /// 38 984. What the reduction does is find it four times cheaper, and
     /// what the verification search does is keep it found.
     ///
     /// Sabotage: drop the verification search and this reports `cp 15` from
-    /// 74 434 nodes.
+    /// 35 738 nodes.
     #[test]
     fn a_reduced_move_is_believed_only_after_a_full_depth_search() {
         let (_, lines) = run(RESEARCH_FIXTURE, depth(6));
@@ -2751,6 +2754,36 @@ mod tests {
         assert!(
             field(last, "cp") > 100,
             "a reduced score raised alpha at a node with a window: {last}"
+        );
+    }
+
+    /// Where skipping futile quiet moves costs more to lose than any ordering
+    /// or reduction fault: found by playing every mutation the tripwires above
+    /// name over the first 60 lines of `openings-v3` at depths 5 and 6, and
+    /// keeping the line where removing futility stood furthest above all of
+    /// them.
+    const FUTILITY_FIXTURE: &str = "startpos moves 2g2f 4a3b 2f2e 8c8d 7g7f 8d8e 8h7g \
+         9c9d 9g9f 1c1d 1g1f 3c3d";
+
+    /// Quiet moves that cannot reach alpha are skipped, as a node-count
+    /// tripwire.
+    ///
+    /// Sabotage: make `futility::bound` return `None` and this goes from 33 724
+    /// nodes to 72 389, which is red on the ceiling below. Every mutation the
+    /// tripwires above name stays under it, the highest at 37 968, without
+    /// history's ordering.
+    ///
+    /// ⚠️ **It cannot see the depth-2 half.** Taking futility back to depth 1
+    /// gives 39 947, inside what an ordering fault costs here; the frozen
+    /// `bench` counts catch it, and so does
+    /// [`a_killer_is_searched_before_the_quiet_moves_around_it`].
+    #[test]
+    fn quiet_moves_that_cannot_reach_alpha_are_skipped() {
+        let (_, lines) = run(FUTILITY_FIXTURE, depth(5));
+        let last = lines.last().expect("an iteration finished");
+        assert!(
+            field(last, "nodes") < 55_000,
+            "futile quiet moves are being searched: {last}"
         );
     }
 
