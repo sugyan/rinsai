@@ -119,6 +119,10 @@ Numbered **E0–E6** so as not to collide with shunsai's M0–M7. Rating targets
 Introduction order, with the shogi-specific caveats that differ from chess. TT
 move ordering is absent because it landed with the table at E0.
 
+**E1 ends when every item below that is not marked optional has had its gate,
+whatever the verdict.** The list is closed: an idea that is not on it is an
+issue, and does not hold E1 open.
+
 1. MVV-LVA for captures, promotion-aware. **Baseline: E0's quiescence is deliberately unordered.**
 2. Killers — **drops can be killers**
 3. History — **butterfly boards are impossible, because drops have no `from`**. Index by (piece kind × side, `to`) to unify board moves and drops. Countermove and continuation history later.
@@ -129,12 +133,12 @@ move ordering is absent because it landed with the table at E0.
 7. What E0's quiescence leaves out, split three ways because each is its own SPRT. ⚠️ **7b and 7c wait on shunsai**, as item 4 does.
    - **7a. A pawn's promotion that takes nothing — gated, and not adopted.** 歩→と is a 500 cp event in rinsai's own table, so a capture-only quiescence is blind to と金作り — a shogi-specific gap with no chess analogue. Pawns only, because an unpromoted bishop or rook inside the zone can promote on every move it makes. The gate came out inconclusive at the 3000-pair cap; STRENGTH.md has the numbers. ⚠️ **Reopens when 7b, or ranking a promotion among the captures, lands** — each cuts what searching one costs.
    - **7b. SEE in qsearch**, which needs shunsai to expose `attackers_to`.
-   - **7c. Checks in qsearch**, which want `gives_check`. ⚠️ **This sub-item owns extending the repetition path into quiescence.** The exclusion rests on every non-evasion ply being irreversible. A promotion would keep that, since it cannot be undone on the board; a quiet check does not. CONVENTIONS.md carries the rule and the condition.
+   - **7c. Checks in qsearch**, which want `gives_check`. **Optional.** ⚠️ **This sub-item owns extending the repetition path into quiescence.** The exclusion rests on every non-evasion ply being irreversible. A promotion would keep that, since it cannot be undone on the board; a quiet check does not. CONVENTIONS.md carries the rule and the condition.
 8. Futility / razoring — hand value belongs in the margin. **Baseline: E0's quiescence is deliberately unpruned.** Also owns `QS_MAX_CHECK_PLIES`, which E0 set by measurement and without an instrument.
 9. Aspiration windows. ⚠️ This item owes `negamax_root` the ability to tell a fail-low from an abandoned iteration; the FAQ carries why it cannot today.
 10. **Quiescence probes and stores in the transposition table.** Measured at E0 and **not** shipped there: it halves the tree on every fixture tried, which is the opposite of what the conventional argument predicts, and node count is not an instrument for strength. ⚠️ It rebaselines every `bench` count, so it wants a pull request of its own.
 11. **Scoring the first repetition on the search path as a draw**, rather than the fourth occurrence the rule names. Standard practice, it prunes cycles, and it is a search heuristic rather than the rule. ⚠️ It rebaselines every `bench` count, unlike E0's version, which moved none.
-12. Singular extensions, and the rest
+12. Singular extensions. **Optional.**
 
 **SPRT discipline** — the parameters are in [CLAUDE.md](./CLAUDE.md) and are not restated here. What is specific to E1 is the pacing: **one item on this list is one SPRT**, in list order, and an item that fails to pass is recorded on its issue with its numbers rather than retried until it does.
 
