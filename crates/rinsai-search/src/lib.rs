@@ -26,6 +26,7 @@ mod clock;
 mod declaration;
 mod eval;
 mod extension;
+mod futility;
 mod game;
 mod info;
 mod moves;

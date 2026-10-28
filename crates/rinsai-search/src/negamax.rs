@@ -29,6 +29,7 @@ use crate::clock::{Clock, RealClock};
 use crate::declaration;
 use crate::eval;
 use crate::extension;
+use crate::futility;
 use crate::game::HistoryEntry;
 use crate::info::SearchInfo;
 use crate::moves::{MAX_LEGAL_MOVES, MoveBuf};
@@ -681,8 +682,8 @@ impl<C: Clock> NegamaxSearcher<C> {
         self.buf.order_history(quiets_from, board, &self.history);
         self.buf.order_killers(quiets_from, self.stack[ply].killers);
 
-        // Whether *this* node's side to move is in check, for the reduction
-        // and the extension below. ⚠️ **Read off the path rather than from the
+        // Whether *this* node's side to move is in check, for the reduction,
+        // the extension and futility below. ⚠️ **Read off the path rather than from the
         // board**: `child` is the only way into this function, and no move is
         // dispatched through it without its own entry having been pushed first,
         // so the answer is already computed and paid for. `board.in_check()`
@@ -700,6 +701,9 @@ impl<C: Clock> NegamaxSearcher<C> {
             board.in_check(),
             "the last entry on the repetition path is not this node's"
         );
+        // Evaluated once, at the first quiet move: a node that cuts off on its
+        // transposition move or a capture never pays for it.
+        let mut futility_bound = None;
 
         let mut best = -Score::INFINITE;
         // Only a move that raised alpha, because only such a move was proved
@@ -708,17 +712,42 @@ impl<C: Clock> NegamaxSearcher<C> {
         let mut best_move = None;
         for i in base..self.buf.len() {
             let mv = self.buf.get(i);
-            // ⚠️ **A promotion that takes nothing is quiet by `order_captures`
-            // and is not quiet for this purpose** — [`reduction`] carries why.
-            let quiet = i >= quiets_from && !mv.is_promoting();
+            let quiet = self.buf.is_quiet(i, quiets_from);
+            let bound = if quiet {
+                *futility_bound.get_or_insert_with(|| {
+                    futility::bound(depth, in_check, || eval::evaluate(board))
+                })
+            } else {
+                None
+            };
             let undo = board.do_move(mv);
             // The entry about to be pushed is the *child's*, so its `in_check`
-            // is whether `mv` gave check — the other thing the reduction and
-            // the extension need, and the other one the push has already paid
-            // for.
+            // is whether `mv` gave check — the other thing the reduction, the
+            // extension and futility need, and the other one the push has
+            // already paid for.
             let entry = HistoryEntry::of(board);
             let gives_check = entry.in_check;
             self.path.push(entry);
+            // ⚠️ **A skipped move never reaches `child`, so 千日手 is asked
+            // here instead, and only below zero.** Neither this node nor its
+            // child is in check, so a draw is the one verdict a skipped move
+            // can hide, and a draw outranks the bound only when that is
+            // negative.
+            if let Some(bound) = bound
+                && futility::prunes(bound, window.alpha, gives_check)
+                && (bound >= Score::ZERO || repetition::verdict(&self.path).is_none())
+            {
+                self.path.pop();
+                board.undo_move(mv, undo);
+                // What the move is taken to score at most — exact at depth 1,
+                // the margin's assumption at depth 2 — which keeps a node that
+                // had moves from returning `-INFINITE`. ⚠️ At depth 2 the table
+                // files it as an upper bound all the same, and a margin that
+                // was too small makes that bound too low: the pessimistic
+                // direction, as a reduced fail-low errs.
+                best = best.max(bound);
+                continue;
+            }
             // The first move of the list takes the node's own window; every
             // move behind it is scouted, and widens back only by proving it
             // deserves to.
@@ -790,6 +819,10 @@ impl<C: Clock> NegamaxSearcher<C> {
         // a right-looking key; this catches a *missing* or *extra* unmake, which
         // is what an early return added below the `do_move` would produce.
         debug_assert_eq!(board.key(), key, "the node loop left the board unbalanced");
+        debug_assert!(
+            self.stopped || best > -Score::INFINITE,
+            "a node with moves to play came back with no score"
+        );
 
         // ⚠️ **Nothing is stored from an abandoned search**, and not because
         // `best` is a placeholder — the `break` above discards those. It is that
@@ -1686,6 +1719,34 @@ mod tests {
         assert_eq!(pv_of(last).len(), 1, "{last}");
     }
 
+    /// Black, a rook and a bishop down, can check and then repeat for the
+    /// fourth time with a quiet move.
+    const DRAW_BY_A_QUIET_MOVE: &str = "sfen 7nk/9/8p/6G1S/9/9/9/9/4K4 w rb 1 moves \
+         1a1b 1d2c 1b1a 2c1d 1a1b 1d2c 1b1a 2c1d 1a1b";
+
+    /// A losing node still finds the draw a quiet move reaches, though that
+    /// move is one futility skips: quiet, not checking, at a depth-1 node far
+    /// below alpha.
+    ///
+    /// **Depth 2 not finding it is what lets depth 3 fail, and is asserted.**
+    /// At depth 2 the repeating move is played in quiescence, which keeps no
+    /// repetition path; only at depth 3 is it an interior node's move.
+    ///
+    /// Sabotage: drop the `repetition::verdict` test from the skip, and depth 3
+    /// reports `cp -1350`.
+    #[test]
+    fn a_quiet_move_into_a_drawn_repetition_is_not_skipped() {
+        let (_, lines) = run(DRAW_BY_A_QUIET_MOVE, depth(3));
+        assert!(
+            field(&lines[1], "cp") < -1000,
+            "depth 2 sees the draw, so depth 3 proves nothing: {}",
+            lines[1]
+        );
+        let last = lines.last().expect("the search reported something");
+        assert_eq!(field(last, "depth"), 3, "{last}");
+        assert_eq!(field(last, "cp"), 0, "a skipped move hid the draw: {last}");
+    }
+
     /// The same position reached without the history that repeats it is an
     /// ordinary position, and says so.
     ///
@@ -2573,11 +2634,13 @@ mod tests {
     /// smaller. This is a position measured where it still costs, on all three
     /// of the mutations below.
     ///
-    /// Sabotage, from a baseline of 207 613 nodes: deleting the whole `hit.mv`
-    /// block gives 424 138, and dropping only the `buf.swap` while leaving
-    /// `order_from` at `base + 1` gives 633 818. Both go red on the ceiling
+    /// Sabotage, from a baseline of 83 725 nodes: deleting the whole `hit.mv`
+    /// block gives 201 711, and dropping only the `buf.swap` while leaving
+    /// `order_from` at `base + 1` gives 304 334. Both go red on the ceiling
     /// below. Demoting the stored move rather than removing it — ordering
-    /// captures from `base` — gives 423 892 and goes red too.
+    /// captures from `base` — gives 201 531 and goes red too. ⚠️ **So does
+    /// removing the reduction (224 771) or futility (207 613)**: on this
+    /// fixture no ceiling separates them from the three above.
     ///
     /// ⚠️ **A ceiling only catches a mutation that makes the tree bigger**, and
     /// this fixture's baseline moves with every search feature that lands, so
@@ -2592,7 +2655,7 @@ mod tests {
         let (_, lines) = run("startpos moves 7g7f 3c3d", depth(7));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 300_000,
+            field(last, "nodes") < 150_000,
             "the transposition move is not being tried first: {last}"
         );
     }
@@ -2613,21 +2676,22 @@ mod tests {
     ///
     /// Sabotage, either way of removing the feature — delete the
     /// `order_killers` call and leave the table filling up unread, or drop
-    /// `remember_cutoff`'s killer half: both take this fixture from 446 250
-    /// nodes to 590 027, and both go red on the ceiling below. ⚠️ **Ordering
-    /// by history after the killers rather than before gives 593 482** and
-    /// goes red here too. Removing history instead stays green at 446 244,
+    /// `remember_cutoff`'s killer half: both take this fixture from 197 664
+    /// nodes to 305 197, and both go red on the ceiling below. ⚠️ **Ordering
+    /// by history after the killers rather than before gives 307 289** and
+    /// goes red here too. Removing history instead stays green at 204 045,
     /// from either site — the `order_history` call, or `remember_cutoff`'s
     /// `history.record`. ⚠️ **The two give the identical count**, so this
     /// tripwire is blind to history being recorded as well as to its being
     /// read, and a patch that stops doing either shows up in `bench`'s frozen
-    /// counts rather than here.
+    /// counts rather than here. ⚠️ **Removing futility (446 250) or taking it
+    /// back to depth 1 (274 622) goes red here as well.**
     #[test]
     fn a_killer_is_searched_before_the_quiet_moves_around_it() {
         let (_, lines) = run(DROP_HEAVY_FIXTURE, depth(4));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 520_000,
+            field(last, "nodes") < 250_000,
             "the killers are not being tried early: {last}"
         );
     }
@@ -2642,15 +2706,15 @@ mod tests {
     /// the reduction costs far more than breaking any ordering the tripwires
     /// above are for, so this ceiling does not fire on an ordering fault.
     ///
-    /// Sabotage: make `reduction` return 0 and this goes from 60 712 nodes to
-    /// 236 408, which is red on the ceiling below. Every ordering mutation the
-    /// tripwires above name stays under it: 61 223 without the killers'
-    /// ordering, 64 999 without history's, 63 571 without the transposition
-    /// move's swap.
+    /// Sabotage: make `reduction` return 0 and this goes from 33 501 nodes to
+    /// 73 805, which is red on the ceiling below. Every ordering mutation the
+    /// tripwires above name stays under it: 33 308 without the killers'
+    /// ordering, 34 867 without history's, 34 650 without the transposition
+    /// move's swap. So does removing futility, at 60 712.
     ///
     /// ⚠️ **A ceiling can only catch a reduction that stopped happening.**
     /// Deleting the verification search, dropping the promotion exemption and
-    /// dropping the check exemption each leave this count at 60 712, and none
+    /// dropping the check exemption each leave this count at 33 501, and none
     /// of them is red here. The frozen `bench` counts catch all three; the test
     /// below catches the first.
     #[test]
@@ -2658,7 +2722,7 @@ mod tests {
         let (_, lines) = run("startpos", depth(7));
         let last = lines.last().expect("an iteration finished");
         assert!(
-            field(last, "nodes") < 120_000,
+            field(last, "nodes") < 67_000,
             "late quiet moves are not being reduced: {last}"
         );
     }
@@ -2677,12 +2741,12 @@ mod tests {
     /// them.
     ///
     /// ⚠️ **The reduction is not what finds the win here** — an engine with no
-    /// reduction at all reports the same score, from 251 104 nodes against
-    /// 78 077. What the reduction does is find it three times cheaper, and
+    /// reduction at all reports the same score, from 171 166 nodes against
+    /// 38 984. What the reduction does is find it four times cheaper, and
     /// what the verification search does is keep it found.
     ///
     /// Sabotage: drop the verification search and this reports `cp 15` from
-    /// 74 434 nodes.
+    /// 35 738 nodes.
     #[test]
     fn a_reduced_move_is_believed_only_after_a_full_depth_search() {
         let (_, lines) = run(RESEARCH_FIXTURE, depth(6));
@@ -2713,7 +2777,7 @@ mod tests {
     /// Sabotage: give the third search `full - taken` and this reports
     /// `cp 50` against `cp 130`. ⚠️ **Nothing else in this crate went red on
     /// that before this test existed**, and the frozen `bench` counts move by
-    /// 1.5%, which is inside what an ordinary rebaseline absorbs.
+    /// 3.3%, which is inside what an ordinary rebaseline absorbs.
     ///
     /// ⚠️ **Every move of the line is load-bearing, including the last two.**
     /// Cut `6a7b 3i3h` off the end and the fixture reports `cp 30` under both
@@ -2731,6 +2795,88 @@ mod tests {
         assert!(
             field(last, "cp") > 100,
             "a reduced score raised alpha at a node with a window: {last}"
+        );
+    }
+
+    /// Where losing futility costs more than any ordering or reduction
+    /// mutation the tripwires above name: found by playing those mutations
+    /// over the first 60 lines of `openings-v3` at depths 5 and 6, and keeping
+    /// the line where removing futility stood furthest above all of them.
+    const FUTILITY_FIXTURE: &str = "startpos moves 2g2f 4a3b 2f2e 8c8d 7g7f 8d8e 8h7g \
+         9c9d 9g9f 1c1d 1g1f 3c3d";
+
+    /// Quiet moves that cannot reach alpha are skipped, as a node-count
+    /// tripwire.
+    ///
+    /// Sabotage: make `futility::bound` return `None` and this goes from 33 724
+    /// nodes to 72 389, which is red on the ceiling below. Every ordering and
+    /// reduction mutation the tripwires above name stays under it, the highest
+    /// at 37 968, without history. ⚠️ **An ordering fault none of them names
+    /// can cost more**: dropping the capture sort in `order_captures` gives
+    /// 78 761 and goes red here, under futility's name.
+    ///
+    /// ⚠️ **It cannot see the depth-2 half.** Taking futility back to depth 1
+    /// gives 39 947, too close to what losing history costs here for a ceiling
+    /// to sit between them; the frozen `bench` counts catch it, and so does
+    /// [`a_killer_is_searched_before_the_quiet_moves_around_it`].
+    #[test]
+    fn quiet_moves_that_cannot_reach_alpha_are_skipped() {
+        let (_, lines) = run(FUTILITY_FIXTURE, depth(5));
+        let last = lines.last().expect("an iteration finished");
+        assert!(
+            field(last, "nodes") < 55_000,
+            "futile quiet moves are being searched: {last}"
+        );
+    }
+
+    /// A pawn that promotes onto an empty square is not quiet, so futility
+    /// never skips it: the reply that promotes is searched after its node's
+    /// alpha has risen, which is where a skip would land.
+    ///
+    /// Sabotage: drop `!is_promoting()` from `MoveBuf::is_quiet`, or test
+    /// `i >= quiets_from` instead of `quiet` where the bound is taken, and
+    /// either reports `cp -765`.
+    #[test]
+    fn a_promotion_that_takes_nothing_is_not_skipped() {
+        let args = "sfen 8k/9/9/4P4/2p6/3S5/9/9/K8 w - 1";
+        let (_, lines) = run(args, depth(2));
+        let last = lines.last().expect("an iteration finished");
+        assert!(
+            field(last, "cp") < -1000,
+            "a promotion was skipped as quiet: {last}"
+        );
+        // The property the fixture is here for: the line's reply promotes
+        // onto an empty square.
+        let pv = pv_of(last);
+        let mut replay = game(args);
+        replay.push_usi_move(pv[0]).expect("the line is playable");
+        let reply = <Move as shogi_usi_parser::FromUsi>::from_usi(pv[1]).expect("a usi move");
+        let Move::Normal { to, promote, .. } = reply else {
+            panic!("the reply is a drop: {last}");
+        };
+        assert!(
+            promote && replay.position().piece_at(to).is_none(),
+            "the reply is not a promotion onto an empty square: {last}"
+        );
+    }
+
+    /// A capture is not quiet, so futility never skips it.
+    ///
+    /// ⚠️ **A score, not a property, is all this asserts**, and its fixture is
+    /// the futility tripwire's: on positions small enough to explain, every
+    /// capture is searched while alpha is still at minus infinity, ahead of
+    /// anything a skip could compare it with.
+    ///
+    /// Sabotage: drop `index >= quiets_from` from `MoveBuf::is_quiet`, or test
+    /// `!mv.is_promoting()` instead of `quiet` where the bound is taken, and
+    /// either reports `cp 100`.
+    #[test]
+    fn a_capture_is_not_skipped() {
+        let (_, lines) = run(FUTILITY_FIXTURE, depth(5));
+        let last = lines.last().expect("an iteration finished");
+        assert!(
+            field(last, "cp") <= 0,
+            "a capture was skipped as quiet: {last}"
         );
     }
 
