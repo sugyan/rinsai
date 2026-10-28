@@ -665,7 +665,7 @@ fn load_openings(path: &PathBuf) -> Result<Vec<String>, String> {
     let mut seen: HashMap<&str, usize> = HashMap::new();
     for (number, opening) in &openings {
         let at = |e: String| format!("{} line {number}: {e}", path.display());
-        check_opening(opening).map_err(&at)?;
+        check_opening(opening).map_err(at)?;
         if let Some(first) = seen.insert(opening.as_str(), *number) {
             return Err(at(format!("duplicates line {first}")));
         }
