@@ -49,22 +49,24 @@ The counts above were recomputed from `run.jsonl` rather than read off the
 harness's summary, and agree to the digit, LLR included.
 
 **Why the budgets differ.** Under futility an equal node count is not equal
-work: a skipped move pays `do_move`, the check test and `undo_move` and counts
-no node, and the nodes it leaves are the expensive ones. The candidate's
-budget was cut to match work, and fixed before the first game:
+work: a skipped move does work and counts no node, and the nodes it leaves are
+the expensive ones. The candidate's budget was cut to match work, and fixed
+before the first game:
 
-- The instrument is callgrind's instruction count. It is the same on every run
-  of a binary, so unlike time it needs no quiet machine.
+- The instrument is callgrind's instruction count. It repeats to about one
+  part in a million across runs of a binary, so unlike time it needs no quiet
+  machine.
 - Per 300 000-node move the candidate took 1.437× the baseline's instructions,
   as Σ over 116 positions from the games of the entry below — one per pair, 0
   to 80 plies past the opening — at `USI_Hash` 256 on x86_64. A bootstrap over
   positions gives a 95% interval of [1.400, 1.475].
-- The budget is 300 000 / 1.475, the conservative end. Measured back at it, the
+- The budget is 300 000 divided by that interval's upper end, 1.47492 before
+  rounding, and rounded down: the conservative end. Measured back at it, the
   candidate takes 0.967× the baseline's instructions [0.939, 0.994].
 
-⚠️ **Instructions, not time.** This matches work in the one unit a cloud
-container can measure; a real-time gate on the development machine is what it
-stands in for, and none has run.
+⚠️ **Instructions, not time.** This matches work in a unit a cloud container
+can measure reproducibly; a real-time gate on the development machine is what
+it stands in for, and none has run.
 
 ⚠️ **What this pass says: at matched work, 8a's tree buys more than its skips
 cost.** The +35.5 is a point estimate; a 95% interval on these pairs is about

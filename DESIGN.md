@@ -135,9 +135,9 @@ issue, and does not hold E1 open.
    - **7b. SEE in qsearch**, which needs shunsai to expose `attackers_to`.
    - **7c. Checks in qsearch**, which want `gives_check`. **Optional.** ⚠️ **This sub-item owns extending the repetition path into quiescence.** The exclusion rests on every non-evasion ply being irreversible. A promotion would keep that, since it cannot be undone on the board; a quiet check does not. CONVENTIONS.md carries the rule and the condition.
 8. Futility / razoring, split four ways because each is its own SPRT. Where a margin covers a capture, hand value belongs in it: a capture in shogi wins the piece twice, off the board and into the hand.
-   - **8a. Futility pruning of quiet moves at depth 1 and 2 — passed.** A quiet move that neither checks nor promotes is skipped when the static evaluation plus a margin does not reach alpha. ⚠️ **Gated at matched work, not matched nodes**: a skipped move does work no node counts, so the candidate's node budget was cut by its measured instruction ratio. STRENGTH.md has both runs.
-   - **8b. Razoring.** **Optional**: its depth-1 case is what 8a already skips.
-   - **8c. Delta pruning in quiescence.** **Optional**, and measured with 7b, whose SEE it overlaps. **Baseline: E0's quiescence is deliberately unpruned.**
+   - **8a. Futility pruning of quiet moves at depth 1 and 2 — passed.** A quiet move that neither checks nor promotes is skipped when the static evaluation plus a margin does not reach alpha. ⚠️ **Gated at matched work, not matched nodes**: a skipped move does work no node counts, so the candidate's node budget was divided by the upper end of its measured instruction ratio's 95% interval. STRENGTH.md has both runs.
+   - **8b. Razoring.** **Optional**: at depth 1 it overlaps what 8a already skips.
+   - **8c. Delta pruning in quiescence.** **Optional**, and gated after 7b, whose SEE it overlaps. **Baseline: E0's quiescence is deliberately unpruned.**
    - **8d. `QS_MAX_CHECK_PLIES`**, which E0 set by measurement and without an instrument.
 9. Aspiration windows. ⚠️ This item owes `negamax_root` the ability to tell a fail-low from an abandoned iteration; the FAQ carries why it cannot today.
 10. **Quiescence probes and stores in the transposition table.** Measured at E0 and **not** shipped there: it halves the tree on every fixture tried, which is the opposite of what the conventional argument predicts, and node count is not an instrument for strength. ⚠️ It rebaselines every `bench` count, so it wants a pull request of its own.
