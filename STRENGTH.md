@@ -27,6 +27,89 @@ it like any other.
 
 ## E1 — classical search, one feature at a time
 
+### Item 8a at equal work — instruction-matched fixed nodes — **pass**
+
+H1 accepted at elo0 = 0 / elo1 = 10.
+
+```
+pairs 393 | games 786 | candidate W-D-L 323-220-243
+pent [45, 7, 246, 13, 82] | llr +3.036 | score 55.09% (elo +35.5 est)
+```
+
+| | |
+|---|---|
+| candidate | `d377e89` |
+| baseline | `e875ec9` |
+| `bench` | candidate 208 270, baseline 459 694 — both read off the binaries that played, before the run |
+| control | `--candidate-nodes 203400 --baseline-nodes 300000 --gain` (elo0 = 0 / elo1 = 10), α = β = 0.05, concurrency 3, `--max-pairs 3000` |
+| openings | `openings-v3.sfen`, seed 1, 393 distinct openings for 393 pairs |
+| endings | 564 checkmates, 217 千日手, 3 at the 512-ply move limit, 2 入玉宣言 |
+
+The counts above were recomputed from `run.jsonl` rather than read off the
+harness's summary, and agree to the digit, LLR included.
+
+**Why the budgets differ.** Under futility an equal node count is not equal
+work: a skipped move does work and counts no node, and the nodes it leaves are
+the expensive ones. The candidate's budget was cut to match work, and fixed
+before the first game:
+
+- The instrument is callgrind's instruction count. It repeats to about one
+  part in a million across runs of a binary, so unlike time it needs no quiet
+  machine.
+- Per 300 000-node move the candidate took 1.437× the baseline's instructions,
+  as Σ over 116 positions from the games of the entry below — one per pair, 0
+  to 80 plies past the opening — at `USI_Hash` 256 on x86_64. A bootstrap over
+  positions gives a 95% interval of [1.400, 1.475].
+- The budget is 300 000 divided by that interval's upper end, 1.47492 before
+  rounding, and rounded down: the conservative end. Measured back at it, the
+  candidate takes 0.967× the baseline's instructions [0.939, 0.994].
+
+⚠️ **Instructions, not time.** This matches work in a unit a cloud container
+can measure reproducibly; a real-time gate on the development machine is what
+it stands in for, and none has run.
+
+⚠️ **What this pass says: at matched work, 8a's tree buys more than its skips
+cost.** The +35.5 is a point estimate; a 95% interval on these pairs is about
++16 to +55, and stopping on a pass biases it upward.
+
+It ran on a cloud container beside the branch's work, which CLAUDE.md permits
+for a fixed-node queue. The session supervised it throughout, and it was not
+interrupted.
+
+### Item 8a — futility pruning of quiet moves at depths 1 and 2 — **pass at equal nodes, with unequal work**
+
+H1 accepted at elo0 = 0 / elo1 = 10.
+
+```
+pairs 116 | games 232 | candidate W-D-L 118-62-52
+pent [4, 5, 65, 5, 37] | llr +3.066 | score 64.22% (elo +101.6 est)
+```
+
+| | |
+|---|---|
+| candidate | `1dbbe29` |
+| baseline | `81f5dcf` |
+| `bench` | candidate 208 270, baseline 459 694 — both read off the binaries that played, before the run |
+| control | `--nodes 300000 --gain` (elo0 = 0 / elo1 = 10), α = β = 0.05, concurrency 3, `--max-pairs 3000` |
+| openings | `openings-v3.sfen`, seed 1, 116 distinct openings for 116 pairs |
+| endings | 169 checkmates, 62 千日手, 1 入玉宣言 |
+
+The counts above were recomputed from `run.jsonl` rather than read off the
+harness's summary, and agree to the digit, LLR included.
+
+⚠️ **What this pass says: more depth per counted node wins, and the candidate
+was given more work.** Callgrind put `1dbbe29` at 1.34× the baseline's
+instructions per 300 000-node move, over 55 positions from these games. The
+entry above repeats the gate with the work matched.
+
+⚠️ **The rev that played hid a 千日手 draw** behind a skipped quiet move at a
+losing node. The engine that merges asks the repetition question before
+skipping, and moves no `bench` count doing so.
+
+It ran on a cloud container beside the branch's test runs, which CLAUDE.md
+permits for a fixed-node queue. The session supervised it throughout, and it
+was not interrupted.
+
 ### Item 7a — a pawn's promotion that takes nothing, in quiescence — **inconclusive at the cap, not adopted**
 
 Neither bound was crossed at elo0 = 0 / elo1 = 10.

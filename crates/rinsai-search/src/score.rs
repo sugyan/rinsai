@@ -149,7 +149,8 @@ impl Neg for Score {
 }
 
 // Callers for the two impls below: the transposition table's mate-score-by-ply
-// adjustment, and the one-point window a scouted move is searched on.
+// adjustment, the one-point window a scouted move is searched on, and the
+// futility bound.
 
 impl Add<i32> for Score {
     type Output = Self;
