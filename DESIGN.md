@@ -58,7 +58,7 @@ rinsai/
 │   │                      #      連続王手 adjudication; the match referee
 │   ├── rinsai-search/     # lib: αβ + TT + qsearch + time management + repetition + eval
 │   │                      #      the only crate that depends on shunsai
-│   ├── rinsai/            # bin: the engine. USI on stdio by default; --csa for floodgate (E2)
+│   ├── rinsai/            # bin: the engine. USI on stdio by default
 │   └── xtask/             # bin: fetch-floodgate / gen-openings / sprt;
 │                          #      fetch-net and release join later
 ├── train/                 # PyTorch: dataset, model, quantize, export   (E3)
@@ -71,7 +71,7 @@ An entry marked with a phase arrives then; everything else exists today.
 
 **The training pipeline lives in this repository, not its own.** The network architecture, the quantization scheme and the data format are each defined twice — once in Rust for inference, once in Python for training — and any drift between the two is a silent strength bug that SPRT reads as "that patch was bad". Being able to change both in one commit is what prevents it. A secondary benefit: the WCSC appeal document's claim of own-data-and-own-trainer is demonstrable from one repository's history.
 
-**Crates are split when there is a reason, not up front** — the same rule shunsai's log applies to optimizations.
+**Crates are split when there is a reason, not up front** — the same rule shunsai applies to optimizations.
 
 | Crate | Split off at | Because |
 |---|---|---|
@@ -188,14 +188,11 @@ issue, and does not hold E1 open.
 
 ## 6. The shunsai API extension catalogue
 
-Each addition is prototyped on a shunsai branch, measured on shunsai's own bench, adopted, **released**, and then required by version here — a release per *adoption*, not one per API, so several additions adopted together may travel as one release. Several of them also unlock a re-measurement that shunsai's decision log parked for exactly this consumer.
+Each addition is prototyped on a shunsai branch, measured on shunsai's own bench, adopted, **released**, and then required by version here — a release per *adoption*, not one per API, so several additions adopted together may travel as one release. Several of them also unlock a re-measurement that shunsai parked for exactly this consumer.
 
 | API | Phase | The shunsai re-measurement it unlocks |
 |---|---|---|
-| expose `attackers_to` | E1 — released, 0.1.3 | — (SEE's prerequisite) |
 | staged generation (captures / evasions / quiets) | E1 | **the `MoveSet` 48-byte question** — this is the caller that finally *collects* move sets. **Measured demand from E0 step 3a**: every quiescence node runs full legal generation and keeps a handful, **48× generated per kept at the initial position and 86× on a drop-heavy middlegame** |
-| `gives_check` | E1 — released, 0.1.3 | — |
-| `do_null_move` / `undo_null_move` | E1 — released, 0.1.3 | — |
 | expose `checkers` / `pinned` | E1 | "expose rather than recompute" (shunsai, 2026-07-29). **Its E0 consumer arrived at step 3a**: every quiescence node calls `in_check()`, which recomputes `attackers_to(king)` that `generate_moves` computes internally one line later and does not expose. **A second arrived at step 4**: every interior node's `do_move` now records an `in_check()` for the repetition path, which the 連続王手 half of the rule reads |
 | (optional) a `DirtyPieces`-returning `do_move` | judged E3 → E4 | the incremental-AttackInfo trade family |
 | (measurement only) magic vs qugiy vs `pext` | E1 once a TT-backed bench exists, and E4 on x86 | shunsai 2026-07-27 / 07-29 |

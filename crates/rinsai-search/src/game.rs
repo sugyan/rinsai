@@ -601,9 +601,8 @@ mod tests {
     }
 
     /// The two root censuses, on every fixture this module owns: this crate's
-    /// `check_piece_counts` and the referee's `over_inventory`. ⚠️ They are
-    /// one idiom written twice — the same accessors in the same order — so
-    /// this catches them drifting apart, not a mistake they share.
+    /// `check_piece_counts` and the referee's `over_inventory`. ⚠️ This
+    /// catches them drifting apart, not a mistake they share.
     ///
     /// ⚠️ Asked of the two censuses themselves, not of the two constructors:
     /// the referee holds an over-inventory root deliberately and only reports
@@ -634,6 +633,7 @@ mod tests {
             "sfen 8l/9/9/9/9/9/9/8g/8K b - 1",
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 18P 1",
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 2R2B4G4S4N4L18P 1",
+            "sfen PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP b 99P99p 1",
         ] {
             let position = PartialPosition::from_usi(sfen).expect("valid sfen");
             assert_eq!(

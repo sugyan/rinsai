@@ -97,15 +97,13 @@ mod tests {
         }
     }
 
-    /// The property [`MIN_DEPTH`] was chosen for, over every depth and move
-    /// number a search can reach: a reduced child still has a ply to spend, so
-    /// it is a shallower search rather than a jump into quiescence.
+    /// The property [`MIN_DEPTH`] was chosen for, over every depth a search can
+    /// reach: a reduced child still has a ply to spend, so it is a shallower
+    /// search rather than a jump into quiescence.
     ///
-    /// The bounds are the engine's own — a `go` is clamped to `MAX_DEPTH` and
-    /// a ply holds at most `MAX_LEGAL_MOVES` moves — so the sweep follows
-    /// them if either moves. ⚠️ **It is currently one case wearing a sweep**:
-    /// the answer is flat in `played` and binding only at `depth == MIN_DEPTH`.
-    /// It earns the sweep the day the reduction becomes a schedule.
+    /// ⚠️ **It is currently one case wearing a sweep**: the answer is flat in
+    /// `played` and binding only at `depth == MIN_DEPTH`. It earns the sweep
+    /// the day the reduction becomes a schedule.
     #[test]
     fn a_reduced_child_is_still_an_interior_node() {
         for depth in 1..=MAX_DEPTH {

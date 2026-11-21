@@ -104,8 +104,8 @@ impl MoveBuf {
         // moved, and every move looks like a capture — quiescence would never
         // terminate. Intersecting with our own board fails the other way: a
         // legal move never lands on our own piece, so nothing is generated and
-        // quiescence stands pat everywhere, silently restoring the horizon
-        // effect. Both are silent; neither is a crash.
+        // quiescence stands pat, silently restoring the horizon effect. Both
+        // are silent; neither is a crash.
         let them = position.player_bb(position.side_to_move().flip());
         let moves = &mut self.moves;
         let _ = position.generate_moves(|set| {
@@ -590,8 +590,7 @@ mod tests {
 
     /// Sabotage: intersect with `player_bb(side_to_move())` instead of its
     /// flip and **zero** captures are generated (`left: []` where three are
-    /// expected) — a legal move never lands on our own piece — so quiescence
-    /// stands pat everywhere.
+    /// expected) — a legal move never lands on our own piece.
     /// Drop the `promotions` board and every capture-promotion silently
     /// disappears. Let `MoveSet::Drop` through and drops appear as captures.
     #[test]
