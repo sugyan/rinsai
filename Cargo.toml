@@ -14,7 +14,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/sugyan/rinsai"
 
 [workspace.dependencies]
-shunsai = "0.1"
+shunsai = "0.1.3"
 
 # Must stay compatible with shunsai's own requirement so the types unify into a
 # single copy — otherwise `Move` and `Square` silently become two types. CI
@@ -32,7 +32,7 @@ rinsai-search = { path = "crates/rinsai-search" }
 
 # WARNING: never enable a shunsai feature from here — not by a `[features]`
 # forward, and not by a `features = [...]` list above. Both slider flags are
-# A/B-and-debugging backends and `bench-internals` is not public API; either
+# A/B-and-debugging backends and `_bench-internals` is not public API; either
 # would make every SPRT number afterwards noise. CI enforces it.
 
 [workspace.lints.rust]

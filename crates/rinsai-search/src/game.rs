@@ -131,12 +131,10 @@ impl Game {
     /// A game rooted at `partial`, no moves played.
     ///
     /// ⚠️ **Fallible on purpose, and this is a crash the wire can reach.**
-    /// `PartialPosition` is only a container: `shogi_usi_parser` builds one from
-    /// `sfen … b 19P 1` without complaint, because its hand grammar accepts a
-    /// two-digit count and `Hand::added` has no cap. Handing that to shunsai is
-    /// fatal — its Zobrist table is `[u64; 19]` per piece kind, indexed by held
-    /// count, so the nineteenth piece is an out-of-bounds panic. A GUI or a
-    /// server could end the process with one line.
+    /// `PartialPosition` is only a container, and `shogi_usi_parser` fills one
+    /// with two kings of one colour, or with more of one kind, board and hands
+    /// together, than [`Position::new`] accepts — and either panics there. A
+    /// GUI or a server could end the process with one line.
     pub fn from_partial(partial: PartialPosition) -> Result<Self, PositionError> {
         check_piece_counts(&partial)?;
         let board = Position::new(partial.clone());
@@ -361,13 +359,9 @@ const PIECE_TOTALS: [(PieceKind, u8); 7] = [
     (PieceKind::Rook, 2),
 ];
 
-/// Rejects a root that could not come from a real shogi set.
-///
-/// One check covers two routes to the same crash: a hand count the parser
-/// accepted but no set contains (`19P`), and — with no malformed field at all —
-/// 18 pawns in hand plus one on the board, where capturing that pawn tips
-/// shunsai's hand counter over. Bounding the *total* per kind at the root
-/// closes both, because no legal move can create a piece.
+/// Rejects a root that could not come from a real shogi set, which includes
+/// every root [`Position::new`] documents panicking on. The root is the only
+/// position that needs it, because no legal move can create a piece.
 ///
 /// ⚠️ The king is bounded at *most* one per colour rather than exactly one,
 /// because a 詰将棋 diagram routinely omits the attacking king. shunsai's
@@ -570,15 +564,10 @@ mod tests {
         );
     }
 
-    /// A GUI or a server could end the process with one line before this
-    /// existed — see [`Game::from_partial`].
+    /// A root no shogi set could hold is refused rather than played.
     ///
-    /// Sabotage: delete the `check_piece_counts` call in `from_partial`. ⚠️
-    /// Only the three two-digit-hand cases panic (shunsai's `zobrist.rs`
-    /// indexes `[u64; 19]` by held count); the other four are silently
-    /// **accepted** and fail the assertion below instead. Those four are the
-    /// indirect route — no malformed field anywhere — that this check exists
-    /// for.
+    /// Sabotage: delete the `check_piece_counts` call in `from_partial`, and
+    /// the first line, `19P`, is accepted and the assertion below fires.
     #[test]
     fn a_position_no_shogi_set_could_reach_is_rejected() {
         for sfen in [
@@ -587,8 +576,7 @@ mod tests {
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P 1",
             "sfen 4k4/9/9/9/9/9/9/9/4K4 w 19p 1",
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 5R 1",
-            // The indirect route: 18 in hand plus one on the board is 19, and
-            // capturing it is what used to tip shunsai's counter over.
+            // No field is malformed: 18 in hand plus one on the board is 19.
             "sfen 4k4/9/9/9/4p4/9/9/9/4K4 b 18P 1",
             // Promoted pieces count as what they were: a +P on the board plus
             // 18 in hand is nineteen pawns. Sabotage: drop the `unpromote()`
@@ -598,6 +586,9 @@ mod tests {
             "sfen 4k4/9/9/9/4+P4/9/9/9/4K4 b 18P 1",
             // Golds, to show the bound is per kind and not only about pawns.
             "sfen 3kg4/9/9/9/9/9/9/9/3KG4 b 4G 1",
+            // More pawns than `Position::new` accepts, so this one is a crash
+            // rather than a quiet acceptance if it gets past the census.
+            "sfen PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP b 99P99p 1",
         ] {
             assert!(
                 matches!(
@@ -610,8 +601,9 @@ mod tests {
     }
 
     /// The two root censuses, on every fixture this module owns: this crate's
-    /// `check_piece_counts` and the referee's `over_inventory`, written
-    /// independently on different accessors.
+    /// `check_piece_counts` and the referee's `over_inventory`. ⚠️ They are
+    /// one idiom written twice — the same accessors in the same order — so
+    /// this catches them drifting apart, not a mistake they share.
     ///
     /// ⚠️ Asked of the two censuses themselves, not of the two constructors:
     /// the referee holds an over-inventory root deliberately and only reports
@@ -676,7 +668,8 @@ mod tests {
     /// per-colour bound catches.
     ///
     /// Sabotage: put `(PieceKind::King, 2)` back into `PIECE_TOTALS` and drop
-    /// the per-colour loop, and the first case is accepted.
+    /// the per-colour loop, and the first case gets past the census and
+    /// `Position::new` panics on it.
     #[test]
     fn two_kings_of_one_colour_are_rejected() {
         for sfen in [
@@ -788,8 +781,7 @@ mod tests {
         );
     }
 
-    /// The record's *root* must not move while its current position does. Step
-    /// 4 needs it to know where the recorded history begins.
+    /// The record's *root* must not move while its current position does.
     #[test]
     fn the_record_keeps_its_root_while_the_board_advances() {
         let mut game = Game::from_usi_position("startpos").expect("startpos parses");

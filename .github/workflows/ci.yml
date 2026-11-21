@@ -28,7 +28,7 @@ jobs:
       # `--all-features` is safe only because no rinsai crate declares a feature
       # that forwards into shunsai: the flag activates features of the *selected
       # workspace packages*, never of a registry dependency, so it cannot reach
-      # `slider-naive` or `bench-internals`. The "No shunsai feature is enabled"
+      # `slider-naive` or `_bench-internals`. The "No shunsai feature is enabled"
       # step below is what keeps that premise true.
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
