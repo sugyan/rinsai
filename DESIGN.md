@@ -24,7 +24,7 @@ A shogi engine that places well on **floodgate** and in the **世界コンピュ
 
 `go mate` is out of scope: that is [`tsumeshogi-solver`](https://github.com/sugyan/tsumeshogi-solver)'s territory.
 
-**The dependency is a released version, not a git pin.** rinsai depends on `shunsai = "0.1"` from crates.io. Prototyping an API addition uses `[patch.crates-io]` with a path override; adopting it means **releasing shunsai** and raising rinsai's requirement. The loop is: try it on a shunsai branch → measure it on shunsai's own bench → adopt → release → bump. rinsai's **engine** crates are `publish = false` — nothing depends on a search engine as a library, and its artifact is a binary. The one publication-intended exception is `rinsai-game`: a rules layer is a library on its own terms, and the referee is one caller of it rather than what it is for.
+**The dependency is a released version, not a git pin.** rinsai depends on a shunsai release from crates.io. Prototyping an API addition uses `[patch.crates-io]` with a path override; adopting it means **releasing shunsai** and raising rinsai's requirement. The loop is: try it on a shunsai branch → measure it on shunsai's own bench → adopt → release → bump. rinsai's **engine** crates are `publish = false` — nothing depends on a search engine as a library, and its artifact is a binary. The one publication-intended exception is `rinsai-game`: a rules layer is a library on its own terms, and the referee is one caller of it rather than what it is for.
 
 ## 3. Route: NNUE + αβ first, DL/MCTS conditional
 
@@ -58,7 +58,7 @@ rinsai/
 │   │                      #      連続王手 adjudication; the match referee
 │   ├── rinsai-search/     # lib: αβ + TT + qsearch + time management + repetition + eval
 │   │                      #      the only crate that depends on shunsai
-│   ├── rinsai/            # bin: the engine. USI on stdio by default, --csa for floodgate
+│   ├── rinsai/            # bin: the engine. USI on stdio by default; --csa for floodgate (E2)
 │   └── xtask/             # bin: fetch-floodgate / gen-openings / sprt;
 │                          #      fetch-net and release join later
 ├── train/                 # PyTorch: dataset, model, quantize, export   (E3)
@@ -126,13 +126,13 @@ issue, and does not hold E1 open.
 1. MVV-LVA for captures, promotion-aware. **Baseline: E0's quiescence is deliberately unordered.**
 2. Killers — **drops can be killers**
 3. History — **butterfly boards are impossible, because drops have no `from`**. Index by (piece kind × side, `to`) to unify board moves and drops. Countermove and continuation history later.
-4. **Null-move pruning — safer than in chess**, because drops make zugzwang effectively absent. Exclude only when in check, plus endgame verification. ⚠️ **It is the first item to meet E0's repetition path, and the collision is silent.** That path is scanned two entries at a time because it alternates side to move; a pass pushed onto it shifts the parity of the whole subtree below, and the scan then compares against the opponent's positions only and reports no repetition at all. Either keep the pass off the path or make the walk parity-agnostic — and no fixture can catch this, because every repetition test reaches its verdict through the game's history rather than through the tree. ⚠️ **Deferred, and item 5 was taken ahead of it**: a pass needs a side-to-move flip that shunsai 0.1.0 does not expose, so until it does, making one costs a whole `Position` rebuild.
+4. **Null-move pruning — safer than in chess**, because drops make zugzwang effectively absent. Exclude only when in check, plus endgame verification. ⚠️ **It is the first item to meet E0's repetition path, and the collision is silent.** That path is scanned two entries at a time because it alternates side to move; a pass pushed onto it shifts the parity of the whole subtree below, and the scan then compares against the opponent's positions only and reports no repetition at all. Either keep the pass off the path or make the walk parity-agnostic — and no fixture can catch this, because every repetition test reaches its verdict through the game's history rather than through the tree.
 5. LMR — checks, evasions and promotions exempt. ⚠️ **Every promotion, not only the capture-promotions**: a promotion that takes nothing is quiet by the capture test, and と金作り is the move that ranking is least to be trusted about.
    - **5b. PVS at interior nodes** — every move behind the first is scouted on a one-point window, and widens back to the node's own only by proving it deserves to. A sub-item rather than a place in the order, because it arrived after item 5 and renumbering the list would orphan every reference to an item by number. ⚠️ **The root keeps its own window, and item 9 is not what is stopping it.** Scouting root moves leaves item 9's ambiguity intact — root alpha still enters at `-INFINITE` and root move 0 still raises it. What is missing is that `negamax_root` has no widening search of its own, so a scouted root move that raises alpha publishes a truncated line — measured, a depth-4 search announcing a one-move variation. Root PVS owes that search, not item 9's return type, and `a_published_line_is_as_long_as_the_depth_it_claims` is what says so.
 6. Check extension — **more important than in chess**; watch its interference with perpetual-check repetition, which is a search-explosion risk. **The root does not extend**; extending there is its own SPRT.
-7. What E0's quiescence leaves out, split three ways because each is its own SPRT. ⚠️ **7b and 7c wait on shunsai**, as item 4 does.
+7. What E0's quiescence leaves out, split three ways because each is its own SPRT.
    - **7a. A pawn's promotion that takes nothing — gated, and not adopted.** 歩→と is a 500 cp event in rinsai's own table, so a capture-only quiescence is blind to と金作り — a shogi-specific gap with no chess analogue. Pawns only, because an unpromoted bishop or rook inside the zone can promote on every move it makes. The gate came out inconclusive at the 3000-pair cap; STRENGTH.md has the numbers. ⚠️ **Reopens when 7b, or ranking a promotion among the captures, lands** — each cuts what searching one costs.
-   - **7b. SEE in qsearch**, which needs shunsai to expose `attackers_to`.
+   - **7b. SEE in qsearch**, on shunsai's `attackers_to`.
    - **7c. Checks in qsearch**, which want `gives_check`. **Optional.** ⚠️ **This sub-item owns extending the repetition path into quiescence.** The exclusion rests on every non-evasion ply being irreversible. A promotion would keep that, since it cannot be undone on the board; a quiet check does not. CONVENTIONS.md carries the rule and the condition.
 8. Futility / razoring, split four ways because each is its own SPRT. Where a margin covers a capture, hand value belongs in it: a capture in shogi wins the piece twice, off the board and into the hand.
    - **8a. Futility pruning of quiet moves at depth 1 and 2 — passed.** A quiet move that neither checks nor promotes is skipped when the static evaluation plus a margin does not reach alpha. ⚠️ **Gated at matched work, not matched nodes**: a skipped move does work no node counts, so the candidate's node budget was divided by the upper end of its measured instruction ratio's 95% interval. STRENGTH.md has both runs.
@@ -192,10 +192,10 @@ Each addition is prototyped on a shunsai branch, measured on shunsai's own bench
 
 | API | Phase | The shunsai re-measurement it unlocks |
 |---|---|---|
-| expose `attackers_to` | E1 | — (SEE's prerequisite) |
+| expose `attackers_to` | E1 — released, 0.1.3 | — (SEE's prerequisite) |
 | staged generation (captures / evasions / quiets) | E1 | **the `MoveSet` 48-byte question** — this is the caller that finally *collects* move sets. **Measured demand from E0 step 3a**: every quiescence node runs full legal generation and keeps a handful, **48× generated per kept at the initial position and 86× on a drop-heavy middlegame** |
-| `gives_check` | E1 | — |
-| `do_null_move` / `undo_null_move` | E1 | — |
+| `gives_check` | E1 — released, 0.1.3 | — |
+| `do_null_move` / `undo_null_move` | E1 — released, 0.1.3 | — |
 | expose `checkers` / `pinned` | E1 | "expose rather than recompute" (shunsai, 2026-07-29). **Its E0 consumer arrived at step 3a**: every quiescence node calls `in_check()`, which recomputes `attackers_to(king)` that `generate_moves` computes internally one line later and does not expose. **A second arrived at step 4**: every interior node's `do_move` now records an `in_check()` for the repetition path, which the 連続王手 half of the rule reads |
 | (optional) a `DirtyPieces`-returning `do_move` | judged E3 → E4 | the incremental-AttackInfo trade family |
 | (measurement only) magic vs qugiy vs `pext` | E1 once a TT-backed bench exists, and E4 on x86 | shunsai 2026-07-27 / 07-29 |

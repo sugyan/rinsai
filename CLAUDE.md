@@ -148,7 +148,7 @@ found zero defects in its code.
 
 ## 6. Depending on shunsai
 
-- rinsai depends on a **released version** (`shunsai = "0.1"`), never a git pin.
+- rinsai depends on a **released version** of shunsai, never a git pin.
   **No SPRT number may be attributed to a rev that is not a release.**
 - To add an API: prototype on a shunsai branch → measure it on shunsai's own
   bench → adopt → **release shunsai** → raise the requirement here. Never work
