@@ -2,8 +2,8 @@
 //!
 //! The move list a node walks is ordered — the transposition move, then the
 //! captures by what they win, then the quiet moves by killers and history —
-//! so a move far down it is one every heuristic here ranked badly. Searching
-//! those a ply shallower is what buys the tree back.
+//! and searching its late quiet moves a ply shallower is what buys the tree
+//! back.
 //!
 //! ⚠️ **A reduction is a guess, and an unverified guess is a wrong answer
 //! rather than a cheaper one.** The saving comes from moves that stay below
@@ -35,15 +35,13 @@ const MIN_PLAYED: usize = 4;
 /// How many plies to take off `played`'s search at a node of `depth`, or zero
 /// to search it whole.
 ///
-/// `played` is how many moves this node has already searched, not an index
-/// into the move buffer — a node whose list starts part-way through the buffer
-/// would otherwise reduce its own first move.
+/// `played` is how many moves come before this one in the node's list, not an
+/// index into the move buffer — a node whose list starts part-way through the
+/// buffer would otherwise reduce its own first move.
 ///
 /// `quiet` must be false for a capture **and for a promotion**. A promotion
 /// that takes nothing is quiet by the capture test — 歩→と lands on an empty
-/// square — while [`ordering::promotion_gain`](crate::ordering) prices it
-/// above every pawn capture, so the ranking that put it late is the one to
-/// distrust.
+/// square.
 ///
 /// The three flags are taken rather than a board so that a test can ask about
 /// a (depth, played, kind-of-move) triple without a position that holds one.
