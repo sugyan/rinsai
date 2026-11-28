@@ -7,12 +7,15 @@
 //! instructions under callgrind on the same positions at the gate's budget
 //! and names the candidate budget that matches them.
 //!
-//! ⚠️ **Instructions, not time.** A count repeats to about one part in a
-//! million across runs of one binary, so it needs no quiet machine; how well
-//! it stands in for time is not measured here.
+//! ⚠️ **Instructions, not time.** A count repeats across runs of one binary,
+//! so it needs no quiet machine; how well it stands in for time is not
+//! measured here.
 //!
 //! ⚠️ **The positions come from the baseline playing itself**, both seats,
-//! from the opening set at the gate's budget — not from a gate's own games.
+//! from the opening set at the gate's budget — not from a gate's own games —
+//! and are drawn uniformly from every position a side moved from in those
+//! games. What a node costs can change with the stage of the game, so a
+//! sample that weights one stage more than the games do misstates the ratio.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -22,7 +25,7 @@ use std::time::Duration;
 
 use crate::config::{self, EngineConfig};
 use crate::jsonl::JsonObject;
-use crate::referee::{self, EndReason, MatchControl};
+use crate::referee::{self, EndReason, GameRecord, MatchControl};
 use crate::rng;
 use crate::runner::{load_openings, parse_u64};
 use crate::schedule;
@@ -31,15 +34,8 @@ use crate::usi::{GoSpec, UsiEngine};
 const DEFAULT_POSITIONS: usize = 120;
 const DEFAULT_NODES: u64 = 300_000;
 /// Generous because a move under callgrind is far slower than a native one;
-/// the same bound serves the native games that pick the positions.
+/// the same bound serves the native games the positions are drawn from.
 const DEFAULT_MOVE_TIMEOUT: Duration = Duration::from_secs(600);
-/// How far past its opening a pair's position sits is this times
-/// `pair mod POSITION_STEPS`.
-const PLIES_PER_STEP: usize = 20;
-const POSITION_STEPS: u64 = 5;
-/// A game that ends within this many plies of the position it was played for
-/// gives the opening instead.
-const END_MARGIN: usize = 4;
 const RESAMPLES: usize = 10_000;
 
 struct Args {
@@ -70,8 +66,15 @@ struct Report {
     pairs: Vec<(u64, u64)>,
     ratio: f64,
     interval: (f64, f64),
-    /// `None` when the interval includes 1 and both play at the gate budget.
+    /// `None` when [`matched_budget`] names the gate budget itself.
     matched: Option<Matched>,
+}
+
+/// A game of the baseline against itself, from one pair's opening.
+struct SelfPlay {
+    pair: u64,
+    opening: usize,
+    record: GameRecord,
 }
 
 /// One measured position.
@@ -122,28 +125,58 @@ fn measure(args: &Args) -> Result<(), String> {
     let openings = load_openings(&args.openings_path)?;
     if args.positions > openings.len() {
         return Err(format!(
-            "{} positions from {} openings would repeat one",
+            "{} games from {} openings would repeat one",
             args.positions,
             openings.len()
         ));
     }
 
     println!(
-        "instructions: {} positions at {} nodes; up to {} workers, each running two {} \
-         processes for a game or one engine under {valgrind}",
+        "instructions: {} positions drawn from as many games at {} nodes; up to {} workers, \
+         each running two {} processes for a game or one engine under {valgrind}",
         args.positions, args.nodes, args.concurrency, baseline.id
     );
     let plans: Vec<_> = schedule::pairings(openings.len(), args.seed)
         .take(args.positions)
         .collect();
-    let samples = parallel(args.concurrency, &plans, |[plan, _]| {
-        sample(args, baseline, plan.pair, &openings[plan.opening]).map(|(plies, position)| Sample {
+    let games = parallel(args.concurrency, &plans, |[plan, _]| {
+        self_play(args, baseline, &openings[plan.opening]).map(|record| SelfPlay {
             pair: plan.pair,
             opening: plan.opening,
-            plies,
-            position,
+            record,
         })
     })?;
+    let spans: Vec<(usize, usize)> = games
+        .iter()
+        .map(|g| (g.record.opening_plies, g.record.plies))
+        .collect();
+    let pool = pool(&spans);
+    if args.positions > pool.len() {
+        return Err(format!(
+            "{} positions from the {} the games searched would repeat one",
+            args.positions,
+            pool.len()
+        ));
+    }
+    // A stream of its own: the pairings and the bootstrap draw from the seed
+    // itself.
+    let mut state = rng::splitmix64(&mut { args.seed });
+    let mut picks = draw(pool.len(), args.positions, &mut state);
+    picks.sort_unstable();
+    let samples = picks
+        .iter()
+        .map(|&i| {
+            let (g, plies) = pool[i];
+            let game = &games[g];
+            let opening = &openings[game.opening];
+            Ok(Sample {
+                pair: game.pair,
+                opening: game.opening,
+                plies,
+                position: position_at(opening, &game.record.moves_usi, plies)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
 
     let spec = |nodes| GoSpec::Nodes {
         nodes,
@@ -195,19 +228,20 @@ fn measure(args: &Args) -> Result<(), String> {
         matched,
     };
 
-    let log_path = write_log(args, candidate, baseline, &toolchain, &report)?;
+    let log_path = write_log(args, candidate, baseline, &toolchain, &games, &report)?;
     println!(
         "candidate/baseline at {} nodes: {:.5} [{:.5}, {:.5}] (95%, {RESAMPLES} resamples over \
-         {} positions)",
+         {} positions of the {} the games searched)",
         args.nodes,
         report.ratio,
         report.interval.0,
         report.interval.1,
-        report.pairs.len()
+        report.pairs.len(),
+        pool.len()
     );
     match &report.matched {
         None => println!(
-            "the interval includes 1: both play at the gate budget\nsprt control: --nodes {}",
+            "both play at the gate budget\nsprt control: --nodes {}",
             args.nodes
         ),
         Some(m) => println!(
@@ -221,21 +255,9 @@ fn measure(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// The position pair `pair` is measured at, as `(plies, position)`: the
-/// opening itself, or the position a game of the baseline against itself
-/// reached [`PLIES_PER_STEP`] × (`pair` mod [`POSITION_STEPS`]) plies past it.
-fn sample(
-    args: &Args,
-    baseline: &EngineConfig,
-    pair: u64,
-    opening: &str,
-) -> Result<(usize, String), String> {
-    let root =
-        rinsai_game::Game::from_usi_position(opening).map_err(|e| format!("{opening}: {e}"))?;
-    let target = root.ply() + target_offset(pair);
-    if target == root.ply() {
-        return Ok((root.ply(), opening.to_owned()));
-    }
+/// A game of the baseline against itself from `opening`, to its end or the
+/// gate's ply cap.
+fn self_play(args: &Args, baseline: &EngineConfig, opening: &str) -> Result<GameRecord, String> {
     let launch = |seat: &str| {
         UsiEngine::launch(
             &format!("{} as {seat}", baseline.id),
@@ -255,7 +277,7 @@ fn sample(
         &mut black,
         &mut white,
         opening,
-        target + END_MARGIN + 1,
+        referee::MAX_GAME_PLIES,
         control,
     )?;
     if record.reason != EndReason::MaxMoves && !is_result(record.reason) {
@@ -265,12 +287,7 @@ fn sample(
             record.detail.unwrap_or_default()
         ));
     }
-    position_at(opening, &record.moves_usi, record.plies, target)
-}
-
-/// How many plies past its opening pair `pair` is measured at.
-fn target_offset(pair: u64) -> usize {
-    PLIES_PER_STEP * usize::try_from(pair % POSITION_STEPS).expect("a small step")
+    Ok(record)
 }
 
 /// Whether `reason` is an ending the game produced rather than a failure.
@@ -285,31 +302,40 @@ fn is_result(reason: EndReason) -> bool {
     )
 }
 
-/// The position `target` plies from `opening`'s root along a game of
-/// `plies` plies whose moves, the opening's included, are `moves_usi`, as
-/// `(plies, position)` — or the opening itself when the game ended within
-/// [`END_MARGIN`] plies of `target`.
-fn position_at(
-    opening: &str,
-    moves_usi: &str,
-    plies: usize,
-    target: usize,
-) -> Result<(usize, String), String> {
+/// Every position a side moved from, as `(game, plies)`, over games given as
+/// `(opening_plies, plies)`: each game's plies from its opening's root up to
+/// its last move.
+fn pool(spans: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    spans
+        .iter()
+        .enumerate()
+        .flat_map(|(game, &(from, to))| (from..to).map(move |plies| (game, plies)))
+        .collect()
+}
+
+/// `n` distinct indices below `len`, by [`rng::shuffle`].
+fn draw(len: usize, n: usize, state: &mut u64) -> Vec<usize> {
+    let mut indices: Vec<usize> = (0..len).collect();
+    rng::shuffle(&mut indices, state);
+    indices.truncate(n);
+    indices
+}
+
+/// The position `plies` plies from `opening`'s root along a game whose moves,
+/// the opening's included, are `moves_usi`.
+fn position_at(opening: &str, moves_usi: &str, plies: usize) -> Result<String, String> {
     let mut game =
         rinsai_game::Game::from_usi_position(opening).map_err(|e| format!("{opening}: {e}"))?;
     let from = game.ply();
-    if plies <= target + END_MARGIN {
-        return Ok((from, opening.to_owned()));
-    }
     let moves: Vec<&str> = moves_usi.split_whitespace().collect();
     for &token in moves
-        .get(from..target)
-        .ok_or("the game is shorter than it says")?
+        .get(from..plies)
+        .ok_or("the game is shorter than the position asked for")?
     {
         game.play_usi(token)
             .map_err(|e| format!("`{token}` after {opening}: {e}"))?;
     }
-    Ok((target, game.to_usi_position()))
+    Ok(game.to_usi_position())
 }
 
 /// Instructions one process spends from launch to exit, answering one `go`
@@ -468,6 +494,7 @@ fn write_log(
     candidate: &EngineConfig,
     baseline: &EngineConfig,
     toolchain: &str,
+    games: &[SelfPlay],
     report: &Report,
 ) -> Result<PathBuf, String> {
     use std::io::Write as _;
@@ -499,6 +526,18 @@ fn write_log(
             .u64("nodes", args.nodes)
             .finish(),
     ];
+    for game in games {
+        lines.push(
+            JsonObject::new()
+                .str("type", "game")
+                .u64("pair", game.pair)
+                .u64("opening", game.opening as u64)
+                .u64("opening_plies", game.record.opening_plies as u64)
+                .u64("plies", game.record.plies as u64)
+                .str("reason", &format!("{:?}", game.record.reason))
+                .finish(),
+        );
+    }
     for (i, (s, &(cand, base))) in report.samples.iter().zip(&report.pairs).enumerate() {
         let mut line = JsonObject::new()
             .str("type", "position")
@@ -592,7 +631,6 @@ fn usage() -> ExitCode {
 mod tests {
     use super::*;
 
-    /// 8a's gate: an upper end of 1.47492 gave 203 400 nodes.
     #[test]
     fn an_interval_above_one_divides_the_budget_by_its_upper_end() {
         assert_eq!(matched_budget(300_000, (1.400, 1.47492)), 203_400);
@@ -650,24 +688,37 @@ mod tests {
         assert_eq!(bootstrap(&pairs, 100, 1), (1.0, 1.0));
     }
 
+    /// Would catch a game that gives one position however long it ran, which
+    /// weights a short game's stages above a long one's.
     #[test]
-    fn every_fifth_pair_is_measured_at_its_opening() {
-        let offsets: Vec<usize> = (0..10).map(target_offset).collect();
-        assert_eq!(offsets, [0, 20, 40, 60, 80, 0, 20, 40, 60, 80]);
+    fn every_position_a_side_moved_from_is_in_the_pool_once() {
+        assert_eq!(
+            pool(&[(2, 5), (0, 2)]),
+            [(0, 2), (0, 3), (0, 4), (1, 0), (1, 1)]
+        );
     }
 
-    /// A game that ended within [`END_MARGIN`] plies of the target gives the
-    /// opening; one that ran past it gives the position at the target.
     #[test]
-    fn a_game_that_ends_near_its_target_gives_the_opening() {
+    fn the_draw_is_distinct_and_a_function_of_its_seed() {
+        let picks = |seed: u64| draw(50, 20, &mut { seed });
+        let mut sorted = picks(7);
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 20);
+        assert!(sorted.iter().all(|&i| i < 50));
+        assert_eq!(picks(7), picks(7));
+        assert_ne!(picks(7), picks(8));
+    }
+
+    #[test]
+    fn a_position_is_the_game_replayed_to_its_ply() {
         let opening = "startpos moves 7g7f 3c3d";
-        let moves = "7g7f 3c3d 2g2f 8c8d 2f2e 8d8e 6i7h 4a3b";
+        let moves = "7g7f 3c3d 2g2f 8c8d 2f2e";
+        assert_eq!(position_at(opening, moves, 2).expect("replays"), opening);
         assert_eq!(
-            position_at(opening, moves, 8, 4).expect("replays"),
-            (2, opening.to_owned())
+            position_at(opening, moves, 4).expect("replays"),
+            "startpos moves 7g7f 3c3d 2g2f 8c8d"
         );
-        let (plies, position) = position_at(opening, moves, 9, 4).expect("replays");
-        assert_eq!(plies, 4);
-        assert_eq!(position, "startpos moves 7g7f 3c3d 2g2f 8c8d");
+        assert!(position_at(opening, moves, 6).is_err());
     }
 }

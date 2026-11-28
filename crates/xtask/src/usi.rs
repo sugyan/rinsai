@@ -68,9 +68,10 @@ impl ClockSpec {
 
 /// What one `go` asks for, and therefore how long the answer may take.
 ///
-/// ⚠️ The two arms bound the wait for opposite reasons, and the difference is
-/// what a caller must get right: under [`Self::Nodes`] reaching the bound says
-/// the engine is wedged, under [`Self::Clock`] it says the mover lost on time.
+/// ⚠️ The arms bound the wait for one of two opposite reasons, and the
+/// difference is what a caller must get right: under [`Self::Nodes`] and
+/// [`Self::Depth`] reaching the bound says the engine is wedged, under
+/// [`Self::Clock`] it says the mover lost on time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoSpec {
     Nodes {
@@ -364,12 +365,12 @@ impl UsiEngine {
             .collect()
     }
 
-    /// `quit`, then everything the process wrote to stderr, once it has
-    /// closed the pipe — which a process does at its exit unless it handed
-    /// the pipe on to a child.
+    /// `quit`, then the stderr tail [`Self::stderr_tail`] would give, once the
+    /// process has closed the pipe — which a process does at its exit unless
+    /// it handed the pipe on to a child.
     ///
     /// For what a process prints *as* it exits — callgrind's summary, read by
-    /// `instructions` — which [`Drop`]'s one-second wait would kill it before.
+    /// `instructions` — which [`Drop`]'s short wait would kill it before.
     /// A pipe still open after `bound` is [`EngineError::Timeout`].
     pub fn quit_and_wait(&mut self, bound: Duration) -> Result<Vec<String>, EngineError> {
         let deadline = Instant::now() + bound;
