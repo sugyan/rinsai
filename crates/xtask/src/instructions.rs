@@ -7,8 +7,7 @@
 //! instructions under callgrind on the same positions at the gate's budget
 //! and names the candidate budget that matches them.
 //!
-//! ⚠️ **Instructions, not time.** A count repeats across runs of one binary,
-//! so it needs no quiet machine; how well it stands in for time is not
+//! ⚠️ **Instructions, not time.** How well a count stands in for time is not
 //! measured here.
 //!
 //! ⚠️ **The positions come from the baseline playing itself**, both seats,
@@ -16,6 +15,11 @@
 //! and are drawn uniformly from every position a side moved from in those
 //! games. What a node costs can change with the stage of the game, so a
 //! sample that weights one stage more than the games do misstates the ratio.
+//!
+//! ⚠️ **A position is counted on the table a gate would search it on.** The
+//! same side's previous search of its game is answered first, in the same
+//! process, and what it cost is subtracted. On an empty table the two
+//! binaries' costs can move by different factors, so the ratio can move too.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -38,6 +42,9 @@ const DEFAULT_NODES: u64 = 300_000;
 /// the same bound serves the native games the positions are drawn from.
 const DEFAULT_MOVE_TIMEOUT: Duration = Duration::from_secs(600);
 const RESAMPLES: usize = 10_000;
+/// How many of the same side's earlier searches of a game are answered
+/// before a position is counted.
+const WARM_SEARCHES: usize = 1;
 
 struct Args {
     candidate: String,
@@ -86,6 +93,9 @@ struct Sample {
     plies: usize,
     /// A USI `position` argument.
     position: String,
+    /// What the same side searched before it in its game, oldest first, as
+    /// `position` arguments: the table it is counted on.
+    before: Vec<String>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -159,8 +169,8 @@ fn measure(args: &Args) -> Result<(), String> {
             pool.len()
         ));
     }
-    // A stream of its own: the pairings and the bootstrap draw from the seed
-    // itself.
+    // ⚠️ Not the seed itself: the pairings and the bootstrap draw from that,
+    // and a draw on the same stream would follow their choices.
     let mut state = rng::splitmix64(&mut { args.seed });
     let mut picks = draw(pool.len(), args.positions, &mut state);
     picks.sort_unstable();
@@ -170,11 +180,16 @@ fn measure(args: &Args) -> Result<(), String> {
             let (g, plies) = pool[i];
             let game = &games[g];
             let opening = &openings[game.opening];
+            let at = |plies| position_at(opening, &game.record.moves_usi, plies);
             Ok(Sample {
                 pair: game.pair,
                 opening: game.opening,
                 plies,
-                position: position_at(opening, &game.record.moves_usi, plies)?,
+                position: at(plies)?,
+                before: plies_before(game.record.opening_plies, plies)
+                    .into_iter()
+                    .map(at)
+                    .collect::<Result<_, _>>()?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -183,21 +198,14 @@ fn measure(args: &Args) -> Result<(), String> {
         nodes,
         hang_timeout: args.move_timeout,
     };
-    let setup = |engine: &EngineConfig| {
-        let depth_1 = GoSpec::Depth {
-            depth: 1,
-            hang_timeout: args.move_timeout,
-        };
-        count(engine, "startpos", depth_1, args.move_timeout)
-    };
-    let setups = [setup(baseline)?, setup(candidate)?];
+    let idle = |engine| count(engine, &[], spec(args.nodes), args.move_timeout);
+    let idles = [idle(baseline)?, idle(candidate)?];
     let runs: Vec<(&EngineConfig, u64, &Sample)> = samples
         .iter()
-        .flat_map(|s| [(baseline, setups[0], s), (candidate, setups[1], s)])
+        .flat_map(|s| [(baseline, idles[0], s), (candidate, idles[1], s)])
         .collect();
-    let counts = parallel(args.concurrency, &runs, |&(engine, setup, s)| {
-        let total = count(engine, &s.position, spec(args.nodes), args.move_timeout)?;
-        net(total, setup, &engine.id)
+    let counts = parallel(args.concurrency, &runs, |&(engine, idle, s)| {
+        search_cost(engine, s, spec(args.nodes), idle, args.move_timeout)
     })?;
     let pairs: Vec<(u64, u64)> = counts.chunks(2).map(|c| (c[1], c[0])).collect();
     let interval = bootstrap(&by_game(&samples, &pairs), RESAMPLES, args.seed);
@@ -206,8 +214,7 @@ fn measure(args: &Args) -> Result<(), String> {
         None
     } else {
         let counts = parallel(args.concurrency, &samples, |s| {
-            let total = count(candidate, &s.position, spec(budget), args.move_timeout)?;
-            net(total, setups[1], &candidate.id)
+            search_cost(candidate, s, spec(budget), idles[1], args.move_timeout)
         })?;
         let back: Vec<(u64, u64)> = counts
             .iter()
@@ -231,12 +238,13 @@ fn measure(args: &Args) -> Result<(), String> {
 
     let log_path = write_log(args, candidate, baseline, &toolchain, &games, &report)?;
     println!(
-        "candidate/baseline at {} nodes: {:.5} [{:.5}, {:.5}] (95%, {RESAMPLES} resamples over \
-         {} positions of the {} the games searched)",
+        "candidate/baseline at {} nodes: {:.5} [{:.5}, {:.5}] (95%, {RESAMPLES} resamples of the \
+         {} games {} positions were drawn from, of the {} the games searched)",
         args.nodes,
         report.ratio,
         report.interval.0,
         report.interval.1,
+        by_game(&report.samples, &report.pairs).len(),
         report.pairs.len(),
         pool.len()
     );
@@ -304,8 +312,7 @@ fn is_result(reason: EndReason) -> bool {
 }
 
 /// Every position a side moved from, as `(game, plies)`, over games given as
-/// `(opening_plies, plies)`: each game's plies from its opening's root up to
-/// its last move.
+/// `(opening_plies, plies)`.
 fn pool(spans: &[(usize, usize)]) -> Vec<(usize, usize)> {
     spans
         .iter()
@@ -339,11 +346,48 @@ fn position_at(opening: &str, moves_usi: &str, plies: usize) -> Result<String, S
     Ok(game.to_usi_position())
 }
 
+/// The plies the same side searched before `plies` in a game whose engines
+/// took over at `opening_plies`, oldest first: at most [`WARM_SEARCHES`],
+/// and none inside the opening, which nobody searched.
+fn plies_before(opening_plies: usize, plies: usize) -> Vec<usize> {
+    (1..=WARM_SEARCHES)
+        .rev()
+        .filter_map(|back| plies.checked_sub(2 * back))
+        .filter(|&earlier| earlier >= opening_plies)
+        .collect()
+}
+
+/// What `sample`'s own search costs under `spec`: a process that answers its
+/// [`Sample::before`] and then it, less one that answers `before` alone —
+/// `idle`, a process that answers nothing, when `before` is empty.
+fn search_cost(
+    engine: &EngineConfig,
+    sample: &Sample,
+    spec: GoSpec,
+    idle: u64,
+    move_timeout: Duration,
+) -> Result<u64, String> {
+    let mut searches: Vec<&str> = sample.before.iter().map(String::as_str).collect();
+    let warm = if searches.is_empty() {
+        idle
+    } else {
+        count(engine, &searches, spec, move_timeout)?
+    };
+    searches.push(&sample.position);
+    let total = count(engine, &searches, spec, move_timeout)?;
+    total.checked_sub(warm).ok_or_else(|| {
+        format!(
+            "{}: {} counted {total}, below the {warm} of what came before it",
+            engine.id, sample.position
+        )
+    })
+}
+
 /// Instructions one process spends from launch to exit, answering one `go`
-/// from `position`.
+/// for each of `positions`, in order, on one table.
 fn count(
     engine: &EngineConfig,
-    position: &str,
+    positions: &[&str],
     spec: GoSpec,
     move_timeout: Duration,
 ) -> Result<u64, String> {
@@ -353,7 +397,8 @@ fn count(
         engine.path.display().to_string(),
     ];
     args.extend(engine.args.iter().cloned());
-    let failed = |e: String| format!("{} under callgrind at {position}: {e}", engine.id);
+    let last = positions.last().copied().unwrap_or("no position");
+    let failed = |e: String| format!("{} under callgrind at {last}: {e}", engine.id);
     let mut usi = UsiEngine::launch(
         &format!("{} under callgrind", engine.id),
         Path::new("valgrind"),
@@ -361,20 +406,15 @@ fn count(
         &engine.options,
     )
     .map_err(|e| failed(e.to_string()))?;
-    usi.go(position, spec)
-        .answer
-        .map_err(|e| failed(e.to_string()))?;
+    for position in positions {
+        usi.go(position, spec)
+            .answer
+            .map_err(|e| failed(e.to_string()))?;
+    }
     let stderr = usi
         .quit_and_wait(move_timeout)
         .map_err(|e| failed(e.to_string()))?;
     collected(&stderr).ok_or_else(|| failed("no `Collected :` line on stderr".to_owned()))
-}
-
-/// What a run cost above its binary's setup run.
-fn net(total: u64, setup: u64, id: &str) -> Result<u64, String> {
-    total
-        .checked_sub(setup)
-        .ok_or_else(|| format!("{id}: a run counted {total}, below its setup run's {setup}"))
 }
 
 /// The count in callgrind's exit summary, `==pid== Collected : N`.
@@ -557,6 +597,7 @@ fn write_log(
             .u64("pair", s.pair)
             .u64("opening", s.opening as u64)
             .u64("plies", s.plies as u64)
+            .u64("searched_before", s.before.len() as u64)
             .str("position", &s.position)
             .u64("baseline", base)
             .u64("candidate", cand);
@@ -567,6 +608,10 @@ fn write_log(
     }
     let mut summary = JsonObject::new()
         .str("type", "summary")
+        .u64(
+            "games_resampled",
+            by_game(&report.samples, &report.pairs).len() as u64,
+        )
         .f64("ratio", report.ratio)
         .f64("ratio_lo", report.interval.0)
         .f64("ratio_hi", report.interval.1)
@@ -712,6 +757,16 @@ mod tests {
         assert_eq!(bootstrap(&games, 1_000, 1), (1.0, 2.0));
     }
 
+    /// Would catch a position counted on an empty table, or after a search
+    /// inside the opening.
+    #[test]
+    fn a_position_is_searched_after_the_same_sides_previous_search() {
+        assert_eq!(plies_before(10, 15), [13]);
+        assert_eq!(plies_before(10, 12), [10]);
+        assert_eq!(plies_before(10, 11), Vec::<usize>::new());
+        assert_eq!(plies_before(0, 1), Vec::<usize>::new());
+    }
+
     #[test]
     fn samples_are_grouped_by_the_game_they_were_drawn_from() {
         let sample = |pair| Sample {
@@ -719,6 +774,7 @@ mod tests {
             opening: 0,
             plies: 0,
             position: String::new(),
+            before: Vec::new(),
         };
         let samples = [sample(4), sample(1), sample(4)];
         assert_eq!(

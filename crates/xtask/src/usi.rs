@@ -68,23 +68,13 @@ impl ClockSpec {
 
 /// What one `go` asks for, and therefore how long the answer may take.
 ///
-/// ⚠️ The arms bound the wait for one of two opposite reasons, and the
-/// difference is what a caller must get right: under [`Self::Nodes`] and
-/// [`Self::Depth`] reaching the bound says the engine is wedged, under
-/// [`Self::Clock`] it says the mover lost on time.
+/// ⚠️ The two arms bound the wait for opposite reasons, and the difference is
+/// what a caller must get right: under [`Self::Nodes`] reaching the bound says
+/// the engine is wedged, under [`Self::Clock`] it says the mover lost on time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoSpec {
-    Nodes {
-        nodes: u64,
-        hang_timeout: Duration,
-    },
+    Nodes { nodes: u64, hang_timeout: Duration },
     Clock(ClockSpec),
-    /// A fixed depth, bounded by a hang detector like [`Self::Nodes`]. Its
-    /// caller is `instructions`, whose setup run is a depth-1 search.
-    Depth {
-        depth: u32,
-        hang_timeout: Duration,
-    },
 }
 
 impl GoSpec {
@@ -92,7 +82,6 @@ impl GoSpec {
     fn args(&self) -> String {
         match self {
             Self::Nodes { nodes, .. } => format!("nodes {nodes}"),
-            Self::Depth { depth, .. } => format!("depth {depth}"),
             // `byoyomi 0` is sent rather than omitted: it is a time control
             // with no byoyomi, which is not the same statement as a `go` that
             // forgot to mention one.
@@ -109,7 +98,7 @@ impl GoSpec {
     #[must_use]
     pub fn wait(&self) -> Duration {
         match self {
-            Self::Nodes { hang_timeout, .. } | Self::Depth { hang_timeout, .. } => *hang_timeout,
+            Self::Nodes { hang_timeout, .. } => *hang_timeout,
             Self::Clock(clock) => clock.allowance(),
         }
     }
