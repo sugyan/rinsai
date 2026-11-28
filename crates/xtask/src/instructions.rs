@@ -7,8 +7,7 @@
 //! instructions under callgrind on the same positions at the gate's budget
 //! and names the candidate budget that matches them.
 //!
-//! ⚠️ **Instructions, not time.** A count repeats across runs of one binary,
-//! so it needs no quiet machine; how well it stands in for time is not
+//! ⚠️ **Instructions, not time.** How well a count stands in for time is not
 //! measured here.
 //!
 //! ⚠️ **The positions come from the baseline playing itself**, both seats,
@@ -16,6 +15,10 @@
 //! and are drawn uniformly from every position a side moved from in those
 //! games. What a node costs can change with the stage of the game, so a
 //! sample that weights one stage more than the games do misstates the ratio.
+//!
+//! ⚠️ **Each position is counted on an empty table.** A gate's engine
+//! searches every move after its first on the table its earlier searches of
+//! the game filled, and the table's state moves the ratio.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -159,8 +162,8 @@ fn measure(args: &Args) -> Result<(), String> {
             pool.len()
         ));
     }
-    // A stream of its own: the pairings and the bootstrap draw from the seed
-    // itself.
+    // ⚠️ Not the seed itself: the pairings and the bootstrap draw from that,
+    // and a draw on the same stream would follow their choices.
     let mut state = rng::splitmix64(&mut { args.seed });
     let mut picks = draw(pool.len(), args.positions, &mut state);
     picks.sort_unstable();
@@ -231,12 +234,13 @@ fn measure(args: &Args) -> Result<(), String> {
 
     let log_path = write_log(args, candidate, baseline, &toolchain, &games, &report)?;
     println!(
-        "candidate/baseline at {} nodes: {:.5} [{:.5}, {:.5}] (95%, {RESAMPLES} resamples over \
-         {} positions of the {} the games searched)",
+        "candidate/baseline at {} nodes: {:.5} [{:.5}, {:.5}] (95%, {RESAMPLES} resamples of the \
+         {} games {} positions were drawn from, of the {} the games searched)",
         args.nodes,
         report.ratio,
         report.interval.0,
         report.interval.1,
+        by_game(&report.samples, &report.pairs).len(),
         report.pairs.len(),
         pool.len()
     );
@@ -304,8 +308,7 @@ fn is_result(reason: EndReason) -> bool {
 }
 
 /// Every position a side moved from, as `(game, plies)`, over games given as
-/// `(opening_plies, plies)`: each game's plies from its opening's root up to
-/// its last move.
+/// `(opening_plies, plies)`.
 fn pool(spans: &[(usize, usize)]) -> Vec<(usize, usize)> {
     spans
         .iter()
@@ -567,6 +570,10 @@ fn write_log(
     }
     let mut summary = JsonObject::new()
         .str("type", "summary")
+        .u64(
+            "games_resampled",
+            by_game(&report.samples, &report.pairs).len() as u64,
+        )
         .f64("ratio", report.ratio)
         .f64("ratio_lo", report.interval.0)
         .f64("ratio_hi", report.interval.1)
