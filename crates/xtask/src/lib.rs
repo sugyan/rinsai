@@ -10,6 +10,7 @@
 pub mod config;
 pub mod csa;
 pub mod fetch;
+pub mod instructions;
 pub mod jsonl;
 pub mod openings;
 pub mod referee;

@@ -396,6 +396,18 @@ non-regression anchor is for.
 the bounds but the opening set's decisiveness — step 3 ran 77% even pairs and
 26% 千日手 — or the 1 M regime for the small patches themselves.
 
+### Why is a fixed-node gate matched for instructions?
+
+Because a patch can change what a counted node costs. A pruned move is
+generated and evaluated, then never searched, so it does work no node counts,
+and an equal-node gate hands the candidate more work than the baseline gets.
+Item 8a is where it showed: STRENGTH.md has the same feature passing at equal
+nodes and again at matched work, with a much smaller estimate the second time.
+
+Instructions rather than time, because a callgrind count repeats on a shared
+machine and time does not. ⚠️ How well the count stands in for time is not
+measured.
+
 ### Why isn't Ayane vendored as the match harness?
 
 Read at `yaneurao/Ayane@5fc6afd`, it lacks all three things the gates need.

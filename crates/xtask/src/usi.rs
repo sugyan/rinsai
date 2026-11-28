@@ -6,10 +6,12 @@
 //! recorded loss. Under a clock it is the mover's own allowance, so reaching
 //! it *is* the game's result.
 //!
-//! No orphans: [`UsiEngine`]'s `Drop` quits, waits briefly, then kills and
-//! reaps — and it runs on unwinding panics, which the workspace keeps
-//! enabled. If the harness itself dies uncleanly, the child's stdin closes
-//! and a USI engine exits on EOF. Two engines exist per game and are
+//! [`UsiEngine`]'s `Drop` quits, waits briefly, then kills and reaps the
+//! process it spawned — and it runs on unwinding panics, which the workspace
+//! keeps enabled. ⚠️ **That process and nothing it started**: a launcher
+//! script that does not `exec` leaves the real engine behind. If the harness
+//! itself dies uncleanly, the child's stdin closes and a USI engine exits on
+//! EOF. Two engines exist per game and are
 //! dropped before the next one starts, so what bounds the total is the
 //! caller's worker count.
 
@@ -19,6 +21,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use shogi_core::Color;
@@ -70,8 +73,17 @@ impl ClockSpec {
 /// the engine is wedged, under [`Self::Clock`] it says the mover lost on time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoSpec {
-    Nodes { nodes: u64, hang_timeout: Duration },
+    Nodes {
+        nodes: u64,
+        hang_timeout: Duration,
+    },
     Clock(ClockSpec),
+    /// A fixed depth, bounded by a hang detector like [`Self::Nodes`]. Its
+    /// caller is `instructions`, whose setup run is a depth-1 search.
+    Depth {
+        depth: u32,
+        hang_timeout: Duration,
+    },
 }
 
 impl GoSpec {
@@ -79,6 +91,7 @@ impl GoSpec {
     fn args(&self) -> String {
         match self {
             Self::Nodes { nodes, .. } => format!("nodes {nodes}"),
+            Self::Depth { depth, .. } => format!("depth {depth}"),
             // `byoyomi 0` is sent rather than omitted: it is a time control
             // with no byoyomi, which is not the same statement as a `go` that
             // forgot to mention one.
@@ -95,7 +108,7 @@ impl GoSpec {
     #[must_use]
     pub fn wait(&self) -> Duration {
         match self {
-            Self::Nodes { hang_timeout, .. } => *hang_timeout,
+            Self::Nodes { hang_timeout, .. } | Self::Depth { hang_timeout, .. } => *hang_timeout,
             Self::Clock(clock) => clock.allowance(),
         }
     }
@@ -157,6 +170,9 @@ pub struct UsiEngine {
     stdin: ChildStdin,
     lines: Receiver<String>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
+    /// Finishes on the stderr pipe's EOF, which [`Self::quit_and_wait`] waits
+    /// for.
+    stderr_reader: JoinHandle<()>,
     /// For log lines, e.g. `rinsai-dev as black`.
     pub label: String,
 }
@@ -205,7 +221,7 @@ impl UsiEngine {
 
         let stderr_tail = Arc::new(Mutex::new(VecDeque::new()));
         let tail = Arc::clone(&stderr_tail);
-        std::thread::spawn(move || {
+        let stderr_reader = std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines() {
                 let Ok(line) = line else { break };
                 let mut tail = tail.lock().expect("no panics hold this lock");
@@ -221,6 +237,7 @@ impl UsiEngine {
             stdin,
             lines,
             stderr_tail,
+            stderr_reader,
             label: label.to_owned(),
         };
 
@@ -345,6 +362,27 @@ impl UsiEngine {
             .iter()
             .cloned()
             .collect()
+    }
+
+    /// `quit`, then everything the process wrote to stderr, once it has
+    /// closed the pipe — which a process does at its exit unless it handed
+    /// the pipe on to a child.
+    ///
+    /// For what a process prints *as* it exits — callgrind's summary, read by
+    /// `instructions` — which [`Drop`]'s one-second wait would kill it before.
+    /// A pipe still open after `bound` is [`EngineError::Timeout`].
+    pub fn quit_and_wait(&mut self, bound: Duration) -> Result<Vec<String>, EngineError> {
+        let deadline = Instant::now() + bound;
+        self.send("quit")?;
+        while !self.stderr_reader.is_finished() {
+            if Instant::now() >= deadline {
+                return Err(EngineError::Timeout {
+                    waiting_for: "the end of stderr",
+                });
+            }
+            std::thread::sleep(STDERR_SETTLE_STEP);
+        }
+        Ok(self.stderr_so_far())
     }
 
     fn send(&mut self, line: &str) -> Result<(), EngineError> {
@@ -620,5 +658,31 @@ mod tests {
         assert_eq!(name("id name rinsai 0.1.0"), None);
         assert_eq!(name("usiok"), None);
         assert_eq!(name("option name type spin"), None, "an empty name is none");
+    }
+
+    /// What a process writes to stderr as it exits reaches the caller, rather
+    /// than going with a process killed before it got there.
+    ///
+    /// Sabotage: skip the wait for the end of stderr and this reads `[]`.
+    #[test]
+    fn quit_and_wait_returns_what_the_process_wrote_on_its_way_out() {
+        let script = r#"while read line; do
+            case "$line" in
+                usi) echo usiok ;;
+                isready) echo readyok ;;
+                quit) sleep 1; echo "written at exit" >&2; exit 0 ;;
+            esac
+        done"#;
+        let mut engine = UsiEngine::launch(
+            "sh",
+            Path::new("sh"),
+            &["-c".to_owned(), script.to_owned()],
+            &[],
+        )
+        .expect("the script answers the handshake");
+        let stderr = engine
+            .quit_and_wait(Duration::from_secs(30))
+            .expect("the script exits");
+        assert_eq!(stderr, ["written at exit"]);
     }
 }

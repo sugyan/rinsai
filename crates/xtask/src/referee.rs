@@ -414,7 +414,9 @@ mod tests {
                 .iter()
                 .map(|spec| match spec {
                     GoSpec::Clock(c) => (c.btime.as_millis(), c.wtime.as_millis()),
-                    GoSpec::Nodes { .. } => panic!("a node budget carries no clock"),
+                    GoSpec::Nodes { .. } | GoSpec::Depth { .. } => {
+                        panic!("a node or depth budget carries no clock")
+                    }
                 })
                 .collect()
         }
@@ -779,7 +781,7 @@ mod tests {
     }
 
     /// An answer that arrived is played, however much of the allowance it
-    /// took. Only silence flags \u{2014} so a seat that spends every millisecond it
+    /// took. Only silence flags — so a seat that spends every millisecond it
     /// has and still answers keeps its move.
     #[test]
     fn a_seat_that_answers_keeps_its_move_however_long_it_took() {
@@ -832,10 +834,6 @@ mod tests {
         assert_eq!(white.clocks_seen(), [(9_500, 10_000), (8_800, 9_700)]);
     }
 
-    /// A legal move that took too long is not a move. The charge decides
-    /// before the answer is read, so the board must not advance and the point
-    /// must go to the opponent.
-    ///
     /// An engine that **failed** keeps its own ending under a clock. Only
     /// silence is a flag fall, so a crash or a nonsense line is still reported
     /// as the failure it is.
@@ -845,8 +843,8 @@ mod tests {
     /// one loses both the ⚠️ tally and the stderr post-mortem, and reads in
     /// the log exactly like an engine that merely thought too long.
     ///
-    /// Sabotage: route every `Err` to `EndReason::FlagFall` \u{2014} the shape this
-    /// replaced \u{2014} and both rows here fail.
+    /// Sabotage: route every `Err` to `EndReason::FlagFall` — the shape this
+    /// replaced — and both rows here fail.
     #[test]
     fn an_engine_that_failed_keeps_its_own_ending_under_a_clock() {
         for (error, reason) in [

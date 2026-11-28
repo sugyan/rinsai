@@ -641,7 +641,7 @@ fn us(d: Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
 
-fn load_openings(path: &PathBuf) -> Result<Vec<String>, String> {
+pub(crate) fn load_openings(path: &PathBuf) -> Result<Vec<String>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     // The physical line number travels with the opening: a message pointing
     // at the ordinal sends the reader to a comment line, and the offset grows
@@ -852,7 +852,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     })
 }
 
-fn parse_u64(text: &str) -> Result<u64, String> {
+pub(crate) fn parse_u64(text: &str) -> Result<u64, String> {
     text.parse()
         .map_err(|_| format!("`{text}` is not a whole number"))
 }
@@ -1030,8 +1030,7 @@ mod tests {
             })
         );
         // A byoyomi of zero is a time control without one, not a nonsense
-        // budget — and it is the only shape that makes rinsai spend a main
-        // time it otherwise ignores.
+        // budget.
         assert!(budget_with(&["--time-ms", "300", "--byoyomi-ms", "0"]).is_ok());
         assert!(budget_with(&["--time-ms", "0", "--byoyomi-ms", "1000"]).is_ok());
 

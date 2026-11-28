@@ -69,6 +69,11 @@ Nothing is adopted on argument: `patch → bench → fixed-node paired games →
   at fixed nodes — 300 000 per move for working gates, and each phase exit
   replays one 1 000 000-node non-regression gate against the phase's entry
   rev. Speed and time-management patches run in real time.
+- **A feature gate is matched for work.** Before its first game,
+  `cargo run --release -p xtask -- instructions` counts both binaries'
+  instructions at the gate budget; when the ratio's 95% interval excludes 1,
+  the candidate plays at that budget divided by the interval's upper end,
+  rounded down.
 - **One feature = one SPRT.** Do not bundle. ⚠️ This governs **strength
   patches** — changes whose intended effect is Elo. Correctness and
   infrastructure work is gated by its own deterministic suites (scenario,
