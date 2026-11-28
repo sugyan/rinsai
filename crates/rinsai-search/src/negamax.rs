@@ -1,7 +1,7 @@
 //! Iterative-deepening negamax with alpha-beta pruning, over a quiescence
 //! search that resolves captures.
 //!
-//! Three things to know before reading:
+//! Four things to know before reading:
 //!
 //! * ⚠️ **There are two negation seams, not one.**
 //!   [`NegamaxSearcher::child`] is the only place an *interior* node's child is
@@ -549,11 +549,11 @@ impl<C: Clock> NegamaxSearcher<C> {
     ///
     /// **It is also where 千日手 is decided.** Both callers push
     /// [`Self::path`] immediately before calling this, so the position asked
-    /// about is the one just reached. Every node below the root is entered
-    /// through here, **the depth-1 iteration's children included** — that
-    /// iteration dispatches straight into [`Self::qsearch`], so a check at the
-    /// top of [`Self::negamax`] would leave the one search that always
-    /// completes unable to see the move that loses the game.
+    /// about is the one just reached. Every child of the root and of an
+    /// interior node is entered through here, **the depth-1 iteration's
+    /// included** — that iteration dispatches straight into [`Self::qsearch`],
+    /// so a check at the top of [`Self::negamax`] would leave the one search
+    /// that always completes unable to see the move that loses the game.
     ///
     /// ⚠️ **Returning here keeps the verdict node's own key out of the table,
     /// and nothing more.** The caller takes the returned score as its `best`
@@ -760,6 +760,14 @@ impl<C: Clock> NegamaxSearcher<C> {
             // What every search of `mv` below runs at, the reduced one aside.
             let full = depth - 1 + extension::extension(gives_check, in_check);
             let taken = reduction::reduction(depth, i - base, quiet, gives_check, in_check);
+            // ⚠️ **Two of the exemptions are wired by the arguments above, and
+            // passing the wrong one makes the tree smaller**, which no node-count
+            // ceiling can see. These restate them against this node's own values.
+            debug_assert!(taken == 0 || !in_check, "an evasion was reduced");
+            debug_assert!(
+                taken == 0 || i - base >= reduction::MIN_PLAYED,
+                "a move at the front of its node's list was reduced"
+            );
             let mut score = self.child(board, probe, full - taken, ply + 1, budget);
             // ⚠️ **A reduced score may raise alpha only after a full-depth
             // search agrees with it.** The saving is in the moves that stay
@@ -1206,7 +1214,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use shogi_core::ToUsi;
+    use shogi_core::{Hand, ToUsi};
 
     use super::*;
     use crate::game::Game;
@@ -2713,10 +2721,11 @@ mod tests {
     /// move's swap. So does removing futility, at 60 712.
     ///
     /// ⚠️ **A ceiling can only catch a reduction that stopped happening.**
-    /// Deleting the verification search, dropping the promotion exemption and
-    /// dropping the check exemption each leave this count at 33 501, and none
-    /// of them is red here. The frozen `bench` counts catch all three; the test
-    /// below catches the first.
+    /// Deleting the verification search, dropping the promotion exemption at
+    /// the reduction's call, and passing `false` there for the check exemption
+    /// each leave this count at 33 501, and none of them is red here. The
+    /// frozen `bench` counts catch all three; the test below catches the first,
+    /// and `a_mate_ends_the_deepening_only_once_its_depth_covers_it` the third.
     #[test]
     fn late_quiet_moves_are_searched_a_ply_shallower() {
         let (_, lines) = run("startpos", depth(7));
@@ -2796,6 +2805,96 @@ mod tests {
             field(last, "cp") > 100,
             "a reduced score raised alpha at a node with a window: {last}"
         );
+    }
+
+    /// A node in check reduces none of its evasions.
+    ///
+    /// ⚠️ **What goes red is the first `debug_assert!` beside the reduction's
+    /// call in [`Self::negamax`], not an assertion here**, so a release build of
+    /// this test catches nothing.
+    ///
+    /// **The fixture is what makes it able to fail.** Black's one legal move is
+    /// a pawn check — its king is boxed in, its lance blocked behind the pawn —
+    /// and the lance makes the pawn's capture illegal, so White answers with
+    /// quiet king moves, more of them than a node searches whole. The root's
+    /// one move hands that node the open window, so no evasion is cut off
+    /// before its turn comes. All three properties are asserted.
+    ///
+    /// Sabotage: pass `false` for `in_check` at the reduction's call and this
+    /// goes red, with eight other tests in this crate and `rinsai`'s two
+    /// `bench` tests.
+    #[test]
+    fn an_evasion_is_never_reduced() {
+        /// Whether `mv` neither captures, promotes nor gives check on `board`.
+        fn is_quiet_and_unchecking(board: &mut Position, mv: Move) -> bool {
+            let takes = matches!(mv, Move::Normal { to, .. } if board.piece_at(to).is_some());
+            let undo = board.do_move(mv);
+            let checks = board.in_check();
+            board.undo_move(mv, undo);
+            !takes && !mv.is_promoting() && !checks
+        }
+
+        let args = "sfen 9/9/4k4/9/4P4/4L4/1g7/2s6/K8 b - 1";
+        let mut board = game(args).search_board();
+        let root = board.legal_moves();
+        assert_eq!(root.len(), 1, "the root has a choice");
+        let undo = board.do_move(root[0]);
+        assert!(board.in_check(), "the root's move is not a check");
+        let quiet = board
+            .legal_moves()
+            .into_iter()
+            .filter(|&mv| is_quiet_and_unchecking(&mut board, mv))
+            .count();
+        assert!(
+            quiet > reduction::MIN_PLAYED,
+            "only {quiet} evasions are quiet"
+        );
+        board.undo_move(root[0], undo);
+
+        let d = u32::try_from(reduction::MIN_DEPTH + 1).expect("a small depth");
+        let (_, lines) = run(args, depth(d));
+        assert!(!lines.is_empty(), "the search reported nothing");
+    }
+
+    /// A node counts the moves ahead of a move from the front of its own list,
+    /// not from the front of the move buffer.
+    ///
+    /// ⚠️ **What goes red is the second `debug_assert!` beside the reduction's
+    /// call in [`Self::negamax`]**, so a release build of this test catches
+    /// nothing.
+    ///
+    /// **The depth is what makes it able to fail.** Two plies down, a node's
+    /// list starts behind every reply its parent generated, at least
+    /// [`reduction::MIN_PLAYED`] of them, and that is where the two counts
+    /// disagree; with two kings alone on the board and nothing in hand, its
+    /// first move is quiet. Both properties are asserted.
+    ///
+    /// Sabotage: pass `i` for `i - base` at the reduction's call and this goes
+    /// red, with twenty-two other tests in this crate and `rinsai`'s
+    /// `a_scripted_game_over_real_pipes`; `rinsai`'s two `bench` tests stay
+    /// green.
+    #[test]
+    fn a_node_counts_its_moves_from_its_own_list() {
+        let args = "sfen 4k4/9/9/9/9/9/9/9/4K4 b - 1";
+        let mut board = game(args).search_board();
+        assert_eq!(board.occupied().count(), 2, "more than the two kings");
+        for color in [Color::Black, Color::White] {
+            assert_eq!(board.hand(color), Hand::default(), "a piece in hand");
+        }
+        for mv in board.legal_moves() {
+            let undo = board.do_move(mv);
+            let replies = board.legal_moves().len();
+            assert!(
+                replies >= reduction::MIN_PLAYED,
+                "{replies} replies to {}",
+                mv.to_usi_owned()
+            );
+            board.undo_move(mv, undo);
+        }
+
+        let d = u32::try_from(reduction::MIN_DEPTH + 2).expect("a small depth");
+        let (_, lines) = run(args, depth(d));
+        assert!(!lines.is_empty(), "the search reported nothing");
     }
 
     /// Where losing futility costs more than any ordering or reduction

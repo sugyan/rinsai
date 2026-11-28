@@ -14,7 +14,7 @@ use crate::score::Depth;
 /// of a depth-2 node already runs at depth 1, so taking a ply off dispatches
 /// it into quiescence and gives up the whole subtree rather than a ply of it.
 /// `a_reduced_child_is_still_an_interior_node` is what says so.
-const MIN_DEPTH: Depth = 3;
+pub(crate) const MIN_DEPTH: Depth = 3;
 
 /// How many moves a node searches at full depth before it starts reducing.
 ///
@@ -24,7 +24,7 @@ const MIN_DEPTH: Depth = 3;
 /// ⚠️ **The number is a starting point and not a measurement**, and no test
 /// here pins it: every assertion below is written against the constant rather
 /// than against its value, so the suite follows it wherever it is set.
-const MIN_PLAYED: usize = 4;
+pub(crate) const MIN_PLAYED: usize = 4;
 
 /// How many plies to take off `played`'s search at a node of `depth`, or zero
 /// to search it whole.
