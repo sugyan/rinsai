@@ -17,6 +17,7 @@
 //! games. What a node costs can change with the stage of the game, so a
 //! sample that weights one stage more than the games do misstates the ratio.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::sync::Mutex;
@@ -199,7 +200,7 @@ fn measure(args: &Args) -> Result<(), String> {
         net(total, setup, &engine.id)
     })?;
     let pairs: Vec<(u64, u64)> = counts.chunks(2).map(|c| (c[1], c[0])).collect();
-    let interval = bootstrap(&pairs, RESAMPLES, args.seed);
+    let interval = bootstrap(&by_game(&samples, &pairs), RESAMPLES, args.seed);
     let budget = matched_budget(args.nodes, interval);
     let matched = if budget == args.nodes {
         None
@@ -217,7 +218,7 @@ fn measure(args: &Args) -> Result<(), String> {
             budget,
             counts,
             ratio: ratio(&back),
-            interval: bootstrap(&back, RESAMPLES, args.seed),
+            interval: bootstrap(&by_game(&samples, &back), RESAMPLES, args.seed),
         })
     };
     let report = Report {
@@ -418,18 +419,30 @@ fn ratio(pairs: &[(u64, u64)]) -> f64 {
     sum(|p| p.0) as f64 / sum(|p| p.1) as f64
 }
 
+/// `pairs`, one per sample, grouped by the game each sample was drawn from.
+fn by_game(samples: &[Sample], pairs: &[(u64, u64)]) -> Vec<Vec<(u64, u64)>> {
+    let mut games: BTreeMap<u64, Vec<(u64, u64)>> = BTreeMap::new();
+    for (s, &pair) in samples.iter().zip(pairs) {
+        games.entry(s.pair).or_default().push(pair);
+    }
+    games.into_values().collect()
+}
+
 /// The 95% interval of [`ratio`], by percentile over `resamples` resamples of
-/// the pairs drawn with replacement.
-fn bootstrap(pairs: &[(u64, u64)], resamples: usize, seed: u64) -> (f64, f64) {
+/// `games` drawn with replacement, each bringing every pair drawn from it —
+/// by game, because positions drawn from one game are not independent of each
+/// other. Every game must hold a pair.
+fn bootstrap(games: &[Vec<(u64, u64)>], resamples: usize, seed: u64) -> (f64, f64) {
     let mut state = seed;
-    let n = pairs.len() as u64;
+    let n = games.len() as u64;
     let mut ratios: Vec<f64> = (0..resamples)
         .map(|_| {
             let (mut c, mut b) = (0u128, 0u128);
             for _ in 0..n {
-                let (cand, base) = pairs[(rng::splitmix64(&mut state) % n) as usize];
-                c += u128::from(cand);
-                b += u128::from(base);
+                for &(cand, base) in &games[(rng::splitmix64(&mut state) % n) as usize] {
+                    c += u128::from(cand);
+                    b += u128::from(base);
+                }
             }
             c as f64 / b as f64
         })
@@ -675,8 +688,9 @@ mod tests {
         let pairs: Vec<(u64, u64)> = (1..=40)
             .map(|i| (100 + i * 7 % 13, 100 + i * 5 % 11))
             .collect();
-        assert_eq!(bootstrap(&pairs, 500, 3), bootstrap(&pairs, 500, 3));
-        let (lo, hi) = bootstrap(&pairs, 500, 3);
+        let games: Vec<Vec<(u64, u64)>> = pairs.chunks(3).map(<[_]>::to_vec).collect();
+        assert_eq!(bootstrap(&games, 500, 3), bootstrap(&games, 500, 3));
+        let (lo, hi) = bootstrap(&games, 500, 3);
         let point = ratio(&pairs);
         assert!(lo <= point && point <= hi, "{lo} {point} {hi}");
     }
@@ -685,7 +699,32 @@ mod tests {
     fn identical_counts_give_a_ratio_of_exactly_one() {
         let pairs = vec![(5_000, 5_000), (7_000, 7_000), (9_000, 9_000)];
         assert_eq!(ratio(&pairs), 1.0);
-        assert_eq!(bootstrap(&pairs, 100, 1), (1.0, 1.0));
+        let games = vec![pairs[..1].to_vec(), pairs[1..].to_vec()];
+        assert_eq!(bootstrap(&games, 100, 1), (1.0, 1.0));
+    }
+
+    /// Would catch positions resampled one at a time: two games of ten
+    /// identical positions resample to a ratio of 1, 1.5 or 2, so the
+    /// interval's ends are exactly 1 and 2.
+    #[test]
+    fn a_games_positions_are_resampled_together() {
+        let games = vec![vec![(2, 1); 10], vec![(1, 1); 10]];
+        assert_eq!(bootstrap(&games, 1_000, 1), (1.0, 2.0));
+    }
+
+    #[test]
+    fn samples_are_grouped_by_the_game_they_were_drawn_from() {
+        let sample = |pair| Sample {
+            pair,
+            opening: 0,
+            plies: 0,
+            position: String::new(),
+        };
+        let samples = [sample(4), sample(1), sample(4)];
+        assert_eq!(
+            by_game(&samples, &[(1, 1), (2, 2), (3, 3)]),
+            [vec![(2, 2)], vec![(1, 1), (3, 3)]]
+        );
     }
 
     /// Would catch a game that gives one position however long it ran, which
