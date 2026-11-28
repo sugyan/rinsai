@@ -1,10 +1,5 @@
 //! How much of a late quiet move's search to skip.
 //!
-//! The move list a node walks is ordered — the transposition move, then the
-//! captures by what they win, then the quiet moves by killers and history —
-//! and searching its late quiet moves a ply shallower is what buys the tree
-//! back.
-//!
 //! ⚠️ **A reduction is a guess, and an unverified guess is a wrong answer
 //! rather than a cheaper one.** The saving comes from moves that stay below
 //! alpha; anything that comes back above it has to be searched again at full
@@ -23,9 +18,8 @@ const MIN_DEPTH: Depth = 3;
 
 /// How many moves a node searches at full depth before it starts reducing.
 ///
-/// The front of an ordered list is the transposition move and the best-ranked
-/// captures, which is where the ordering is most likely right and a reduction
-/// most likely wrong.
+/// The front of the list is where the ordering is most likely right and a
+/// reduction most likely wrong.
 ///
 /// ⚠️ **The number is a starting point and not a measurement**, and no test
 /// here pins it: every assertion below is written against the constant rather

@@ -130,10 +130,8 @@ impl Game {
 
     /// A game rooted at `partial`, no moves played.
     ///
-    /// ⚠️ **Fallible on purpose, and this is a crash the wire can reach.**
-    /// `PartialPosition` is only a container, and `shogi_usi_parser` fills one
-    /// with two kings of one colour, or with more of one kind, board and hands
-    /// together, than [`Position::new`] accepts — and either panics there. A
+    /// ⚠️ **Fallible on purpose, and this is a crash the wire can reach:** a
+    /// root `shogi_usi_parser` accepts can panic in [`Position::new`], and a
     /// GUI or a server could end the process with one line.
     pub fn from_partial(partial: PartialPosition) -> Result<Self, PositionError> {
         check_piece_counts(&partial)?;
@@ -434,6 +432,28 @@ fn split_root<'a>(tokens: &'a [&'a str]) -> Result<(String, &'a [&'a str]), Posi
                     }
                 }
             }
+            // ⚠️ Checked here for the same reason: `PartialPosition::from_usi`
+            // adds hand pieces into a `u8` that **wraps**, and drops a king,
+            // reporting success either way — `99P99P76P` reads as 18 pawns
+            // and `K` as none. Two two-digit counts stay short of the wrap, so
+            // a kind named at most twice reaches the census whole.
+            let hands = fields[2];
+            let mut named = [0u8; 128];
+            for letter in hands.bytes().filter(u8::is_ascii_alphabetic) {
+                let times = &mut named[usize::from(letter)];
+                *times += 1;
+                let detail = if matches!(letter, b'K' | b'k') {
+                    format!("hand `{hands}` holds a king")
+                } else if *times > 2 {
+                    format!(
+                        "hand `{hands}` names `{}` more than twice",
+                        char::from(letter)
+                    )
+                } else {
+                    continue;
+                };
+                return Err(PositionError::BadRoot { detail });
+            }
             Ok((format!("sfen {}", fields.join(" ")), rest))
         }
         Some((&token, _)) => Err(PositionError::UnexpectedToken {
@@ -589,6 +609,11 @@ mod tests {
             // More pawns than `Position::new` accepts, so this one is a crash
             // rather than a quiet acceptance if it gets past the census.
             "sfen PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP b 99P99p 1",
+            // 274 and 256 pawns, which the parser wraps to 18 and to none.
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P99P76P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P99P58P 1",
+            // A king in hand, which the parser drops.
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b K 1",
         ] {
             assert!(
                 matches!(
@@ -604,14 +629,11 @@ mod tests {
     /// referee's `over_inventory`. ⚠️ This catches them drifting apart, not a
     /// mistake they share.
     ///
-    /// ⚠️ Asked of the two censuses themselves, not of the two constructors:
-    /// the referee holds an over-inventory root deliberately and only reports
-    /// it, so the constructors disagree by design. `from_usi_position` would
-    /// also fold in the king bound and the move-number range, and report a
-    /// disagreement those two never had.
+    /// ⚠️ Asked of the two censuses themselves, not of the two constructors,
+    /// which disagree by design — see `rinsai_game::Game::from_position`.
     ///
-    /// ⚠️ Scoped to the piece-count cases. The king bound below is this crate's
-    /// alone, and the referee deliberately has none.
+    /// ⚠️ Scoped to the piece-count cases: the king bound below is this crate's
+    /// alone.
     ///
     /// ⚠️ The mate rows are what makes this able to fail: a census inferred
     /// from a *status* function is skipped for a position that is already
@@ -619,6 +641,20 @@ mod tests {
     /// that shape.
     #[test]
     fn the_two_root_censuses_agree_on_what_a_shogi_set_holds() {
+        // Impossible and mate, which is the pair a status function cannot
+        // answer, and mate alone, which both must accept.
+        let mates = [
+            "sfen 8l/9/9/9/9/9/9/8g/8K b 19P 1",
+            "sfen 8l/9/9/9/9/9/9/8g/8K b - 1",
+        ];
+        for sfen in mates {
+            let root = PartialPosition::from_usi(sfen).expect("valid sfen");
+            let game = rinsai_game::Game::from_position(root).expect("representable");
+            assert!(
+                matches!(game.outcome(), Some(rinsai_game::Outcome::Checkmate { .. })),
+                "the fixture stopped being mate: {sfen}"
+            );
+        }
         for sfen in [
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 19P 1",
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P 1",
@@ -627,10 +663,8 @@ mod tests {
             "sfen 4k4/9/9/9/4p4/9/9/9/4K4 b 18P 1",
             "sfen 4k4/9/9/9/4+P4/9/9/9/4K4 b 18P 1",
             "sfen 3kg4/9/9/9/9/9/9/9/3KG4 b 4G 1",
-            // Impossible and mate, which is the pair a status function cannot
-            // answer, and mate alone, which both must accept.
-            "sfen 8l/9/9/9/9/9/9/8g/8K b 19P 1",
-            "sfen 8l/9/9/9/9/9/9/8g/8K b - 1",
+            mates[0],
+            mates[1],
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 18P 1",
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 2R2B4G4S4N4L18P 1",
         ] {
@@ -650,6 +684,8 @@ mod tests {
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 18P 1",
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 2R2B4G4S4N4L18P 1",
             "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
+            // A kind named twice, as the parser allows.
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 9P9P 1",
         ] {
             assert!(
                 Game::from_usi_position(sfen).is_ok(),

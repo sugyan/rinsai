@@ -32,8 +32,8 @@ rinsai-search = { path = "crates/rinsai-search" }
 
 # WARNING: never enable a shunsai feature from here — not by a `[features]`
 # forward, and not by a `features = [...]` list above. Both slider flags are
-# A/B-and-debugging backends and `_bench-internals` is not public API; either
-# would make every SPRT number afterwards noise. CI enforces it.
+# A/B-and-debugging backends and `_bench-internals` is not public API. CI
+# enforces it.
 
 [workspace.lints.rust]
 # `deny`, not `forbid`: an annotated exception cannot be granted under `forbid`,

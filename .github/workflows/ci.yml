@@ -65,7 +65,11 @@ jobs:
       # This is also what makes `--all-features` above safe to run.
       - name: No shunsai feature is enabled
         run: |
-          enabled=$(cargo tree --locked -e features -i shunsai \
+          # ⚠️ Without `--all-features` a non-default feature that forwards
+          # into shunsai stays off here and passes; inside the pipeline a
+          # failing `cargo tree` would read as nothing enabled.
+          tree=$(cargo tree --locked --all-features --target all -e features -i shunsai)
+          enabled=$(printf '%s\n' "$tree" \
                     | grep -oE 'shunsai feature "[^"]+"' | sort -u | grep -v '"default"' || true)
           if [ -n "$enabled" ]; then
             echo "$enabled"

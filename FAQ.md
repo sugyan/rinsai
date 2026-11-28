@@ -578,11 +578,10 @@ E2's single CSA connection and E3's in-process self-play are not that.
 ### Why not `[patch.crates-io]` during shunsai prototyping?
 
 It **does** work for an unpublished crate — cargo's own
-`tests/testsuite/patch.rs::nonexistent` covers it. Rejected on three other
-grounds: the manifest's shunsai requirement would assert something false; `[patch]`
-is honoured only at the workspace root, so `rinsai-search/Cargo.toml` would stop
-saying where shunsai comes from; and it would keep overriding silently after
-publication, so the switch we are trying not to forget would never go red.
+`tests/testsuite/patch.rs::nonexistent` covers it. Rejected on two other
+grounds: the manifest's shunsai requirement would assert something false, and it
+would keep overriding silently after publication, so the switch we are trying not
+to forget would never go red.
 
 ## Tooling
 
