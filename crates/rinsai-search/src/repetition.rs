@@ -64,8 +64,9 @@ pub(crate) fn verdict(path: &[HistoryEntry]) -> Option<Repetition> {
     // to move, so the other parity cannot match.
     //
     // ⚠️ **A path missing an entry breaks that and nothing here would
-    // notice**: past two same-side entries in a row, every comparison is
-    // against the opponent's positions, and every real repetition reads `None`.
+    // notice**: every comparison past the gap is against the opponent's
+    // positions, and a repetition that needs an occurrence from before the gap
+    // reads `None`.
     let mut seen = 0;
     let mut first = None;
     let mut i = now;
@@ -220,10 +221,9 @@ mod tests {
     /// Sabotage: `any` instead of `all` in the **`we_checked`** run, which
     /// reports a perpetual check that nobody delivered.
     ///
-    /// ⚠️ **The same mutation in `they_checked` fires nothing, here or in any
-    /// other test.** Every fixture in the module gives that run a uniform
-    /// sequence, and `any` and `all` agree on a uniform sequence — so only the
-    /// mixed run can tell them apart, and this is the only fixture with one.
+    /// ⚠️ **The same mutation in `they_checked` fires nothing in this
+    /// module**; `negamax`'s
+    /// `a_quiet_move_into_a_drawn_repetition_is_not_skipped` is what goes red.
     #[test]
     fn one_unchecked_ply_makes_it_an_ordinary_draw() {
         let mut nearly = entries(&[

@@ -289,9 +289,9 @@ mod tests {
         assert_eq!(white, -black);
     }
 
-    /// A pass negates the evaluation exactly, on boards with pieces and hands
-    /// for both sides. It is why the node after a pass can never pass in its
-    /// turn, which the search asserts rather than refuses.
+    /// A pass negates the evaluation exactly. It is why the node after a pass
+    /// can never pass in its turn, which the search asserts rather than
+    /// refuses.
     #[test]
     fn a_pass_negates_the_evaluation() {
         for sfen in [

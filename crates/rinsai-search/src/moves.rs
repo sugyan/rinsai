@@ -753,8 +753,7 @@ mod tests {
     /// The sort: what wins most is tried first.
     ///
     /// Sabotage: drop the `sort_by` and keep the partition;
-    /// `negamax`'s `the_transposition_move_is_searched_first` and
-    /// `quiet_moves_that_cannot_reach_alpha_are_skipped` go red with it.
+    /// `negamax`'s `the_transposition_move_is_searched_first` goes red with it.
     #[test]
     fn the_captures_come_out_best_first() {
         let board = ordering_fixture();

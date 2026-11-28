@@ -28,8 +28,7 @@ pub(crate) const REDUCTION: Depth = 2;
 /// Not in check, because passing would leave the king to be taken. Only on a
 /// scout window, because a node on a wider one is a node whose exact score is
 /// wanted, and a pass proves only a bound. Not when `beta` is a mate or a
-/// repetition, which no evaluation reaches. And only when the static
-/// evaluation already reaches `beta`.
+/// repetition. And only when the static evaluation already reaches `beta`.
 ///
 /// `evaluate` is called last, so a node that cannot pass for any other reason
 /// does not pay for an evaluation it would not read.

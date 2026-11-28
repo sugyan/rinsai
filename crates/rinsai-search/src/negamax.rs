@@ -1731,8 +1731,8 @@ mod tests {
     /// history rather than only over the search's path — the fourth is three
     /// quarters behind the root here.
     ///
-    /// Sabotage: delete the `repetition::verdict` arm from `child` and the
-    /// score falls back to the material balance asserted below.
+    /// Sabotage: delete the `self.verdict()` arm from `child` and depth 4
+    /// reports `cp -1350`.
     #[test]
     fn the_fourth_occurrence_of_a_position_is_a_draw() {
         let fixture = game(SHUFFLE_TO_A_DRAW);
@@ -1819,7 +1819,7 @@ mod tests {
     /// At depth 2 the repeating move is played in quiescence, which keeps no
     /// repetition path; only at depth 3 is it an interior node's move.
     ///
-    /// Sabotage: drop the `repetition::verdict` test from the skip, and depth 3
+    /// Sabotage: drop the `self.verdict()` test from the skip, and depth 3
     /// reports `cp -1350`.
     #[test]
     fn a_quiet_move_into_a_drawn_repetition_is_not_skipped() {
@@ -1955,8 +1955,8 @@ mod tests {
     /// what makes it able to fail: every declarable position in the workspace
     /// otherwise has moves, so nothing distinguishes the two early returns'
     /// order. Sabotage: deleting the declaration block, and moving it below the
-    /// `root_moves.is_empty()` arm, each turned this red — the second by
-    /// answering `resign`, which is a won game given away.
+    /// `root_moves.is_empty()` arm, each turned this red by answering
+    /// `resign`, which is a won game given away.
     #[test]
     fn a_declarable_position_wins_before_a_move_is_sought() {
         const STUCK: &str = "sfen GGRBKBRGG/PPPPPPPPP/9/9/9/9/9/9/4k4 b - 1";
@@ -2698,9 +2698,11 @@ mod tests {
     /// The table survives a `go`, so searching the same position again is
     /// cheaper.
     ///
-    /// Sabotage: never store, or never probe — either makes the two counts
-    /// equal. ⚠️ **Deleting the `buf.swap` does not fire this**, which is why
-    /// the ordering has a test of its own below, on another fixture.
+    /// Sabotage: never store, at both sites — the node's own and a pass's cut —
+    /// or never probe, and the two counts come out equal; deleting the node's
+    /// own store alone leaves this green. ⚠️ **Deleting the `buf.swap` does not
+    /// fire this**, which is why the ordering has a test of its own below, on
+    /// another fixture.
     #[test]
     fn a_repeated_search_reuses_what_the_last_one_proved() {
         let (first, second) = twice(1, "startpos", depth(6), |_| {});
@@ -2806,8 +2808,7 @@ mod tests {
     /// Deleting the verification search, dropping the promotion exemption at
     /// the reduction's call, and passing `false` there for the check exemption
     /// each leave this count at 10 283, and none of them is red here. The
-    /// frozen `bench` counts catch all three; the test below catches the first,
-    /// and `a_mate_ends_the_deepening_only_once_its_depth_covers_it` the third.
+    /// frozen `bench` counts catch all three, and the test below the first.
     #[test]
     fn late_quiet_moves_are_searched_a_ply_shallower() {
         let (_, lines) = run(RESEARCH_FIXTURE, depth(5));
@@ -2832,12 +2833,12 @@ mod tests {
     /// them.
     ///
     /// ⚠️ **The reduction is not what finds the win here** — an engine with no
-    /// reduction at all reports the same score, from 171 166 nodes against
-    /// 38 984. What the reduction does is find it four times cheaper, and
+    /// reduction at all reports the same score, from 48 293 nodes against
+    /// 24 983. What the reduction does is find it in about half the nodes, and
     /// what the verification search does is keep it found.
     ///
     /// Sabotage: drop the verification search and this reports `cp 15` from
-    /// 35 738 nodes.
+    /// 21 653 nodes.
     #[test]
     fn a_reduced_move_is_believed_only_after_a_full_depth_search() {
         let (_, lines) = run(RESEARCH_FIXTURE, depth(6));
@@ -2868,13 +2869,12 @@ mod tests {
     /// Sabotage: give the third search `full - taken` and this reports
     /// `cp 50` against `cp 130`. ⚠️ **Nothing else in this crate went red on
     /// that before this test existed**, and the frozen `bench` counts move by
-    /// 3.3%, which is inside what an ordinary rebaseline absorbs.
+    /// 3.5%, which is inside what an ordinary rebaseline absorbs.
     ///
     /// ⚠️ **Every move of the line is load-bearing, including the last two.**
     /// Cut `6a7b 3i3h` off the end and the fixture reports `cp 30` under both
-    /// builds — it stops discriminating entirely. The gap is measured at 1, 256
-    /// and the engine's default table size alike, so nothing about it is a
-    /// property of the table.
+    /// builds — it stops discriminating entirely. The gap is measured at 1, 16
+    /// and 256 MiB alike, so nothing about it is a property of the table.
     const WIDENING_FIXTURE: &str = "startpos moves 7g7f 8c8d 2g2f 3c3d 2f2e 4a3b 5i6h \
          8d8e 2e2d 2c2d 2h2d 8e8f 8g8f 8b8f 6i7h 2b8h+ 7i8h B*3c P*8g 3c2d 8g8f 6a7b \
          3i3h";
@@ -2903,7 +2903,7 @@ mod tests {
     /// before its turn comes. All three properties are asserted.
     ///
     /// Sabotage: pass `false` for `in_check` at the reduction's call and this
-    /// goes red, with eight other tests in this crate and `rinsai`'s two
+    /// goes red, with seven other tests in this crate and `rinsai`'s two
     /// `bench` tests.
     #[test]
     fn an_evasion_is_never_reduced() {
@@ -2952,7 +2952,7 @@ mod tests {
     /// first move is quiet. Both properties are asserted.
     ///
     /// Sabotage: pass `i` for `i - base` at the reduction's call and this goes
-    /// red, with twenty-two other tests in this crate and `rinsai`'s
+    /// red, with twenty-four other tests in this crate and `rinsai`'s
     /// `a_scripted_game_over_real_pipes`; `rinsai`'s two `bench` tests stay
     /// green.
     #[test]
@@ -3040,9 +3040,10 @@ mod tests {
     /// sort in `order_captures`, at 3 974.
     ///
     /// ⚠️ **It cannot see the depth-2 half.** Taking futility back to depth 1
-    /// gives 4 068, too close to what losing history costs here (3 983) for a
-    /// ceiling to sit between them; the frozen `bench` counts catch it, and so
-    /// does [`a_killer_is_searched_before_the_quiet_moves_around_it`].
+    /// gives 4 068, below the reduction's 5 442 that the ceiling has to stay
+    /// above, so no ceiling on this fixture catches it; the frozen `bench`
+    /// counts do, and so does
+    /// [`a_killer_is_searched_before_the_quiet_moves_around_it`].
     #[test]
     fn quiet_moves_that_cannot_reach_alpha_are_skipped() {
         let (_, lines) = run(FUTILITY_FIXTURE, depth(5));
