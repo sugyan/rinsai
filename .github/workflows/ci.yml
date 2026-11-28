@@ -73,7 +73,7 @@ jobs:
                     | grep -oE 'shunsai feature "[^"]+"' | sort -u | grep -v '"default"' || true)
           if [ -n "$enabled" ]; then
             echo "$enabled"
-            echo "::error::A shunsai feature is enabled. Never do this from here — the WARNING beside [workspace.dependencies] in Cargo.toml says what each flag costs."
+            echo "::error::A shunsai feature is enabled. Never do this from here — see the WARNING beside [workspace.dependencies] in Cargo.toml."
             exit 1
           fi
 

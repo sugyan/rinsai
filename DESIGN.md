@@ -126,7 +126,7 @@ issue, and does not hold E1 open.
 1. MVV-LVA for captures, promotion-aware. **Baseline: E0's quiescence is deliberately unordered.**
 2. Killers — **drops can be killers**
 3. History — **butterfly boards are impossible, because drops have no `from`**. Index by (piece kind × side, `to`) to unify board moves and drops. Countermove and continuation history later.
-4. **Null-move pruning — safer than in chess**, because drops make zugzwang effectively absent. Exclude only when in check, plus endgame verification. ⚠️ **It is the first item to meet E0's repetition path, and the collision is silent** — no fixture can catch it, because every repetition test reaches its verdict through the game's history rather than through the tree.
+4. **Null-move pruning — safer than in chess**, because drops make zugzwang effectively absent. Exclude only when in check, plus endgame verification. ⚠️ **It meets E0's repetition path, and the collision is silent.**
 5. LMR — checks, evasions and promotions exempt. ⚠️ **Every promotion, not only the capture-promotions**: a promotion that takes nothing is quiet by the capture test, and と金作り is the move that ranking is least to be trusted about.
    - **5b. PVS at interior nodes** — every move behind the first is scouted on a one-point window, and widens back to the node's own only by proving it deserves to. A sub-item rather than a place in the order, because it arrived after item 5 and renumbering the list would orphan every reference to an item by number. ⚠️ **The root keeps its own window, and item 9 is not what is stopping it.** Scouting root moves leaves item 9's ambiguity intact — root alpha still enters at `-INFINITE` and root move 0 still raises it. What is missing is that `negamax_root` has no widening search of its own, so a scouted root move that raises alpha publishes a truncated line — measured, a depth-4 search announcing a one-move variation. Root PVS owes that search, not item 9's return type, and `a_published_line_is_as_long_as_the_depth_it_claims` is what says so.
 6. Check extension — **more important than in chess**; watch its interference with perpetual-check repetition, which is a search-explosion risk. **The root does not extend**; extending there is its own SPRT.
@@ -193,7 +193,7 @@ Each addition is prototyped on a shunsai branch, measured on shunsai's own bench
 | API | Phase | The shunsai re-measurement it unlocks |
 |---|---|---|
 | staged generation (captures / evasions / quiets) | E1 | **the `MoveSet` 48-byte question** — this is the caller that finally *collects* move sets. **Measured demand from E0 step 3a**: every quiescence node runs full legal generation and keeps a handful, **48× generated per kept at the initial position and 86× on a drop-heavy middlegame** |
-| expose `checkers` / `pinned` | E1 | **Its E0 consumer arrived at step 3a**: every quiescence node calls `in_check()`, which recomputes `attackers_to(king)` that `generate_moves` computes internally one line later and does not expose. **A second arrived at step 4**: every interior node's `do_move` now records an `in_check()` for the repetition path, which the 連続王手 half of the rule reads |
+| expose `checkers` / `pinned` | E1 | none. **Its E0 consumer arrived at step 3a**: every quiescence node calls `in_check()`, which recomputes `attackers_to(king)` that `generate_moves` computes internally one line later and does not expose. **A second arrived at step 4**: every interior node's `do_move` now records an `in_check()` for the repetition path, which the 連続王手 half of the rule reads |
 | (optional) a `DirtyPieces`-returning `do_move` | judged E3 → E4 | the incremental-AttackInfo trade family |
 | (measurement only) magic vs qugiy vs `pext` | E1 once a TT-backed bench exists, and E4 on x86 | — |
 | (measurement only) lifting the `king_danger` neighbourhood filter | only if a demand appears | — |
@@ -207,7 +207,7 @@ Each addition is prototyped on a shunsai branch, measured on shunsai's own bench
 
 What belongs to the *plan* rather than to the rules is the consequence: **there is no major permissive reference for *search* code**, because the strong chess engines are GPL too. Search here is written from CPW, papers and first principles. That is a real cost, it is accepted deliberately, and it is why the roadmap gives search its own staged phase (E1) instead of assuming a shortcut exists.
 
-**Data.** floodgate game records and self-play output are factual data (the position shunsai took on 2026-07-24). A pre-release provenance scan is mandatory, and the manifest chain must make each trained network demonstrably the product of own data and own trainer.
+**Data.** floodgate game records and self-play output are factual data. A pre-release provenance scan is mandatory, and the manifest chain must make each trained network demonstrably the product of own data and own trainer.
 
 ## 8. How things are verified
 

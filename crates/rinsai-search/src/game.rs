@@ -434,20 +434,29 @@ fn split_root<'a>(tokens: &'a [&'a str]) -> Result<(String, &'a [&'a str]), Posi
             }
             // ⚠️ Checked here for the same reason: `PartialPosition::from_usi`
             // adds hand pieces into a `u8` that **wraps**, and drops a king,
-            // reporting success either way — `99P99P76P` reads as 18 pawns
-            // and `K` as none. Two two-digit counts stay short of the wrap, so
-            // a kind named at most twice reaches the census whole.
+            // reporting success either way.
             let hands = fields[2];
-            let mut named = [0u8; 128];
-            for letter in hands.bytes().filter(u8::is_ascii_alphabetic) {
-                let times = &mut named[usize::from(letter)];
-                *times += 1;
-                let detail = if matches!(letter, b'K' | b'k') {
+            let mut held = [0u32; 128];
+            let mut count: Option<u32> = None;
+            for byte in hands.bytes() {
+                if byte.is_ascii_digit() {
+                    let digit = u32::from(byte - b'0');
+                    count = Some(count.unwrap_or(0).saturating_mul(10).saturating_add(digit));
+                    continue;
+                }
+                let added = count.take().unwrap_or(1);
+                if !byte.is_ascii_alphabetic() || added == 0 {
+                    continue;
+                }
+                let total = &mut held[usize::from(byte)];
+                *total = total.saturating_add(added);
+                let detail = if matches!(byte, b'K' | b'k') {
                     format!("hand `{hands}` holds a king")
-                } else if *times > 2 {
+                } else if *total > u32::from(u8::MAX) {
                     format!(
-                        "hand `{hands}` names `{}` more than twice",
-                        char::from(letter)
+                        "hand `{hands}` holds more than {} `{}`",
+                        u8::MAX,
+                        char::from(byte)
                     )
                 } else {
                     continue;
@@ -590,6 +599,20 @@ mod tests {
     /// the first line, `19P`, is accepted and the assertion below fires.
     #[test]
     fn a_position_no_shogi_set_could_reach_is_rejected() {
+        // Hands the parser misreads as ones the census passes: two counts
+        // that wrap, and a king it drops.
+        let misread = [
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P99P76P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P99P58P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b K 1",
+        ];
+        for sfen in misread {
+            let read = PartialPosition::from_usi(sfen).expect("the parser accepts it");
+            assert!(
+                check_piece_counts(&read).is_ok(),
+                "the parser stopped misreading {sfen}"
+            );
+        }
         for sfen in [
             // Straight out of the hand grammar.
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 19P 1",
@@ -609,11 +632,9 @@ mod tests {
             // More pawns than `Position::new` accepts, so this one is a crash
             // rather than a quiet acceptance if it gets past the census.
             "sfen PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP/PPPPPPPPP b 99P99p 1",
-            // 274 and 256 pawns, which the parser wraps to 18 and to none.
-            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P99P76P 1",
-            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 99P99P58P 1",
-            // A king in hand, which the parser drops.
-            "sfen 4k4/9/9/9/9/9/9/9/4K4 b K 1",
+            misread[0],
+            misread[1],
+            misread[2],
         ] {
             assert!(
                 matches!(
@@ -632,8 +653,7 @@ mod tests {
     /// ⚠️ Asked of the two censuses themselves, not of the two constructors,
     /// which disagree by design — see `rinsai_game::Game::from_position`.
     ///
-    /// ⚠️ Scoped to the piece-count cases: the king bound below is this crate's
-    /// alone.
+    /// ⚠️ Scoped to the bounds in `PIECE_TOTALS`.
     ///
     /// ⚠️ The mate rows are what makes this able to fail: a census inferred
     /// from a *status* function is skipped for a position that is already
@@ -648,10 +668,9 @@ mod tests {
             "sfen 8l/9/9/9/9/9/9/8g/8K b - 1",
         ];
         for sfen in mates {
-            let root = PartialPosition::from_usi(sfen).expect("valid sfen");
-            let game = rinsai_game::Game::from_position(root).expect("representable");
+            let board = Position::new(PartialPosition::from_usi(sfen).expect("valid sfen"));
             assert!(
-                matches!(game.outcome(), Some(rinsai_game::Outcome::Checkmate { .. })),
+                board.in_check() && !board.has_legal_moves(),
                 "the fixture stopped being mate: {sfen}"
             );
         }
@@ -684,8 +703,11 @@ mod tests {
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 18P 1",
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 2R2B4G4S4N4L18P 1",
             "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
-            // A kind named twice, as the parser allows.
+            // Hands the parser reads as written: a kind named more than once,
+            // and a count of zero.
             "sfen 4k4/9/9/9/9/9/9/9/4K4 b 9P9P 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b PPP 1",
+            "sfen 4k4/9/9/9/9/9/9/9/4K4 b 0K 1",
         ] {
             assert!(
                 Game::from_usi_position(sfen).is_ok(),
