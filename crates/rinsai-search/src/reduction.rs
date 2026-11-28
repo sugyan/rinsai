@@ -1,10 +1,5 @@
 //! How much of a late quiet move's search to skip.
 //!
-//! The move list a node walks is ordered — the transposition move, then the
-//! captures by what they win, then the quiet moves by killers and history —
-//! so a move far down it is one every heuristic here ranked badly. Searching
-//! those a ply shallower is what buys the tree back.
-//!
 //! ⚠️ **A reduction is a guess, and an unverified guess is a wrong answer
 //! rather than a cheaper one.** The saving comes from moves that stay below
 //! alpha; anything that comes back above it has to be searched again at full
@@ -23,9 +18,8 @@ const MIN_DEPTH: Depth = 3;
 
 /// How many moves a node searches at full depth before it starts reducing.
 ///
-/// The front of an ordered list is the transposition move and the best-ranked
-/// captures, which is where the ordering is most likely right and a reduction
-/// most likely wrong.
+/// The front of the list is where the ordering is most likely right and a
+/// reduction most likely wrong.
 ///
 /// ⚠️ **The number is a starting point and not a measurement**, and no test
 /// here pins it: every assertion below is written against the constant rather
@@ -35,15 +29,13 @@ const MIN_PLAYED: usize = 4;
 /// How many plies to take off `played`'s search at a node of `depth`, or zero
 /// to search it whole.
 ///
-/// `played` is how many moves this node has already searched, not an index
-/// into the move buffer — a node whose list starts part-way through the buffer
-/// would otherwise reduce its own first move.
+/// `played` is how many moves come before this one in the node's list, not an
+/// index into the move buffer — a node whose list starts part-way through the
+/// buffer would otherwise reduce its own first move.
 ///
 /// `quiet` must be false for a capture **and for a promotion**. A promotion
 /// that takes nothing is quiet by the capture test — 歩→と lands on an empty
-/// square — while [`ordering::promotion_gain`](crate::ordering) prices it
-/// above every pawn capture, so the ranking that put it late is the one to
-/// distrust.
+/// square.
 ///
 /// The three flags are taken rather than a board so that a test can ask about
 /// a (depth, played, kind-of-move) triple without a position that holds one.
@@ -97,15 +89,13 @@ mod tests {
         }
     }
 
-    /// The property [`MIN_DEPTH`] was chosen for, over every depth and move
-    /// number a search can reach: a reduced child still has a ply to spend, so
-    /// it is a shallower search rather than a jump into quiescence.
+    /// The property [`MIN_DEPTH`] was chosen for, over every depth a search can
+    /// reach: a reduced child still has a ply to spend, so it is a shallower
+    /// search rather than a jump into quiescence.
     ///
-    /// The bounds are the engine's own — a `go` is clamped to `MAX_DEPTH` and
-    /// a ply holds at most `MAX_LEGAL_MOVES` moves — so the sweep follows
-    /// them if either moves. ⚠️ **It is currently one case wearing a sweep**:
-    /// the answer is flat in `played` and binding only at `depth == MIN_DEPTH`.
-    /// It earns the sweep the day the reduction becomes a schedule.
+    /// ⚠️ **It is currently one case wearing a sweep**: the answer is flat in
+    /// `played` and binding only at `depth == MIN_DEPTH`. It earns the sweep
+    /// the day the reduction becomes a schedule.
     #[test]
     fn a_reduced_child_is_still_an_interior_node() {
         for depth in 1..=MAX_DEPTH {

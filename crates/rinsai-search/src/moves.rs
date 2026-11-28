@@ -26,12 +26,13 @@ const _: () = {
     assert!(size_of::<(i16, Move)>() * MAX_LEGAL_MOVES <= STACK_SORT_BUDGET);
 };
 
-/// The most legal moves any shogi position has.
+/// shunsai's bound on the legal moves of one position.
 ///
-/// It is the size a move buffer has to be, and shunsai's own benches use the
-/// same number (`benches/suite/common.rs` in its repository — the published
-/// crate ships `src/` only).
-pub const MAX_LEGAL_MOVES: usize = 593;
+/// ⚠️ **shunsai promises it only while both kings are on the board**, and a
+/// [`Game`](crate::Game) can be rooted where one is missing, as a 詰将棋
+/// diagram is. Past it, [`MoveBuf::order_history`]'s debug assertion can fire
+/// and [`MoveBuf::scratch`] can reallocate.
+pub(crate) use shunsai::MAX_LEGAL_MOVES;
 
 /// One move list, shared by every ply of one search.
 ///
@@ -95,8 +96,7 @@ impl MoveBuf {
     /// since a [`MoveSet`] hands over its destinations as
     /// [`Bitboard`](shunsai::Bitboard)s.
     ///
-    /// The result is a subset of [`Self::generate`]'s, so one ply still cannot
-    /// exceed [`MAX_LEGAL_MOVES`].
+    /// The result is a subset of [`Self::generate`]'s.
     pub(crate) fn generate_captures(&mut self, position: &Position) -> usize {
         let base = self.moves.len();
         // ⚠️ Read before any move is made: after `do_move` the side to move
@@ -104,8 +104,8 @@ impl MoveBuf {
         // moved, and every move looks like a capture — quiescence would never
         // terminate. Intersecting with our own board fails the other way: a
         // legal move never lands on our own piece, so nothing is generated and
-        // quiescence stands pat everywhere, silently restoring the horizon
-        // effect. Both are silent; neither is a crash.
+        // quiescence stands pat, silently restoring the horizon effect. Both
+        // are silent; neither is a crash.
         let them = position.player_bb(position.side_to_move().flip());
         let moves = &mut self.moves;
         let _ = position.generate_moves(|set| {
@@ -589,8 +589,8 @@ mod tests {
     }
 
     /// Sabotage: intersect with `player_bb(side_to_move())` instead of its
-    /// flip and **zero** captures are generated (`left: 0, right: 3`) — a legal
-    /// move never lands on our own piece — so quiescence stands pat everywhere.
+    /// flip and **zero** captures are generated (`left: []` where three are
+    /// expected) — a legal move never lands on our own piece.
     /// Drop the `promotions` board and every capture-promotion silently
     /// disappears. Let `MoveSet::Drop` through and drops appear as captures.
     #[test]

@@ -41,7 +41,7 @@ mod tt;
 pub use clock::{Clock, RealClock};
 pub use game::{Game, HistoryEntry, IllegalMove, PositionError};
 pub use info::nps;
-pub use moves::{MAX_LEGAL_MOVES, is_legal};
+pub use moves::is_legal;
 pub use negamax::{DEFAULT_DELIVERY_MARGIN_MS, NegamaxSearcher};
 pub use score::{Depth, MAX_PLY, Score};
 pub use search::{

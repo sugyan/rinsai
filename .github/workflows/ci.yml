@@ -28,7 +28,7 @@ jobs:
       # `--all-features` is safe only because no rinsai crate declares a feature
       # that forwards into shunsai: the flag activates features of the *selected
       # workspace packages*, never of a registry dependency, so it cannot reach
-      # `slider-naive` or `bench-internals`. The "No shunsai feature is enabled"
+      # `slider-naive` or `_bench-internals`. The "No shunsai feature is enabled"
       # step below is what keeps that premise true.
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
@@ -65,11 +65,15 @@ jobs:
       # This is also what makes `--all-features` above safe to run.
       - name: No shunsai feature is enabled
         run: |
-          enabled=$(cargo tree --locked -e features -i shunsai \
+          # ⚠️ Without `--all-features` a non-default feature that forwards
+          # into shunsai stays off here and passes; inside the pipeline a
+          # failing `cargo tree` would read as nothing enabled.
+          tree=$(cargo tree --locked --all-features --target all -e features -i shunsai)
+          enabled=$(printf '%s\n' "$tree" \
                     | grep -oE 'shunsai feature "[^"]+"' | sort -u | grep -v '"default"' || true)
           if [ -n "$enabled" ]; then
             echo "$enabled"
-            echo "::error::A shunsai feature is enabled. Never do this from here — the WARNING beside [workspace.dependencies] in Cargo.toml says what each flag costs."
+            echo "::error::A shunsai feature is enabled. Never do this from here — see the WARNING beside [workspace.dependencies] in Cargo.toml."
             exit 1
           fi
 
