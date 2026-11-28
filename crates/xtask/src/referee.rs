@@ -414,7 +414,9 @@ mod tests {
                 .iter()
                 .map(|spec| match spec {
                     GoSpec::Clock(c) => (c.btime.as_millis(), c.wtime.as_millis()),
-                    GoSpec::Nodes { .. } => panic!("a node budget carries no clock"),
+                    GoSpec::Nodes { .. } | GoSpec::Depth { .. } => {
+                        panic!("a node or depth budget carries no clock")
+                    }
                 })
                 .collect()
         }
