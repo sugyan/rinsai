@@ -60,13 +60,12 @@ pub(crate) fn verdict(path: &[HistoryEntry]) -> Option<Repetition> {
     let now = earlier.len();
 
     // Back by two, because `path` alternates side to move — every entry is
-    // one legal move on from the last, and a key carries the side to move, so
-    // the other parity cannot match.
+    // one legal move or one pass on from the last, and a key carries the side
+    // to move, so the other parity cannot match.
     //
-    // ⚠️ **A null move breaks that and nothing here would notice.** Pushing an
-    // entry for a pass shifts the parity of everything below it, and this walk
-    // then compares `current` only against the opponent's positions and returns
-    // `None` for every real repetition in the subtree.
+    // ⚠️ **A path missing an entry breaks that and nothing here would
+    // notice**: past two same-side entries in a row, every comparison is
+    // against the opponent's positions, and every real repetition reads `None`.
     let mut seen = 0;
     let mut first = None;
     let mut i = now;

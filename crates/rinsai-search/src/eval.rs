@@ -289,6 +289,23 @@ mod tests {
         assert_eq!(white, -black);
     }
 
+    /// A pass negates the evaluation exactly, on boards with pieces and hands
+    /// for both sides. It is why the node after a pass can never pass in its
+    /// turn, which the search asserts rather than refuses.
+    #[test]
+    fn a_pass_negates_the_evaluation() {
+        for sfen in [
+            "sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+            "sfen l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
+            "sfen 4k4/9/4+P4/4+r4/9/4+B4/4+n4/9/4K4 b GSgs 1",
+        ] {
+            let mut board = position(sfen);
+            let before = evaluate(&board);
+            board.do_null_move();
+            assert_eq!(evaluate(&board), -before, "{sfen}");
+        }
+    }
+
     /// Capturing gains the piece's board value **and** its unpromoted value in
     /// hand — the one non-obvious consequence of the model, and what
     /// [`capture_gain`] exists to state once.
